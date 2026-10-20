@@ -1,9 +1,9 @@
-name: PR checks
+name: pr-checks
 
 on:
   pull_request:
     branches: [main]
-    types: [opened, reopened, synchronize, edited]
+    types: [opened, reopened, synchronize, edited, ready_for_review, labeled, unlabeled]
   push:
     branches: [main]
 
@@ -22,7 +22,7 @@ jobs:
     permissions:
       pull-requests: read
     steps:
-      - name: Check the current title against the PR number
+      - name: pr-title
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -55,12 +55,15 @@ jobs:
   content:
     name: pr-content
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Check every incoming commit and its files
+      - name: pr-content
         env:
           # JSON array configured outside Git; missing policy blocks this check.
           REPOSITORY_CONTENT_DENYLIST: ${{ vars.REPOSITORY_CONTENT_DENYLIST }}
@@ -102,3 +105,6 @@ jobs:
                   checked += 1
           print(f"Content Policy passed: {checked} file versions checked")
           PY
+      - name: pr-changelog
+        if: github.event_name == 'pull_request'
+        uses: dangoslen/changelog-enforcer@v3
