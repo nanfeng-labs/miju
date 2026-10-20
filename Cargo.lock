@@ -5,3 +5,10 @@ version = 4
 [[package]]
 name = "miju"
 version = "0.1.0"
+dependencies = [
+ "miju-core",
+]
+
+[[package]]
+name = "miju-core"
+version = "0.1.0"

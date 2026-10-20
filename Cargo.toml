@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["miju"]
+members = ["miju", "miju-core"]
 
 [workspace.package]
 authors = ["RivTian <tianjun.rio@gmail.com>"]
@@ -60,3 +60,4 @@ verbose_file_reads = "warn"
 
 [patch.crates-io]
 miju = { path = "miju" }
+miju-core = { path = "miju-core" }
