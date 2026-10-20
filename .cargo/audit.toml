@@ -1,0 +1,19 @@
+# cargo-audit configuration for this workspace.
+# This file lives at the project root under .cargo/audit.toml.
+
+# Advisory reporting and reviewed exceptions.
+[advisories]
+ignore = [] # Advisory IDs to ignore; add exceptions only after review.
+informational_warnings = ["unmaintained"] # Report unmaintained dependencies.
+
+# Report output and failure conditions.
+[output]
+deny = ["unmaintained"] # Fail the audit when unmaintained dependencies are found.
+format = "terminal" # Human-readable output; use "json" for machine-readable reports.
+quiet = false # Set to true to print output only on errors.
+show_tree = true # Show which dependencies bring in an affected crate.
+
+# Yanked crate checks.
+[yanked]
+enabled = true # Check Cargo.lock for crates withdrawn from the registry.
+update_index = true # Refresh the registry index before checking yanked versions.
