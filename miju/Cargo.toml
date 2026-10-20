@@ -1,0 +1,25 @@
+[package]
+name = "miju"
+version = "0.1.0"
+publish = false
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Simple, extensible and multithreaded background task processing for Rust"
+license.workspace = true
+repository.workspace = true
+
+[package.metadata.docs.rs]
+# defines the configuration attribute `docsrs`
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[features]
+default = []
+
+[dependencies]
+
+[dev-dependencies]
+
+[lints]
+workspace = true
