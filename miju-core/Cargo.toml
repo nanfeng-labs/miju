@@ -1,0 +1,13 @@
+[package]
+name = "miju-core"
+version = "0.1.0"
+publish = false
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Core task types, execution context, and storage contracts for miju"
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
