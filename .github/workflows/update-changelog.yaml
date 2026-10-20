@@ -86,7 +86,9 @@ jobs:
               for index in reversed(existing[1:]):
                   del lines[index]
           else:
-              lines[start:start] = ["", entry]
+              first = next((i for i in range(start, end) if lines[i].strip()), end)
+              padding = [""] if first == end and end < len(lines) else []
+              lines[start:first] = ["", entry, *padding]
           updated = "\n".join(lines) + "\n"
           check(updated)
           if updated != original:
