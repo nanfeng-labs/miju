@@ -1,0 +1,104 @@
+name: PR checks
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, reopened, synchronize, edited]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-checks-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  title:
+    name: pr-title
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    steps:
+      - name: Check the current title against the PR number
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY_CONTENT_DENYLIST: ${{ vars.REPOSITORY_CONTENT_DENYLIST }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq '{number, title}' > "$RUNNER_TEMP/pr.json"
+          python3 - "$RUNNER_TEMP/pr.json" <<'PY'
+          import json, os, re, sys
+
+          with open(sys.argv[1], encoding="utf-8") as file:
+              pr = json.load(file)
+          title = pr["title"]
+          # Squash uses the PR title as the new commit title.
+          terms = json.loads(os.environ["REPOSITORY_CONTENT_DENYLIST"])
+          if not isinstance(terms, list) or not terms or any(not isinstance(t, str) or not t.strip() for t in terms):
+              sys.exit("A nonempty external content policy is required")
+          if "\0" in title or any(term.casefold() in title.casefold() for term in terms):
+              sys.exit("Title violates the repository content policy")
+          matches = list(re.finditer(r"(?<!\w)#([1-9][0-9]*)(?![0-9A-Za-z_.])", title))
+          if "\n" in title or "\r" in title or title.count("#") != 1 or len(matches) != 1:
+              sys.exit("Title must contain exactly one valid #N reference")
+          match = matches[0]
+          if match.group(1) != str(pr["number"]):
+              sys.exit("Title number does not match the actual PR number")
+          if not (title[:match.start()] + title[match.end():]).strip():
+              sys.exit("Title must include a description")
+          print("PR Title Check passed")
+          PY
+
+  content:
+    name: pr-content
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check every incoming commit and its files
+        env:
+          # JSON array configured outside Git; missing policy blocks this check.
+          REPOSITORY_CONTENT_DENYLIST: ${{ vars.REPOSITORY_CONTENT_DENYLIST }}
+          BASE_REVISION: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          python3 - <<'PY'
+          import json, os, subprocess, sys
+
+          terms = json.loads(os.environ["REPOSITORY_CONTENT_DENYLIST"])
+          if not isinstance(terms, list) or not terms or any(not isinstance(t, str) or not t.strip() for t in terms):
+              sys.exit("A nonempty external content policy is required")
+          terms = [term.casefold() for term in terms]
+
+          def git(*args):
+              return subprocess.check_output(["git", *args])
+
+          def check(data, label):
+              text = data.decode("utf-8").casefold()
+              if "\0" in text or any(term in text for term in terms):
+                  sys.exit(f"Content policy rejected {label}")
+
+          base, head = [git("rev-parse", "--verify", "--end-of-options", os.environ[key] + "^{commit}").decode().strip()
+                        for key in ("BASE_REVISION", "HEAD_REVISION")]
+          git("merge-base", base, head)
+          revisions = git("rev-list", "--reverse", f"{base}..{head}").decode().splitlines() or [head]
+          checked = 0
+          for revision in revisions:
+              check(git("cat-file", "commit", revision), f"commit {revision}")
+              for entry in git("ls-tree", "-r", "-z", revision).split(b"\0"):
+                  if not entry:
+                      continue
+                  info, path = entry.split(b"\t", 1)
+                  mode, kind, oid = info.decode().split()
+                  check(path, f"path in {revision}")
+                  if kind != "blob" or mode not in ("100644", "100755"):
+                      sys.exit("Symbolic links and submodules require separate review")
+                  check(git("cat-file", "blob", oid), f"{revision}:{path.decode()}")
+                  checked += 1
+          print(f"Content Policy passed: {checked} file versions checked")
+          PY
