@@ -1,4 +1,4 @@
-name: Security Audit
+name: cargo-audit
 
 on:
   schedule:
@@ -34,7 +34,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
-      - name: Install cargo-audit
+      - name: install-cargo-audit
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-audit
@@ -46,7 +46,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
-      - name: Install cargo-vet
+      - name: install-cargo-vet
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-vet
@@ -58,7 +58,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
-      - name: Install cargo-deny
+      - name: install-cargo-deny
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-deny

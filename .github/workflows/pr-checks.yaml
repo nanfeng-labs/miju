@@ -1,4 +1,4 @@
-name: PR checks
+name: pr-checks
 
 on:
   pull_request:
@@ -22,7 +22,7 @@ jobs:
     permissions:
       pull-requests: read
     steps:
-      - name: Check the current title against the PR number
+      - name: pr-title
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -60,7 +60,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Check every incoming commit and its files
+      - name: pr-content
         env:
           # JSON array configured outside Git; missing policy blocks this check.
           REPOSITORY_CONTENT_DENYLIST: ${{ vars.REPOSITORY_CONTENT_DENYLIST }}
