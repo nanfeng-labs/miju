@@ -3,7 +3,7 @@ name: pr-checks
 on:
   pull_request:
     branches: [main]
-    types: [opened, reopened, synchronize, edited]
+    types: [opened, reopened, synchronize, edited, ready_for_review, labeled, unlabeled]
   push:
     branches: [main]
 
@@ -55,6 +55,9 @@ jobs:
   content:
     name: pr-content
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@v7
         with:
@@ -102,3 +105,6 @@ jobs:
                   checked += 1
           print(f"Content Policy passed: {checked} file versions checked")
           PY
+      - name: pr-changelog
+        if: github.event_name == 'pull_request'
+        uses: dangoslen/changelog-enforcer@v3
