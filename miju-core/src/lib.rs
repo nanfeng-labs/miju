@@ -55,6 +55,12 @@
 //! strategies, `tracing` for span instrumentation, and `shared` for cloneable
 //! backend handles.
 //!
+//! With `sleep`, `backend::persistence` provides the `Persistence` provider
+//! contract and the `Persisted` driver for registration, heartbeats, task
+//! batches, and lifecycle events. Storage integrations bridge that driver to
+//! `Backend` and configure its event layer; the driver itself is not a backend
+//! implementation. Providers supply storage operations and atomic task claims.
+//!
 //! ## Workers
 //!
 //! Workers are the execution engines that process tasks from backends. They are

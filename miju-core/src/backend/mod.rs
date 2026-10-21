@@ -40,6 +40,11 @@ mod expose;
 /// Provides utilities for working with futures
 pub mod future;
 mod impls;
+/// Persistence layer for managing workers, tasks and events
+///
+/// Provides the `Persistence` trait which eases making backends with predictable persistence
+#[cfg(feature = "sleep")]
+pub mod persistence;
 mod results;
 mod sink;
 mod worker;
