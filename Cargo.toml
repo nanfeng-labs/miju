@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["miju", "miju-core", "utils/miju-codec"]
+members = ["miju", "miju-core", "utils/*"]
 
 [workspace.package]
 authors = ["RivTian <tianjun.rio@gmail.com>"]
@@ -62,3 +62,4 @@ verbose_file_reads = "warn"
 miju = { path = "miju" }
 miju-core = { path = "miju-core" }
 miju-codec = { path = "utils/miju-codec" }
+miju-file-storage = { path = "utils/miju-file-storage" }

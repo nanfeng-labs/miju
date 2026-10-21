@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - fix(ci): prepare PR metadata before required checks ([#7](https://github.com/nanfeng-labs/miju/pull/7))
+- feat(file-storage): add JSON and CSV task backends ([#6](https://github.com/nanfeng-labs/miju/pull/6))
 - feat(codec): add JSON, MessagePack and Bincode codecs ([#5](https://github.com/nanfeng-labs/miju/pull/5))
 - feat(core)!: add task execution and backend lifecycle ([#4](https://github.com/nanfeng-labs/miju/pull/4))
 - feat(core): add task model and storage contracts ([#3](https://github.com/nanfeng-labs/miju/pull/3))
