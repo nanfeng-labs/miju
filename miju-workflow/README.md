@@ -280,10 +280,43 @@ not remove registrations when pending streams are dropped. Avoid assuming that
 result waiting is reliable under all concurrent interleavings. If serializing a
 successful handler output fails, the service returns an error without recording
 a result, so a waiter for that task may remain pending.
+Reusing the in-memory sink after a failed send to a closed channel can also panic;
+the underlying error mapper is consumed by its first failure.
 
 The backend delivers queued tasks without enforcing scheduling timestamps.
 For temporary-file integration, `miju-file-storage::JsonStorage` remains available
 and is exercised by the sequential integration tests.
+
+## Enqueue workflow tasks
+
+Import `WorkflowSink` to encode and send entry, step or node inputs through a
+compatible backend. Each call generates an ID and enqueues one task:
+
+| Method | Encoding | Workflow metadata |
+| --- | --- | --- |
+| `push_start(args)` | Ordinary backend codec | None; execution starts through the service's entry path. |
+| `start_fan_out(args)` | `GraphCodec` | None; the executor distributes multiple entry inputs. |
+| `push_step(args, index)` | Ordinary backend codec | The requested sequential step index. |
+| `push_node(args, index)` | Ordinary backend codec | Fresh graph context rooted at the generated task ID. |
+
+Inputs may differ from the backend's configured argument type, which supports
+later steps accepting a different type. These helpers do not inspect a workflow
+or validate indices, input types or entry counts. `push_node` leaves the previous
+node and dependency IDs empty; it cannot resume a fan-in or restore existing
+execution progress. `start_fan_out` encodes according to the input type rather
+than graph topology. See the [sink module](sink) for a runnable multi-entry example.
+
+For byte-based JSON, a single tuple node with two or more fields needs the graph
+tuple layout from `start_fan_out`. A single vector node instead expects ordinary
+codec encoding from `push_start`; graph vector encoding is for separately encoded
+entry inputs. The existing `GraphCodec` singleton and collection limits apply.
+
+Encoding failures return `TaskSinkError::CodecError` before sending; backend send
+failures return `TaskSinkError::PushError`. Success means the sink's send operation
+completed, not that handlers ran. Cancellation and partial-send behavior depend
+on the backend. The helpers return no task ID and cannot carry caller-supplied
+metadata, scheduling options or application data; use a task builder and a compact
+backend sink when those details are needed.
 
 ## Graph construction
 
@@ -341,15 +374,11 @@ Passing a `GraphFlow` to `WorkerBuilder::build` converts it through
 `IntoWorkerService` into a `graph::RootGraphService`. Conversion validates cycles
 and panics if validation fails; call `graph.validate()` first to handle that error.
 The graph service receives compact tasks directly. For an in-memory worker, use
-`InMemoryWorkflow<Vec<u8>>` and send encoded arguments through `SinkExt::send`:
+`InMemoryWorkflow<Vec<u8>>`; `WorkflowSink::push_start` encodes the entry input:
 
 ```rust
-use futures_util::SinkExt;
-use miju_core::{
-    task::builder::TaskBuilder,
-    worker::{builder::WorkerBuilder, context::WorkerContext},
-};
-use miju_workflow::{GraphFlow, in_memory::InMemoryWorkflow};
+use miju_core::worker::{builder::WorkerBuilder, context::WorkerContext};
+use miju_workflow::{GraphFlow, WorkflowSink, in_memory::InMemoryWorkflow};
 
 # #[tokio::main]
 # async fn main() {
@@ -366,8 +395,7 @@ let _last = graph
     .depends_on(&first);
 graph.validate().unwrap();
 
-producer.send(TaskBuilder::new(serde_json::to_vec(&7_u32).unwrap()).build())
-    .await.unwrap();
+producer.push_start(7_u32).await.unwrap();
 let worker = WorkerBuilder::new("counts").backend(backend).build(graph);
 # tokio::time::timeout(std::time::Duration::from_secs(5), async {
 worker.run().await.unwrap();
@@ -383,9 +411,10 @@ again. Direct service calls are also available through
 With several entry nodes, the initial argument is a codec-encoded
 `Vec<B::Compact>`, with one separately encoded input per entry in ascending node
 index order. For JSON, this is a list of byte arrays, not an ordinary JSON tuple
-of the handler values. `GraphCodec::encode` for a tuple with two to twelve elements
-produces that layout. The input count must equal the entry count. An empty graph
-accepts an encoded empty list and returns `EntryFanOut` with no tasks.
+of the handler values. `WorkflowSink::start_fan_out` accepts tuples with two to
+twelve elements or vectors and prepares that layout. The input count must equal
+the entry count. An empty graph accepts an encoded empty list and returns
+`EntryFanOut` with no tasks.
 
 Each node call reports one scheduling outcome:
 
@@ -423,7 +452,7 @@ Dependency waits have no timeout. Missing mappings can return a waiting response
 without scheduling another attempt, and backend errors are collected only after
 the result stream ends. Enqueueing several successors has no rollback on partial
 failure, and retries can repeat handler effects or enqueue duplicate work.
-Convenience workflow enqueueing and workflow composition are not available yet.
+Nested workflow composition is not available yet.
 
 ## Graph data types
 
