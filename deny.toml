@@ -1,5 +1,7 @@
 [advisories]
-ignore = []
+ignore = [
+    { id = "RUSTSEC-2025-0141", reason = "Retain the optional Bincode 2.0.1 format pending a maintained replacement; maintenance advisory only." },
+]
 yanked = "deny"
 
 [licenses]

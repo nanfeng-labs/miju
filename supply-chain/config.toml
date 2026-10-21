@@ -16,6 +16,21 @@ url = "https://raw.githubusercontent.com/mozilla/supply-chain/main/audits.toml"
 [imports.zcash]
 url = "https://raw.githubusercontent.com/zcash/rust-ecosystem/main/supply-chain/audits.toml"
 
+[[exemptions.autocfg]]
+version = "1.5.1"
+criteria = "safe-to-deploy"
+notes = "Unaudited miju-codec dependency baseline; replace with a matching audit when available."
+
+[[exemptions.bincode]]
+version = "2.0.1"
+criteria = "safe-to-deploy"
+notes = "Unaudited miju-codec dependency baseline; replace with a matching audit when available."
+
+[[exemptions.bincode_derive]]
+version = "2.0.1"
+criteria = "safe-to-deploy"
+notes = "Unaudited miju-codec dependency baseline; replace with a matching audit when available."
+
 [[exemptions.bitflags]]
 version = "2.13.2"
 criteria = "safe-to-deploy"
@@ -93,8 +108,8 @@ notes = "Unaudited initial baseline; replace with a matching audit when availabl
 
 [[exemptions.itoa]]
 version = "1.0.18"
-criteria = "safe-to-run"
-notes = "Unaudited initial baseline; replace with a matching audit when available."
+criteria = "safe-to-deploy"
+notes = "Unaudited runtime dependency baseline for miju-codec; replace with a matching audit when available."
 
 [[exemptions.js-sys]]
 version = "0.3.106"
@@ -118,8 +133,8 @@ notes = "Unaudited initial baseline; replace with a matching audit when availabl
 
 [[exemptions.memchr]]
 version = "2.8.3"
-criteria = "safe-to-run"
-notes = "Unaudited initial baseline; replace with a matching audit when available."
+criteria = "safe-to-deploy"
+notes = "Unaudited runtime dependency baseline for miju-codec; replace with a matching audit when available."
 
 [[exemptions.mio]]
 version = "1.2.4"
@@ -203,8 +218,8 @@ notes = "Unaudited initial baseline; replace with a matching audit when availabl
 
 [[exemptions.serde_json]]
 version = "1.0.154"
-criteria = "safe-to-run"
-notes = "Unaudited initial baseline; replace with a matching audit when available."
+criteria = "safe-to-deploy"
+notes = "Unaudited runtime dependency baseline for miju-codec; replace with a matching audit when available."
 
 [[exemptions.slab]]
 version = "0.4.12"
@@ -286,10 +301,20 @@ version = "1.0.27"
 criteria = "safe-to-deploy"
 notes = "Unaudited initial baseline; replace with a matching audit when available."
 
+[[exemptions.unty]]
+version = "0.0.4"
+criteria = "safe-to-deploy"
+notes = "Unaudited miju-codec dependency baseline; replace with a matching audit when available."
+
 [[exemptions.uuid]]
 version = "1.28.0"
 criteria = "safe-to-deploy"
 notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.virtue]]
+version = "0.0.18"
+criteria = "safe-to-deploy"
+notes = "Unaudited miju-codec dependency baseline; replace with a matching audit when available."
 
 [[exemptions.wasi]]
 version = "0.11.1+wasi-snapshot-preview1"
@@ -328,5 +353,5 @@ notes = "Unaudited initial baseline; replace with a matching audit when availabl
 
 [[exemptions.zmij]]
 version = "1.0.23"
-criteria = "safe-to-run"
-notes = "Unaudited initial baseline; replace with a matching audit when available."
+criteria = "safe-to-deploy"
+notes = "Unaudited runtime dependency baseline for miju-codec; replace with a matching audit when available."
