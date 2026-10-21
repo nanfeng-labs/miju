@@ -1,7 +1,8 @@
 # miju-workflow
 
-Build typed sequences of tasks and execute them with miju workers. Each successful
-nonterminal step encodes its output and enqueues a new task for the next step.
+Build typed sequences of tasks and execute them with miju workers. Ordinary
+nonterminal steps encode their outputs and enqueue tasks for the next step;
+collection steps split inputs into element tasks and gather their results.
 
 ## Context
 
@@ -102,6 +103,50 @@ Always follow a delay with a processing step. A terminal delay currently enqueue
 an index that has no registered step, causing dispatch to panic. This limitation
 applies to both fixed and computed delays.
 
+## Filter and map collections
+
+Use `filter_map` on an iterable to run a handler for each element. Returning
+`Some(value)` keeps the mapped value; `None` discards it. The workflow enqueues
+element tasks and a collector, which waits for their results before forwarding
+a nonempty `Vec<Output>` to the next step. This requires a backend that records
+results and implements `WaitForCompletion`, such as `InMemoryWorkflow`:
+
+```rust
+use miju_core::{
+    backend::TaskSink,
+    worker::{builder::WorkerBuilder, context::WorkerContext},
+};
+use miju_workflow::{SteppedFlow, in_memory::InMemoryWorkflow};
+
+# #[tokio::main]
+# async fn main() {
+let backend = InMemoryWorkflow::create();
+let mut producer = backend.clone();
+producer.push(vec![1u32, 2, 3, 4]).await.unwrap();
+
+let flow = SteppedFlow::new("even-labels")
+    .filter_map(async |n: u32| (n % 2 == 0).then(|| format!("item-{n}")))
+    .and_then(async |mut labels: Vec<String>, worker: WorkerContext| {
+        labels.sort();
+        assert_eq!(labels, ["item-2", "item-4"]);
+        worker.stop().unwrap();
+    });
+let worker = WorkerBuilder::new("even-labels").backend(backend).build(flow);
+# tokio::time::timeout(std::time::Duration::from_secs(5), async {
+worker.run().await.unwrap();
+# }).await.unwrap();
+# }
+```
+
+Output order follows the backend's result stream and need not match input order.
+Empty inputs and all-filtered collections currently stop at the collector with
+`GoTo::Break([])`; subsequent steps do not run. The entry task returns `GoTo::Done`
+after enqueueing, so waiting for its ID alone does not observe collection
+completion. Fan-out is not transactional: an enqueue failure can leave already
+created element tasks without a collector. Invalid element payloads can panic
+during decoding. Result-stream errors propagate, while malformed collected
+values or unexpected transitions are skipped.
+
 ## In-memory results
 
 `InMemoryWorkflow::create()` returns a cloneable `Shared` handle. Arguments are
@@ -145,13 +190,13 @@ cloneable handles. Backend persistence, scheduling, and wakeup limits still appl
 neither the in-memory backend nor the file-backed integration establishes
 crash recovery or exactly-once execution.
 
-Handler and decoding failures are returned by the service without scheduling the
-next step. The last ordinary step returns `GoTo::Done`; its output is not retained
+Ordinary handler and decoding failures are returned by the service without
+scheduling the next step. The last ordinary step returns `GoTo::Done`; its output is not retained
 in that response. Missing or malformed workflow metadata currently dispatches to
 step zero. An unknown index or an empty workflow can panic. The service also has
 inherited readiness limitations, so custom steps must not assume every inner
 service is polled for readiness before its first call.
 
 The low-level `GoTo::DelayFor` transition also attaches scheduling metadata;
-actual delay enforcement depends on the backend. Filtering, folding, repetition,
-and graph execution are not yet available in this package.
+actual delay enforcement depends on the backend. Folding, repetition, and graph
+execution are not yet available in this package.
