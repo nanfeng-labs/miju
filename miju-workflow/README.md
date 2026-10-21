@@ -327,9 +327,58 @@ without escaping, so task IDs containing commas cannot round-trip reliably.
 `graph::response::GraphNodeResponse` represents entry fan-out, node fan-out,
 next-step enqueueing, waiting dependencies and completion. Its values carry JSON
 results and node/task mappings. `graph::error` supplies `GraphFlowError` and
-`GraphServiceError`, including wrapped source errors. These data types do not
-construct a graph, schedule tasks or execute nodes; those APIs are not yet
-available.
+`GraphServiceError`, including wrapped source errors. These records describe
+state; graph construction and task scheduling are not yet available.
+
+## Graph node adapters
+
+`graph::node::GraphNodeService` wraps a typed Tower service. It accepts
+`graph::NodeInput::Single` containing a backend compact value, or
+`NodeInput::FanIn` containing ordered JSON dependency results. The task must carry
+the backend codec in runtime data. For example, a standalone adapter can add two
+dependency results and return both encoded bytes and JSON:
+
+```rust
+use miju_codec::json::JsonCodec;
+use miju_core::task::{builder::TaskBuilder, task_fn::task_fn};
+use miju_workflow::{
+    graph::{NodeInput, node::GraphNodeService},
+    in_memory::InMemoryWorkflow,
+};
+use serde_json::json;
+use tower::ServiceExt;
+
+# #[tokio::main]
+# async fn main() -> Result<(), miju_core::error::BoxDynError> {
+let handler = task_fn(|(left, right): (u32, u32)| async move { left + right });
+let node = GraphNodeService::<_, InMemoryWorkflow<u32>, (u32, u32)>::new(handler);
+let task = TaskBuilder::new(NodeInput::FanIn(vec![json!(4), json!(5)]))
+    .data(JsonCodec::<Vec<u8>>::default())
+    .build();
+let (compact, value) = node.oneshot(task).await?;
+assert_eq!(compact, b"9");
+assert_eq!(value, json!(9));
+# Ok(())
+# }
+```
+
+The adapter delegates readiness and preserves the task's execution context.
+Input decoding errors skip the handler. Handler errors, output encoding errors
+and JSON serialization errors are returned; handler effects are not rolled back
+if serialization fails. Missing codec data panics before a future is returned,
+including for fan-in inputs.
+
+Single inputs use `graph::decode::GraphCodec`. Scalars, options and results pass
+through the backend codec. Tuples with two to twelve elements use a list of
+individually encoded elements and panic if its decoded length is wrong. Vectors
+and one-element tuples have asymmetric encoding/decoding; for example, byte JSON
+cannot round-trip a nonempty `Vec<u32>` or `(u32,)` through this trait. Node output
+uses ordinary codec encoding, which can differ from the graph tuple layout.
+
+Fan-in inputs bypass `GraphCodec::decode`: their JSON values are deserialized as
+an array into the handler input. This preserves the supplied order but does not
+fetch results, check readiness or infer which dependency belongs in each position.
+Graph building, task scheduling and complete graph execution remain future work.
 
 ## Features
 

@@ -7,7 +7,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Sequential workflows, in-memory results and graph state types for miju"
+description = "Sequential workflows, in-memory results and graph node adapters for miju"
 
 [features]
 default = ["tracing"]

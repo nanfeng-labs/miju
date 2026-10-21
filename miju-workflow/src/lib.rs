@@ -14,5 +14,5 @@ pub use sequential::SteppedFlow;
 /// In-memory workflow tasks and result waiting.
 pub mod in_memory;
 
-/// Graph progress metadata, response records and error types.
+/// Graph progress metadata, input codecs and typed node adapters.
 pub mod graph;
