@@ -30,27 +30,30 @@ A default context starts at index zero, but extracting from empty metadata retur
 an error. Neither context checks whether its index names an existing step.
 
 Cloning a `StepContext` clones its backend; sharing behavior depends on that
-backend's `Clone` implementation. The context types carry state only; `SteppedFlow` constructs the pipeline and
-its workflow service dispatches tasks to their steps.
-
+backend's `Clone` implementation. The context types carry state only;
+`SteppedFlow` constructs the pipeline and its workflow service dispatches tasks
+to their steps.
 
 ## Sequential execution
 
-This example uses a temporary JSON file through `miju-file-storage`:
+This example runs in memory and waits for the entry task's stored result:
 
 ```rust
 use miju_core::{
-    backend::TaskSink,
+    backend::{TaskSink, WaitForCompletion},
+    task::{builder::TaskBuilder, task_id::{GenerateId, RandomId}},
     error::BoxDynError,
     worker::{builder::WorkerBuilder, context::WorkerContext},
 };
-use miju_file_storage::JsonStorage;
-use miju_workflow::SteppedFlow;
+use futures_util::StreamExt;
+use miju_workflow::{SteppedFlow, in_memory::InMemoryWorkflow, sequential::{GoTo, StepResponse}};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), BoxDynError> {
-    let mut backend = JsonStorage::new_temp()?;
-    backend.push(12u32).await?;
+    let mut backend = InMemoryWorkflow::create();
+    let mut observer = backend.clone();
+    let entry_id = RandomId::generate();
+    backend.push_task(TaskBuilder::new(12u32).task_id(entry_id.clone()).build()).await?;
     let flow = SteppedFlow::new("format-count")
         .and_then(async |count: u32| count + 1)
         .and_then(async |count: u32| format!("count={count}"))
@@ -60,6 +63,10 @@ async fn main() -> Result<(), BoxDynError> {
         });
     let worker = WorkerBuilder::new("format-worker").backend(backend).build(flow);
     tokio::time::timeout(std::time::Duration::from_secs(5), worker.run()).await??;
+    let mut results = WaitForCompletion::<GoTo<StepResponse>>::wait_for(&mut observer, [entry_id]);
+    let result = tokio::time::timeout(std::time::Duration::from_secs(5), results.next())
+        .await?.expect("entry result")?;
+    assert!(matches!(result.result, Ok(GoTo::Next(_))));
     Ok(())
 }
 ```
@@ -69,11 +76,48 @@ read `Data<StepContext<B>>` for its position and backend. Each continuation has
 a fresh task ID and step metadata; arbitrary metadata and application data from
 the preceding task are not automatically copied.
 
+## In-memory results
+
+`InMemoryWorkflow::create()` returns a cloneable `Shared` handle. Arguments are
+encoded as JSON bytes; a result-storage layer records each executed task. The
+public `ResultStore`, `StoreResultsLayer`, and `StoreResultsService` types also
+allow inspecting or composing that middleware directly. A task passed directly
+to the layer must already have an ID.
+
+`wait_for` yields results for the requested IDs and finishes after every unique
+requested ID has been observed. Supply distinct IDs: duplicate IDs currently
+prevent termination. Waiting for an entry task does not wait for all subsequent
+steps; a `GoTo::Next` result provides the next task ID. `check_status` returns
+only results currently stored and omits missing IDs.
+
+Handler errors are returned as stream errors; `check_status` fails if a requested
+stored task failed. A successful value that cannot be decoded into the requested
+output type instead produces an error inside `TaskResult.result`.
+
+Results are process-local, unbounded, and retained after being read. There is no
+persistence or automatic eviction. The current waiter implementation has a
+check/register race, shares registration IDs when streams are cloned, and does
+not remove registrations when pending streams are dropped. Avoid assuming that
+result waiting is reliable under all concurrent interleavings. If serializing a
+successful handler output fails, the service returns an error without recording
+a result, so a waiter for that task may remain pending.
+
+The backend delivers queued tasks without enforcing scheduling timestamps.
+For temporary-file integration, `miju-file-storage::JsonStorage` remains available
+and is exercised by the sequential integration tests.
+
+## Features
+
+The default `tracing` feature enables result-storage diagnostics and core worker
+logs. Disable default features to omit those events. Shared backend handles and
+JSON encoding remain available in both configurations.
+
 ## Execution limits
 
 Backends must provide compact task delivery, a codec, a sink, configuration, and
 cloneable handles. Backend persistence, scheduling, and wakeup limits still apply;
-the temporary-file example does not establish crash recovery or exactly-once execution.
+neither the in-memory backend nor the file-backed integration establishes
+crash recovery or exactly-once execution.
 
 Handler and decoding failures are returned by the service without scheduling the
 next step. The last ordinary step returns `GoTo::Done`; its output is not retained
@@ -84,5 +128,4 @@ service is polled for readiness before its first call.
 
 The low-level `GoTo::DelayFor` transition attaches scheduling metadata; actual
 delay enforcement depends on the backend. Delay builders, filtering, folding,
-repetition, graph execution, and workflow-specific in-memory storage are not yet
-available in this package.
+repetition, and graph execution are not yet available in this package.

@@ -320,8 +320,10 @@ dependencies = [
 name = "miju-workflow"
 version = "0.1.0"
 dependencies = [
+ "dashmap",
  "futures-sink",
  "futures-util",
+ "miju-codec",
  "miju-core",
  "miju-file-storage",
  "serde",
@@ -329,6 +331,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tower",
+ "tracing",
 ]
 
 [[package]]

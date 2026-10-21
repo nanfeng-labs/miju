@@ -10,3 +10,6 @@ type SteppedService<Compact> = BoxedService<Task<Compact>, GoTo<StepResponse>>;
 pub mod sequential;
 
 pub use sequential::SteppedFlow;
+
+/// In-memory workflow tasks and result waiting.
+pub mod in_memory;

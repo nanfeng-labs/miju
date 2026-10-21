@@ -7,10 +7,18 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Typed sequential task composition and execution for miju workflows"
+description = "Sequential task execution and in-memory workflow results for miju"
+
+[features]
+default = ["tracing"]
+## Emit execution and result-storage tracing events
+tracing = ["dep:tracing", "miju-core/tracing"]
 
 [dependencies]
-miju-core = { version = "0.1.0", default-features = false, features = ["serde"] }
+miju-core = { version = "0.1.0", default-features = false, features = ["serde", "shared"] }
+miju-codec = { version = "0.1.0" }
+dashmap = "6.2.1"
+tracing = { version = "0.1.44", default-features = false, optional = true }
 serde = { version = "1.0", features = ["derive"] }
 thiserror = "2.0.21"
 serde_json = "1"
@@ -20,7 +28,7 @@ futures-sink = { version = "0.3.34", default-features = false }
 
 [dev-dependencies]
 miju-file-storage = { version = "0.1.0" }
-tokio = { version = "1.53.2", features = ["macros", "rt", "time"] }
+tokio = { version = "1.53.2", features = ["macros", "rt-multi-thread", "time"] }
 
 [lints]
 workspace = true
