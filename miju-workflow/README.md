@@ -1,10 +1,10 @@
 # miju-workflow
 
-Build typed sequences of tasks and execute them with miju workers. Ordinary
+Build typed sequences and dependency graphs of tasks for miju workers. Ordinary
 nonterminal steps encode their outputs and enqueue tasks for the next step;
 collection steps filter and map elements or reduce them into an accumulator.
-Graph APIs also construct and validate typed dependency graphs; graph execution
-is not yet available.
+Graph services execute nodes, enqueue outgoing tasks and collect stored results
+when branches converge.
 
 ## Context
 
@@ -321,8 +321,8 @@ Connecting nodes does not execute handlers or check for cycles. `validate`
 detects directed cycles, including self-loops, while accepting empty graphs and
 disconnected acyclic components. It does not check graph ownership, names or wire
 compatibility. `new_typed` currently behaves the same as `new`. `route` registers
-a function with an additional output-to-node-index bound; registration itself
-does not select routes.
+a function with an additional output-to-node-index bound, but execution follows
+ordinary outgoing edges and does not use that conversion to select a route.
 
 Builders and handles must refer to the same graph. Their indices do not retain
 graph identity: a foreign in-range index can connect an unintended node, while
@@ -332,8 +332,98 @@ handle lists only the edges added by its own `depends_on` call.
 
 DOT export inserts labels without escaping. Repeated names retain all nodes but
 only label the newest one. Use distinct names without quotes, backslashes or
-newlines when relying on DOT output. Complete graph execution and worker
-integration remain future work.
+newlines when relying on DOT output. `RootGraphService::get_node_by_name_mut`
+also selects the most recently registered node when names repeat.
+
+## Graph execution
+
+Passing a `GraphFlow` to `WorkerBuilder::build` converts it through
+`IntoWorkerService` into a `graph::RootGraphService`. Conversion validates cycles
+and panics if validation fails; call `graph.validate()` first to handle that error.
+The graph service receives compact tasks directly. For an in-memory worker, use
+`InMemoryWorkflow<Vec<u8>>` and send encoded arguments through `SinkExt::send`:
+
+```rust
+use futures_util::SinkExt;
+use miju_core::{
+    task::builder::TaskBuilder,
+    worker::{builder::WorkerBuilder, context::WorkerContext},
+};
+use miju_workflow::{GraphFlow, in_memory::InMemoryWorkflow};
+
+# #[tokio::main]
+# async fn main() {
+let backend = InMemoryWorkflow::<Vec<u8>>::create();
+let mut producer = backend.clone();
+let graph = GraphFlow::new("counts");
+let first = graph.add_task(|value: u32| async move { value + 1 });
+let _last = graph
+    .add_task(|value: u32, worker: WorkerContext| async move {
+        assert_eq!(value, 8);
+        worker.stop().unwrap();
+        value * 2
+    })
+    .depends_on(&first);
+graph.validate().unwrap();
+
+producer.send(TaskBuilder::new(serde_json::to_vec(&7_u32).unwrap()).build())
+    .await.unwrap();
+let worker = WorkerBuilder::new("counts").backend(backend).build(graph);
+# tokio::time::timeout(std::time::Duration::from_secs(5), async {
+worker.run().await.unwrap();
+# }).await.unwrap();
+# }
+```
+
+The worker backend's configured argument type must match its compact task type.
+Using `TaskSink::push` with an already encoded byte vector would encode the bytes
+again. Direct service calls are also available through
+`IntoWorkerService::into_service(backend).service`.
+
+With several entry nodes, the initial argument is a codec-encoded
+`Vec<B::Compact>`, with one separately encoded input per entry in ascending node
+index order. For JSON, this is a list of byte arrays, not an ordinary JSON tuple
+of the handler values. `GraphCodec::encode` for a tuple with two to twelve elements
+produces that layout. The input count must equal the entry count. An empty graph
+accepts an encoded empty list and returns `EntryFanOut` with no tasks.
+
+Each node call reports one scheduling outcome:
+
+| Response | Meaning |
+| --- | --- |
+| `EntryFanOut` | Initial inputs have been enqueued for the entry nodes. |
+| `FanOut` | Several successors were enqueued; includes this node's result and their IDs. |
+| `EnqueuedNext` | One successor was enqueued; includes this node's result. |
+| `WaitingForDependencies` | This call did not execute the fan-in node or requeue itself. |
+| `Complete` | A terminal node finished; includes its result. |
+
+These responses do not certify completion of an entire graph. In particular,
+waiting for the root task's result does not wait for all branches. At a fan-in,
+the predecessor with the greatest node index waits for all recorded dependency
+IDs. Other predecessors return `WaitingForDependencies`. Successful dependency
+results must have `Done` status and contain `FanOut`, `EnqueuedNext` or `Complete`;
+their values are supplied in incoming edge insertion order. The backend must
+store these responses and implement `WaitForCompletion<GraphNodeResponse>`.
+
+Execution currently assumes node zero for an initial task with one entry node,
+even if the actual entry has another index. Missing or malformed graph metadata
+also takes the initial-task path; reinjecting context into partial metadata can
+fail or panic on duplicate keys. Use fresh initial metadata and register the
+single entry first.
+
+The root service clones node services for each call and skips their readiness
+polls. Clone-local mutable state does not persist between calls. New tasks copy
+graph metadata but omit arbitrary application data and unrelated metadata.
+Single-edge scheduling does not update dependency IDs, fan-out lets existing IDs
+override fresh ones, and fan-out increments the position twice. Completed-node
+sets are not updated. Do not rely on those fields as a complete execution history
+or assume joins across longer branches are fully supported.
+
+Dependency waits have no timeout. Missing mappings can return a waiting response
+without scheduling another attempt, and backend errors are collected only after
+the result stream ends. Enqueueing several successors has no rollback on partial
+failure, and retries can repeat handler effects or enqueue duplicate work.
+Convenience workflow enqueueing and workflow composition are not available yet.
 
 ## Graph data types
 
@@ -379,8 +469,8 @@ without escaping, so task IDs containing commas cannot round-trip reliably.
 `graph::response::GraphNodeResponse` represents entry fan-out, node fan-out,
 next-step enqueueing, waiting dependencies and completion. Its values carry JSON
 results and node/task mappings. `graph::error` supplies `GraphFlowError` and
-`GraphServiceError`, including wrapped source errors. These records describe
-state; task scheduling is not yet available.
+`GraphServiceError`, including wrapped source errors. `RootGraphService` uses
+these records to report node execution and continuation scheduling.
 
 ## Graph node adapters
 
@@ -430,12 +520,12 @@ uses ordinary codec encoding, which can differ from the graph tuple layout.
 Fan-in inputs bypass `GraphCodec::decode`: their JSON values are deserialized as
 an array into the handler input. This preserves the supplied order but does not
 fetch results, check readiness or infer which dependency belongs in each position.
-Task scheduling and complete graph execution remain future work.
+`RootGraphService` performs that dependency lookup before calling the adapter.
 
 ## Features
 
-The default `tracing` feature enables result-storage diagnostics and core worker
-logs. Disable default features to omit those events. Shared backend handles and
+The default `tracing` feature enables graph execution, result-storage and core
+worker diagnostics. Disable default features to omit those events. Shared backend handles and
 JSON encoding remain available in both configurations.
 
 ## Execution limits
@@ -445,7 +535,7 @@ cloneable handles. Backend persistence, scheduling, and wakeup limits still appl
 neither the in-memory backend nor the file-backed integration establishes
 crash recovery or exactly-once execution.
 
-Ordinary handler and decoding failures are returned by the service without
+In sequential workflows, ordinary handler and decoding failures are returned by the service without
 scheduling the next step. The last ordinary step returns `GoTo::Done`; its output is not retained
 in that response. Missing or malformed workflow metadata currently dispatches to
 step zero. An unknown index or an empty workflow can panic. The service also has
@@ -453,5 +543,5 @@ inherited readiness limitations, so custom steps must not assume every inner
 service is polled for readiness before its first call.
 
 The low-level `GoTo::DelayFor` transition also attaches scheduling metadata;
-actual delay enforcement depends on the backend. Graph execution is not yet
-available in this package.
+actual delay enforcement depends on the backend. Graph-specific execution limits
+are described above.

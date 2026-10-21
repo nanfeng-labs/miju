@@ -1,18 +1,21 @@
-//! Build typed dependency graphs and adapt their node services.
+//! Build typed dependency graphs and execute their node services.
 //!
 //! [`GraphFlow`] registers services and returns [`NodeBuilder`] values.
 //! [`NodeBuilder::depends_on`] connects dependency outputs to a node's input
 //! through [`DepsCheck`], returning a [`NodeHandle`] with node and edge indices.
 //! Call [`GraphFlow::validate`] to check for cycles and [`GraphFlow::to_dot`] to
-//! inspect the topology. Construction does not invoke handlers or schedule tasks;
-//! graph execution is not yet available.
+//! inspect the topology. Construction does not invoke handlers or schedule tasks.
+//! Passing a graph to a worker builds a [`RootGraphService`] through
+//! [`IntoWorkerService`](miju_core::worker::service::IntoWorkerService).
+//! That service executes the current node, enqueues successors and waits for
+//! stored dependency results at fan-in nodes.
 //!
 //! [`GraphFlowContext`] records progress, while
 //! [`GraphNodeResponse`](response::GraphNodeResponse) describes node outcomes.
 //! [`GraphCodec`] and [`GraphNodeService`] adapt inputs and typed services.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     fmt::{self, Debug},
     marker::PhantomData,
     sync::Mutex,
@@ -25,6 +28,7 @@ use miju_core::{
     task::task_fn::{TaskFn, task_fn},
 };
 use petgraph::{
+    Direction,
     algo::toposort,
     dot::Config,
     graph::{DiGraph, EdgeIndex, NodeIndex},
@@ -48,8 +52,11 @@ pub mod error;
 pub mod node;
 /// Serializable graph node outcomes.
 pub mod response;
+/// Dispatch graph tasks and enqueue successors.
+pub mod service;
 
 pub use context::GraphFlowContext;
+pub use service::RootGraphService;
 
 /// Build a graph of typed task services and their dependencies.
 ///
@@ -59,6 +66,11 @@ pub use context::GraphFlowContext;
 ///
 /// Node names are labels rather than unique identifiers. Reusing a name retains
 /// both nodes but associates the label with the most recently added one.
+///
+/// Convert through [`IntoWorkerService`](miju_core::worker::service::IntoWorkerService)
+/// to execute the graph. Conversion panics on cycles or poisoned locks. The
+/// backend must support compact task delivery and result waiting; see
+/// [`RootGraphService`] for execution contracts and limits.
 #[derive(Debug)]
 pub struct GraphFlow<B>
 where
@@ -216,7 +228,8 @@ where
     ///
     /// Registration uses the same node adapter as [`Self::add_task`]. This method
     /// does not inspect the output, select an edge or invoke the conversion.
-    /// Graph execution is not yet available.
+    /// Execution follows all outgoing edges as for an ordinary node; the
+    /// output-to-index conversion is not used to choose a successor.
     pub fn route<F, Input, O, FnArgs, Err, CodecError>(
         &self,
         router: F,
@@ -260,6 +273,40 @@ where
         )
         .map_err(GraphFlowError::CyclicDAG)?;
         Ok(())
+    }
+    /// Build the Graph executor
+    pub(crate) fn build(self, backend: B) -> Result<RootGraphService<B>, GraphFlowError> {
+        // Validate Graph (check for cycles)
+        let sorted = toposort(
+            &*self.graph.lock().expect("Failed to lock graph mutex"),
+            None,
+        )
+        .map_err(GraphFlowError::CyclicDAG)?;
+
+        fn find_edge_nodes<N, E>(graph: &DiGraph<N, E>, direction: Direction) -> Vec<NodeIndex> {
+            graph
+                .node_indices()
+                .filter(|&n| graph.neighbors_directed(n, direction).count() == 0)
+                .collect()
+        }
+
+        let graph = self
+            .graph
+            .into_inner()
+            .expect("Failed to unlock graph mutex");
+
+        Ok(RootGraphService {
+            start_nodes: find_edge_nodes(&graph, Direction::Incoming),
+            end_nodes: find_edge_nodes(&graph, Direction::Outgoing),
+            graph,
+            node_mapping: self
+                .node_mapping
+                .into_inner()
+                .expect("Failed to unlock node_mapping mutex"),
+            topological_order: sorted,
+            not_ready: VecDeque::new(),
+            backend,
+        })
     }
 }
 

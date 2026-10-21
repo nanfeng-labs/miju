@@ -16,5 +16,5 @@ pub use {graph::GraphFlow, sequential::SteppedFlow};
 /// In-memory workflow tasks and result waiting.
 pub mod in_memory;
 
-/// Typed graph construction, progress metadata and node adapters.
+/// Typed graph construction, execution and dependency result handling.
 pub mod graph;
