@@ -3,7 +3,9 @@
 
 # Advisory reporting and reviewed exceptions.
 [advisories]
-ignore = [] # Advisory IDs to ignore; add exceptions only after review.
+# Keep the optional Bincode 2.0.1 format while a maintained replacement is evaluated.
+# This exception covers its maintenance status only.
+ignore = ["RUSTSEC-2025-0141"]
 informational_warnings = ["unmaintained"] # Report unmaintained dependencies.
 
 # Report output and failure conditions.

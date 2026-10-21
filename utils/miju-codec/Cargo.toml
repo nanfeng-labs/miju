@@ -1,0 +1,35 @@
+[package]
+name = "miju-codec"
+version = "0.1.0"
+publish = false
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "JSON, MessagePack, and Bincode codecs for miju task data and results"
+categories = ["encoding", "parsing", "concurrency"]
+
+[features]
+default = ["json"]
+## Enable JSON encoding as bytes, strings, or values
+json = ["miju-core/serde", "dep:serde", "dep:serde_json"]
+## Enable binary encoding with Bincode's native traits
+bincode = ["dep:bincode", "dep:thiserror"]
+## Enable MessagePack encoding with Serde
+msgpack = ["dep:rmp-serde", "dep:serde", "miju-core/serde", "dep:thiserror"]
+
+[dependencies]
+miju-core = { version = "0.1.0", default-features = false }
+serde = { version = "1.0", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+bincode = { version = "=2.0.1", optional = true }
+rmp-serde = { version = "1.3.1", optional = true }
+thiserror = { version = "2.0.21", optional = true }
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+rustdoc-args = ["--cfg", "docsrs"]
+all-features = true
