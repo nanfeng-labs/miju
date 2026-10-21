@@ -122,10 +122,12 @@
 //! - [`Attempt`]: Tracks the number of execution attempts for a task.
 //! - [`TaskId`]: Unique identifier type for tasks.
 //! - [`FromRequest`]: Trait for extracting data from task contexts.
+//! - [`IntoResponse`]: Trait for converting tasks into response types.
 //! - [`TaskBuilder`]: Fluent builder for constructing tasks with optional configuration.
 //!
 //! [`TaskBuilder`]: crate::task::builder::TaskBuilder
 //! [`FromRequest`]: crate::task::from_request::FromRequest
+//! [`IntoResponse`]: crate::task::into_response::IntoResponse
 
 use std::{fmt::Debug, ops::Deref, sync::Arc};
 
@@ -148,9 +150,11 @@ pub mod builder;
 pub mod data;
 pub mod extensions;
 pub mod from_request;
+pub mod into_response;
 pub mod metadata;
 pub mod runs;
 pub mod status;
+pub mod task_fn;
 pub mod task_id;
 
 /// Represents a task which will be executed

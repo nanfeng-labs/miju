@@ -12,7 +12,7 @@
 //! ## Tasks
 //!
 //! The task struct provides type-safe components for task data and metadata:
-//! - [`Args`](crate::task::Task::args) - The primary structure for the task
+//! - [`Args`](crate::task::task_fn) - The primary structure for the task
 //! - [`ExecutionContext`](crate::task::ExecutionContext) - Backend persisted info on task execution.
 //! - [`Status`](crate::task::status::Status) - Represents the current state of a task
 //! - [`TaskId`](crate::task::task_id::TaskId) - Unique identifier for task tracking
@@ -33,6 +33,9 @@
 //! ```
 //! Specific documentation for tasks can be found in the [`task`] and [`task::builder`] modules.
 //!
+//! #### Relevant Guides:
+//! - [**Defining Task arguments**](crate::task::task_fn) - Creating effective task arguments that are scalable and type-safe
+//!
 //! ## Backends
 //!
 //! The [`backend`] module provides [`Codec`](backend::codec::Codec),
@@ -48,4 +51,6 @@
 //! of an existing task. A [`Task`](task::Task) itself is not serializable.
 
 pub mod backend;
+/// Includes internal error types.
+pub mod error;
 pub mod task;

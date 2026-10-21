@@ -10,7 +10,7 @@
 //!
 //! Say we have a basic task for sending emails given the user id
 //! ```rust
-//! # type BoxDynError = Box<dyn std::error::Error + Send + Sync + 'static>;
+//! # use miju_core::error::BoxDynError;
 //! # struct User {
 //! #     id: String,
 //! #     // other fields...
@@ -38,7 +38,7 @@
 //! With [`FromRequest`] you can improve the experience by:
 //! ```rust
 //! # use miju_core::task::Task;
-//! # type BoxDynError = Box<dyn std::error::Error + Send + Sync + 'static>;
+//! # use miju_core::error::BoxDynError;
 //! # use miju_core::task::from_request::FromRequest;
 //! # struct User {
 //! #     id: String,

@@ -14,6 +14,7 @@ default = []
 serde = ["dep:serde"]
 
 [dependencies]
+futures-util = { version = "0.3.34", default-features = false, features = ["std"] }
 serde = { version = "1.0", features = ["derive"], optional = true }
 thiserror = "2.0.21"
 tower-layer = "0.3.3"

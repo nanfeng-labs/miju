@@ -2,8 +2,8 @@
 //!
 //! Use this crate to describe work with typed arguments, attach application data,
 //! and configure the execution information that a storage integration will use.
-//! It exposes [`Task`] directly and groups the remaining APIs under [`task`] and
-//! [`backend`].
+//! It exposes [`Task`] directly and groups the remaining APIs under [`task`],
+//! [`backend`], and [`error`].
 //!
 //! # Usage
 //!
@@ -69,4 +69,4 @@
 //! [`TaskResult`]: backend::TaskResult
 
 pub use miju_core::task::Task;
-pub use miju_core::{backend, task};
+pub use miju_core::{backend, error, task};
