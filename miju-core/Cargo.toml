@@ -19,6 +19,8 @@ sleep = ["dep:futures-timer"]
 tracing = ["dep:tracing"]
 ## Track and cancel individual running tasks
 task-context = ["dep:dashmap"]
+## Share a backend through cloneable handles
+shared = ["dep:dashmap"]
 serde = ["dep:serde", "ulid?/serde", "uuid?/serde"]
 ## Enable ulid support for task ids
 ulid = ["dep:ulid"]

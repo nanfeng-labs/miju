@@ -48,6 +48,13 @@
 //! [`Codec`](backend::codec::Codec) and [`FinalizeBackend`](backend::finalize::FinalizeBackend)
 //! connect encoded payloads with typed handlers.
 //!
+//! [`BackendExt`](backend::ext::BackendExt) adds error inspection and mapping,
+//! lifecycle callbacks, task piping, stream interleaving, and polling strategies.
+//! Strategies supply wakeups and collect polling statistics; they do not gate
+//! calls to the underlying backend. Enable `sleep` for interval and backoff
+//! strategies, `tracing` for span instrumentation, and `shared` for cloneable
+//! backend handles.
+//!
 //! ## Workers
 //!
 //! Workers are the execution engines that process tasks from backends. They are
