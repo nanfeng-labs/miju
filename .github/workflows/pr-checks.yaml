@@ -12,16 +12,31 @@ permissions:
 
 concurrency:
   group: pr-checks-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # Let preparation finish its push before processing the resulting PR event.
+  cancel-in-progress: false
 
 jobs:
+  prepare:
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.actor != 'dependabot[bot]'
+    permissions:
+      contents: write
+      pull-requests: write
+    uses: ./.github/workflows/update-changelog.yaml
+
   title:
     name: pr-title
-    if: github.event_name == 'pull_request'
+    needs: prepare
+    if: ${{ !cancelled() && github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
     permissions:
       pull-requests: read
     steps:
+      - name: require-preparation
+        if: needs.prepare.result == 'failure'
+        run: exit 1
       - name: pr-title
         env:
           GH_TOKEN: ${{ github.token }}
@@ -54,13 +69,19 @@ jobs:
 
   content:
     name: pr-content
+    needs: prepare
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
       pull-requests: read
     steps:
+      - name: require-preparation
+        if: needs.prepare.result == 'failure'
+        run: exit 1
       - uses: actions/checkout@v7
         with:
+          ref: ${{ needs.prepare.outputs.head || github.sha }}
           fetch-depth: 0
           persist-credentials: false
       - name: pr-content
@@ -68,7 +89,7 @@ jobs:
           # JSON array configured outside Git; missing policy blocks this check.
           REPOSITORY_CONTENT_DENYLIST: ${{ vars.REPOSITORY_CONTENT_DENYLIST }}
           BASE_REVISION: ${{ github.event.pull_request.base.sha || github.event.before }}
-          HEAD_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+          HEAD_REVISION: ${{ needs.prepare.outputs.head || github.event.pull_request.head.sha || github.sha }}
         run: |
           python3 - <<'PY'
           import json, os, subprocess, sys
