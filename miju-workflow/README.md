@@ -76,6 +76,32 @@ read `Data<StepContext<B>>` for its position and backend. Each continuation has
 a fresh task ID and step metadata; arbitrary metadata and application data from
 the preceding task are not automatically copied.
 
+## Delay steps
+
+Use `delay_for` for a fixed duration or `delay_with` to compute it from the
+decoded task. Both add a separate step that re-enqueues the original payload
+with a fresh task ID, the next step index, and a `run_at` timestamp:
+
+```rust
+use std::time::Duration;
+use miju_core::{backend::ext::shared::Shared, task::Task};
+use miju_workflow::{SteppedFlow, in_memory::InMemoryWorkflow};
+
+let flow = SteppedFlow::<u32, u32, Shared<InMemoryWorkflow<u32>>>::new("scheduled")
+    .delay_for(Duration::from_secs(30))
+    .delay_with(|task: Task<u32>| Duration::from_secs(u64::from(task.args)))
+    .and_then(async |value: u32| value.to_string());
+```
+
+This constructs the workflow; executing it requires a worker and a backend.
+Delay steps do not sleep. The backend must enforce scheduling timestamps, which
+use whole Unix seconds. The in-memory backend currently delivers these tasks
+immediately. A delay result contains the duration and the next task ID.
+
+Always follow a delay with a processing step. A terminal delay currently enqueues
+an index that has no registered step, causing dispatch to panic. This limitation
+applies to both fixed and computed delays.
+
 ## In-memory results
 
 `InMemoryWorkflow::create()` returns a cloneable `Shared` handle. Arguments are
@@ -126,6 +152,6 @@ step zero. An unknown index or an empty workflow can panic. The service also has
 inherited readiness limitations, so custom steps must not assume every inner
 service is polled for readiness before its first call.
 
-The low-level `GoTo::DelayFor` transition attaches scheduling metadata; actual
-delay enforcement depends on the backend. Delay builders, filtering, folding,
-repetition, and graph execution are not yet available in this package.
+The low-level `GoTo::DelayFor` transition also attaches scheduling metadata;
+actual delay enforcement depends on the backend. Filtering, folding, repetition,
+and graph execution are not yet available in this package.
