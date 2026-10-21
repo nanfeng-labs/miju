@@ -60,3 +60,7 @@ workspace = true
 # defines the configuration attribute `docsrs`
 rustdoc-args = ["--cfg", "docsrs"]
 all-features = true
+
+[package.metadata.cargo-udeps.ignore]
+# Used under cfg(doc) to generate the feature reference; checked by the rustdoc CI job.
+normal = ["document-features"]
