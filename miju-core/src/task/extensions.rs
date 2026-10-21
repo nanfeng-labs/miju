@@ -1,217 +1,367 @@
-//! Typed values attached to tasks within the current process.
+//! A type-safe container for storing protocol extensions.
 //!
-//! [`Extensions`] associates a value with its concrete Rust type. Use it to
-//! carry application resources or extra context without adding them to the
-//! task's payload. Values are kept in memory without a serialization format;
-//! use [`MetadataStore`](super::metadata::MetadataStore) for string metadata
-//! that a storage integration can persist.
+//! The `Extensions` struct provides a type map for storing arbitrary data associated with a request or response.
+//! Each extension is stored by its type, allowing for safe retrieval and mutation without explicit casting.
 //!
-//! # Type-Based Lookup
+//! # Features
+//! - Insert, get, mutate, and remove extensions by type.
+//! - Efficient storage: avoids allocating a map unless needed.
+//! - Type-safe API: prevents type mismatches at runtime.
+//! - Cloneable: supports cloning the entire extensions set.
+//! - Extensible: merge extensions from other instances.
 //!
-//! Each type has one entry. Inserting another value of that type replaces the
-//! entry, while different types remain independent. Wrapper types distinguish
-//! multiple values that otherwise share a representation:
-//!
+//! # Example
 //! ```
 //! use miju_core::task::extensions::Extensions;
 //!
-//! #[derive(Clone)]
-//! struct Region(String);
-//! #[derive(Clone)]
-//! struct RequestLabel(String);
-//!
-//! let mut data = Extensions::new();
-//! data.insert(Region("west".to_owned()));
-//! data.insert(RequestLabel("daily-report".to_owned()));
-//!
-//! assert_eq!(data.get::<Region>().unwrap().0, "west");
-//! assert_eq!(data.get::<RequestLabel>().unwrap().0, "daily-report");
-//! assert!(data.get::<String>().is_none());
+//! let mut ext = Extensions::new();
+//! ext.insert(42u32);
+//! assert_eq!(ext.get::<u32>(), Some(&42u32));
+//! ext.remove::<u32>();
+//! assert!(ext.get::<u32>().is_none());
 //! ```
-//!
-//! [`TaskBuilder::data`](super::builder::TaskBuilder::data) attaches values during
-//! construction. [`Task::inject_data`](super::Task::inject_data) updates them
-//! later, detaching a shared task context before changing its entries.
+use std::any::{Any, TypeId};
+use std::collections::HashMap;
+use std::fmt;
+use std::hash::{BuildHasherDefault, Hasher};
 
-use std::{
-    any::{Any, TypeId},
-    collections::HashMap,
-    fmt,
-};
+use crate::task::data::MissingDataError;
 
-type Value = dyn Any + Send + Sync;
+type AnyMap = HashMap<TypeId, Box<dyn AnyClone + Send + Sync>, BuildHasherDefault<IdHasher>>;
 
-struct Entry {
-    value: Box<Value>,
-    // Keep the concrete cloning operation available after erasing the type.
-    clone_value: fn(&Value) -> Box<Value>,
-}
+// With TypeIds as keys, there's no need to hash them. They are already hashes
+// themselves, coming from the compiler. The IdHasher just holds the u64 of
+// the TypeId, and then returns it, instead of doing any bit fiddling.
+#[derive(Default)]
+struct IdHasher(u64);
 
-impl Entry {
-    fn new<T: Clone + Send + Sync + 'static>(value: T) -> Self {
-        Self {
-            value: Box::new(value),
-            clone_value: |value| {
-                Box::new(
-                    value
-                        .downcast_ref::<T>()
-                        .expect("entry retains its original type")
-                        .clone(),
-                )
-            },
-        }
+impl Hasher for IdHasher {
+    fn write(&mut self, _: &[u8]) {
+        unreachable!("TypeId calls write_u64");
     }
 
-    fn into_value<T: Send + Sync + 'static>(self) -> T {
-        *self
-            .value
-            .downcast::<T>()
-            .expect("entry is indexed by its stored type")
+    #[inline]
+    fn write_u64(&mut self, id: u64) {
+        self.0 = id;
+    }
+
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
     }
 }
 
-impl Clone for Entry {
-    fn clone(&self) -> Self {
-        Self {
-            value: (self.clone_value)(self.value.as_ref()),
-            clone_value: self.clone_value,
-        }
-    }
-}
-
-/// Stores one value per concrete type, without serializing it.
+/// A type map of typed task extensions.
 ///
-/// Stored types must implement [`Clone`], [`Send`], and [`Sync`] and contain no
-/// non-static borrows. Retrieval uses the exact stored type rather than an
-/// implicit conversion to another type.
-///
-/// # Cloning
-///
-/// Cloning calls each value's [`Clone`] implementation. For example, cloning a
-/// `Vec` copies its elements, while cloning an `Arc` continues to share its data.
-///
-/// ```
-/// use std::sync::Arc;
-/// use miju_core::task::extensions::Extensions;
-///
-/// let label = Arc::new("catalog".to_owned());
-/// let mut original = Extensions::new();
-/// original.insert(vec![1_u32]);
-/// original.insert(Arc::clone(&label));
-///
-/// let mut copy = original.clone();
-/// copy.get_mut::<Vec<u32>>().unwrap().push(2);
-/// assert_eq!(original.get::<Vec<u32>>().unwrap(), &[1]);
-/// assert_eq!(copy.get::<Vec<u32>>().unwrap(), &[1, 2]);
-/// assert!(Arc::ptr_eq(copy.get::<Arc<String>>().unwrap(), &label));
-/// ```
+/// `Extensions` can be used by `Task` to store
+/// extra data derived from the underlying execution.
 #[derive(Clone, Default)]
 pub struct Extensions {
-    entries: HashMap<TypeId, Entry>,
+    // If extensions are never used, no need to carry around an empty HashMap.
+    // That's 3 words. Instead, this is only 1 word.
+    map: Option<Box<AnyMap>>,
 }
 
 impl Extensions {
-    /// Creates an empty store.
+    /// Create an empty `Extensions`.
+    #[inline]
     #[must_use]
     pub fn new() -> Self {
-        Self::default()
+        Self { map: None }
     }
 
-    /// Replaces the value of the same type and returns the previous value.
+    /// Insert a type into this `Extensions`.
     ///
-    /// Returns `None` when that type has no entry. Replacement affects only the
-    /// exact type of `value`.
+    /// If an extension of this type already existed, it will
+    /// be returned.
     ///
     /// # Example
     ///
     /// ```
     /// # use miju_core::task::extensions::Extensions;
-    /// let mut data = Extensions::new();
-    /// assert_eq!(data.insert(10_u32), None);
-    /// assert_eq!(data.insert(20_u32), Some(10));
-    /// assert_eq!(data.insert(30_u64), None);
-    /// assert_eq!(data.len(), 2);
+    /// let mut ext = Extensions::new();
+    /// assert!(ext.insert(5i32).is_none());
+    /// assert!(ext.insert(4u8).is_none());
+    /// assert_eq!(ext.insert(9i32), Some(5i32));
     /// ```
-    pub fn insert<T: Clone + Send + Sync + 'static>(&mut self, value: T) -> Option<T> {
-        self.entries
-            .insert(TypeId::of::<T>(), Entry::new(value))
-            .map(Entry::into_value)
+    pub fn insert<T: Clone + Send + Sync + 'static>(&mut self, val: T) -> Option<T> {
+        self.map
+            .get_or_insert_with(Box::default)
+            .insert(TypeId::of::<T>(), Box::new(val))
+            .and_then(|boxed| boxed.into_any().downcast().ok().map(|boxed| *boxed))
     }
 
-    /// Borrows the value of the requested type, if present.
+    /// Get a reference to a type previously inserted on this `Extensions`.
     ///
     /// # Example
     ///
     /// ```
     /// # use miju_core::task::extensions::Extensions;
-    /// let mut data = Extensions::new();
-    /// data.insert("catalog".to_owned());
-    /// assert_eq!(data.get::<String>().map(String::as_str), Some("catalog"));
-    /// assert!(data.get::<&str>().is_none());
+    /// let mut ext = Extensions::new();
+    /// assert!(ext.get::<i32>().is_none());
+    /// ext.insert(5i32);
+    ///
+    /// assert_eq!(ext.get::<i32>(), Some(&5i32));
     /// ```
     #[must_use]
     pub fn get<T: Send + Sync + 'static>(&self) -> Option<&T> {
-        self.entries.get(&TypeId::of::<T>())?.value.downcast_ref()
+        self.map
+            .as_ref()
+            .and_then(|map| map.get(&TypeId::of::<T>()))
+            .and_then(|boxed| (**boxed).as_any().downcast_ref())
     }
 
-    /// Mutably borrows the value of the requested type, if present.
+    /// Get a checked reference to a type previously inserted on this `Extensions`.
     ///
     /// # Example
     ///
     /// ```
     /// # use miju_core::task::extensions::Extensions;
-    /// let mut data = Extensions::new();
-    /// data.insert(vec!["first"]);
-    /// data.get_mut::<Vec<&str>>().unwrap().push("second");
-    /// assert_eq!(data.get::<Vec<&str>>().unwrap(), &["first", "second"]);
+    /// let mut ext = Extensions::new();
+    /// assert!(ext.get_checked::<i32>().is_err());
+    /// ext.insert(5i32);
+    ///
+    /// assert_eq!(ext.get_checked::<i32>(), Ok(&5i32));
+    /// ```
+    pub fn get_checked<T: Send + Sync + 'static>(&self) -> Result<&T, MissingDataError> {
+        self.get().ok_or({
+            let type_name = std::any::type_name::<T>();
+            MissingDataError::NotFound(type_name.to_owned())
+        })
+    }
+
+    /// Get a mutable reference to a type previously inserted on this `Extensions`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use miju_core::task::extensions::Extensions;
+    /// let mut ext = Extensions::new();
+    /// ext.insert(String::from("Hello"));
+    /// ext.get_mut::<String>().unwrap().push_str(" World");
+    ///
+    /// assert_eq!(ext.get::<String>().unwrap(), "Hello World");
     /// ```
     pub fn get_mut<T: Send + Sync + 'static>(&mut self) -> Option<&mut T> {
-        self.entries
-            .get_mut(&TypeId::of::<T>())?
-            .value
-            .downcast_mut()
+        self.map
+            .as_mut()
+            .and_then(|map| map.get_mut(&TypeId::of::<T>()))
+            .and_then(|boxed| (**boxed).as_any_mut().downcast_mut())
     }
 
-    /// Removes and returns the value of the requested type.
+    /// Remove a type from this `Extensions`.
     ///
-    /// Ownership is transferred to the caller. Returns `None` when the type
-    /// has no entry.
+    /// If a extension of this type existed, it will be returned.
     ///
     /// # Example
     ///
     /// ```
     /// # use miju_core::task::extensions::Extensions;
-    /// let mut data = Extensions::new();
-    /// data.insert("catalog".to_owned());
-    /// assert_eq!(data.remove::<String>(), Some("catalog".to_owned()));
-    /// assert!(data.remove::<String>().is_none());
-    /// assert!(data.is_empty());
+    /// let mut ext = Extensions::new();
+    /// ext.insert(5i32);
+    /// assert_eq!(ext.remove::<i32>(), Some(5i32));
+    /// assert!(ext.get::<i32>().is_none());
     /// ```
     pub fn remove<T: Send + Sync + 'static>(&mut self) -> Option<T> {
-        self.entries
-            .remove(&TypeId::of::<T>())
-            .map(Entry::into_value)
+        self.map
+            .as_mut()
+            .and_then(|map| map.remove(&TypeId::of::<T>()))
+            .and_then(|boxed| boxed.into_any().downcast().ok().map(|boxed| *boxed))
     }
 
-    /// Returns the number of stored types.
+    /// Clear the `Extensions` of all inserted extensions.
     ///
-    /// Replacing an existing entry does not change this count.
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.entries.len()
+    /// # Example
+    ///
+    /// ```
+    /// # use miju_core::task::extensions::Extensions;
+    /// let mut ext = Extensions::new();
+    /// ext.insert(5i32);
+    /// ext.clear();
+    ///
+    /// assert!(ext.get::<i32>().is_none());
+    /// ```
+    #[inline]
+    pub fn clear(&mut self) {
+        if let Some(ref mut map) = self.map {
+            map.clear();
+        }
     }
 
-    /// Returns whether no values are stored.
+    /// Check whether the extension set is empty or not.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use miju_core::task::extensions::Extensions;
+    /// let mut ext = Extensions::new();
+    /// assert!(ext.is_empty());
+    /// ext.insert(5i32);
+    /// assert!(!ext.is_empty());
+    /// ```
+    #[inline]
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        self.map.as_ref().is_none_or(|map| map.is_empty())
+    }
+
+    /// Get the number of extensions available.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use miju_core::task::extensions::Extensions;
+    /// let mut ext = Extensions::new();
+    /// assert_eq!(ext.len(), 0);
+    /// ext.insert(5i32);
+    /// assert_eq!(ext.len(), 1);
+    /// ```
+    #[inline]
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.map.as_ref().map_or(0, |map| map.len())
+    }
+
+    /// Extends `self` with another `Extensions`.
+    ///
+    /// If an instance of a specific type exists in both, the one in `self` is overwritten with the
+    /// one from `other`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use miju_core::task::extensions::Extensions;
+    /// let mut ext_a = Extensions::new();
+    /// ext_a.insert(8u8);
+    /// ext_a.insert(16u16);
+    ///
+    /// let mut ext_b = Extensions::new();
+    /// ext_b.insert(4u8);
+    /// ext_b.insert("hello");
+    ///
+    /// ext_a.extend(ext_b);
+    /// assert_eq!(ext_a.len(), 3);
+    /// assert_eq!(ext_a.get::<u8>(), Some(&4u8));
+    /// assert_eq!(ext_a.get::<u16>(), Some(&16u16));
+    /// assert_eq!(ext_a.get::<&'static str>().copied(), Some("hello"));
+    /// ```
+    pub fn extend(&mut self, other: Self) {
+        if let Some(other) = other.map {
+            if let Some(map) = &mut self.map {
+                map.extend(*other);
+            } else {
+                self.map = Some(other);
+            }
+        }
+    }
+
+    /// Get a mutable reference to the value of type `T`,
+    /// inserting `value` if it does not already exist.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use miju_core::task::extensions::Extensions;
+    /// let mut ext = Extensions::new();
+    ///
+    /// let value = ext.get_or_insert(String::from("Hello"));
+    /// value.push_str(" World");
+    ///
+    /// assert_eq!(ext.get::<String>().unwrap(), "Hello World");
+    /// ```
+    pub fn get_or_insert<T>(&mut self, value: T) -> &mut T
+    where
+        T: Clone + Send + Sync + 'static,
+    {
+        self.get_or_insert_with(|| value)
+    }
+
+    /// Get a mutable reference to the value of type `T`,
+    /// inserting the result of `f` if it does not already exist.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use miju_core::task::extensions::Extensions;
+    /// let mut ext = Extensions::new();
+    ///
+    /// let value = ext.get_or_insert_with(|| String::from("Hello"));
+    /// value.push_str(" World");
+    ///
+    /// assert_eq!(ext.get::<String>().unwrap(), "Hello World");
+    /// ```
+    pub fn get_or_insert_with<T, F>(&mut self, f: F) -> &mut T
+    where
+        T: Clone + Send + Sync + 'static,
+        F: FnOnce() -> T,
+    {
+        if self.get::<T>().is_none() {
+            self.insert(f());
+        }
+
+        self.get_mut::<T>().expect("value was just inserted")
     }
 }
 
 impl fmt::Debug for Extensions {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Extensions")
-            .field("len", &self.len())
-            .finish_non_exhaustive()
+        f.debug_struct("Extensions").finish()
     }
+}
+
+trait AnyClone: Any {
+    fn clone_box(&self) -> Box<dyn AnyClone + Send + Sync>;
+    fn as_any(&self) -> &dyn Any;
+    fn as_any_mut(&mut self) -> &mut dyn Any;
+    fn into_any(self: Box<Self>) -> Box<dyn Any>;
+}
+
+impl<T: Clone + Send + Sync + 'static> AnyClone for T {
+    fn clone_box(&self) -> Box<dyn AnyClone + Send + Sync> {
+        Box::new(self.clone())
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+
+    fn into_any(self: Box<Self>) -> Box<dyn Any> {
+        self
+    }
+}
+
+impl Clone for Box<dyn AnyClone + Send + Sync> {
+    fn clone(&self) -> Self {
+        (**self).clone_box()
+    }
+}
+
+#[test]
+fn test_extensions() {
+    #[derive(Clone, Debug, PartialEq)]
+    struct MyType(i32);
+
+    let mut extensions = Extensions::new();
+
+    extensions.insert(5i32);
+    extensions.insert(MyType(10));
+
+    assert_eq!(extensions.get(), Some(&5i32));
+    assert_eq!(extensions.get_mut(), Some(&mut 5i32));
+
+    let ext2 = extensions.clone();
+
+    assert_eq!(extensions.remove::<i32>(), Some(5i32));
+    assert!(extensions.get::<i32>().is_none());
+
+    // clone still has it
+    assert_eq!(ext2.get(), Some(&5i32));
+    assert_eq!(ext2.get(), Some(&MyType(10)));
+
+    assert_eq!(extensions.get::<bool>(), None);
+    assert_eq!(extensions.get(), Some(&MyType(10)));
 }

@@ -21,7 +21,7 @@
 //! let task: Task<RefreshIndex> = TaskBuilder::new(RefreshIndex {
 //!     collection: "catalog".to_owned(),
 //! })
-//!     .queue("maintenance")
+//!     .queue("maintenance".into())
 //!     .max_attempts(3)
 //!     .build();
 //!
@@ -66,7 +66,7 @@
 //! [`Metadata`]: task::metadata::Metadata
 //! [`Codec`]: backend::codec::Codec
 //! [`Queue`]: backend::queue::Queue
-//! [`TaskResult`]: backend::results::TaskResult
+//! [`TaskResult`]: backend::TaskResult
 
 pub use miju_core::task::Task;
 pub use miju_core::{backend, task};

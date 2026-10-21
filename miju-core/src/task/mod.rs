@@ -1,321 +1,451 @@
-//! Tasks and the execution information carried with them.
+//! Utilities for creating and managing tasks.
 //!
-//! A [`Task`] combines application arguments with an [`ExecutionContext`]. The
-//! arguments describe the work; the context holds its identity, execution
-//! progress, attached data, and requested scheduling settings.
+//! The [`Task`] component encapsulates a unit of work to be executed,
+//! along with its associated context, metadata, and execution status. The [`ExecutionContext`]
+//! struct contains metadata, attempt tracking, extensions, and scheduling information for each task.
 //!
 //! # Overview
 //!
-//! Use [`Task::new`] for a task with default context or [`TaskBuilder`] to
-//! configure it before passing it to an integration. With default context, a
-//! task is pending, has zero attempts, and has no identifier or scheduling
-//! preferences.
+//! In `miju`, tasks are designed to represent discrete units of work that can be scheduled, retried, and tracked
+//! throughout their lifecycle. Each task consists of arguments (`args`) describing the work to be performed,
+//! and an [`ExecutionContext`] containing metadata and control information.
 //!
-//! Context accessors are available directly on a task through [`Deref`]. For
-//! example, `task.status()` reads the same state as `task.ctx().status()`.
+//! ## [`Task`]
 //!
-//! ## Preparing a Task
+//! The [`Task`] struct is generic over:
+//! - `Args`: The type of arguments or payload for the task.
 //!
+//! ## [`ExecutionContext`]
+//!
+//! The [`ExecutionContext`] struct provides the following:
+//! - `task_id`: Optionally stores a unique identifier for the task.
+//! - `data`: An [`Extensions`] container for storing arbitrary per-task data (e.g., middleware extensions).
+//! - `attempt`: Tracks how many times the task has been attempted.
+//! - `metadata`: Custom metadata for the task, provided by the backend or user.
+//! - `status`: The current [`Status`] of the task (e.g., Pending, Running, Done, Failed).
+//! - `run_at`: The UNIX timestamp (in seconds) when the task should be run.
+//! - `done_at`: The UNIX timestamp (in seconds) when the task completed, if it has.
+//! - `lock_at`: The UNIX timestamp (in seconds) when the task was locked for processing, if applicable.
+//! - `lock_by`: An identifier for the worker or process currently holding the lock on the task.
+//! - `idempotency_key`: An optional key used to enforce job uniqueness.
+//! - `max_attempts`: The maximum number of attempts allowed before the task is considered failed.
+//! - `priority`: An optional priority value used to influence scheduling order.
+//! - `queue`: The queue the task belongs to, if applicable.
+//! - `runs`: A history of all runs recorded for the task. (*experimental*)
+//!
+//! The execution context is essential for tracking the state and metadata of a task as it moves through
+//! the system. It enables features such as retries, scheduling, locking, prioritization, and extensibility
+//! via the `Extensions` type.
+//!
+//! # Modules
+//!
+//! - [`attempt`]: Tracks the number of attempts a task has been executed.
+//! - [`builder`]: Utilities for constructing tasks.
+//! - [`extensions`]: Extension storage for tasks.
+//! - [`metadata`]: Metadata types for tasks.
+//! - [`status`]: Status tracking for tasks.
+//! - [`task_id`]: Types for uniquely identifying tasks.
+//!
+//! # Examples
+//!
+//! ## Creating a new task with default metadata
+//!
+//! ```rust
+//! # use miju_core::task::{Task, ExecutionContext};
+//! # use miju_core::task::builder::TaskBuilder;
+//! let task: Task<String> = TaskBuilder::new("my work".to_string()).build();
 //! ```
-//! use miju_core::task::{builder::TaskBuilder, status::Status};
 //!
-//! let task = TaskBuilder::new("generate invoice")
-//!     .task_id(81)
-//!     .queue("billing")
-//!     .max_attempts(3)
+//! ## Creating a task with custom metadata
+//!
+//! ```rust
+//! # use miju_core::task::{Task, ExecutionContext};
+//! # use miju_core::task::builder::TaskBuilder;
+//! # use miju_core::task::metadata::Metadata;
+//! # use miju_core::task::metadata::MetadataStore;
+//! #
+//! #[derive(Debug, PartialEq)]
+//! struct RequestId(String);
+//!
+//! impl Metadata for RequestId {
+//!     type Error = std::convert::Infallible;
+//!
+//!     fn inject(&self, metadata: &mut MetadataStore) -> Result<(), Self::Error> {
+//!         let _ = metadata.insert("request_id", self.0.clone());
+//!         Ok(())
+//!     }
+//!
+//!     fn extract(metadata: &MetadataStore) -> Result<Self, Self::Error> {
+//!         Ok(Self(
+//!             metadata
+//!                 .get("request_id")
+//!                 .unwrap_or_default()
+//!                 .to_owned(),
+//!         ))
+//!     }
+//! }
+//!
+//! let task: Task<String> = TaskBuilder::new("important work".to_string())
+//!     .metadata(&RequestId("user_id".to_string()))
 //!     .build();
-//!
-//! assert_eq!(task.task_id().and_then(|id| id.as_int()), Some(81));
-//! assert_eq!(task.status(), Status::Pending);
-//! assert_eq!(task.attempt(), 0);
 //! ```
 //!
-//! Queue, priority, time, and attempt limits are configuration values. Building
-//! a task does not persist it or start processing; an integration decides how to
-//! apply those settings.
+//! ## Accessing and modifying the execution context
 //!
-//! # Attached Data
-//!
-//! - [`Extensions`] holds process-local values, addressed by their Rust type.
-//!   Use it for application resources or data that does not need a storage format.
-//! - [`MetadataStore`] holds string pairs that can accompany a stored task.
-//!   Implement [`Metadata`] to define the keys and validation for a typed value.
-//!
-//! Both stores belong to the execution context. See [`extensions`] for typed
-//! storage operations and [`metadata`] for extraction and injection examples.
-//!
-//! # Sharing and Updating Context
-//!
-//! Cloning a task clones its arguments and initially shares the same context.
-//! [`Task::inject_data`] and [`Task::inject_metadata`] detach that context when
-//! it is shared. Metadata is copied, and extension values follow their own
-//! [`Clone`] implementations. The status cell and attempt counter remain shared,
-//! so observers still see progress after the attached data changes:
-//!
-//! ```
-//! use miju_core::task::{builder::TaskBuilder, status::Status};
-//!
-//! let original = TaskBuilder::new("send digest").data(10_u32).build();
-//! let mut copy = original.clone();
-//! copy.inject_data(20_u32);
-//! copy.raw_status().store(Status::Running);
-//! copy.raw_attempt().increment();
-//!
-//! assert_eq!(original.data().get::<u32>(), Some(&10));
-//! assert_eq!(copy.data().get::<u32>(), Some(&20));
-//! assert_eq!(original.status(), Status::Running);
-//! assert_eq!(original.attempt(), 1);
+//! ```rust
+//! # use miju_core::task::builder::TaskBuilder;
+//! use miju_core::task::{Task, ExecutionContext, status::Status};
+//! let mut task: TaskBuilder<_> = TaskBuilder::new("work".to_string());
+//! task = task.status(Status::Running);
 //! ```
 //!
-//! To reconfigure an existing task, use [`Task::into_builder`]. Explicitly
-//! setting its status or attempt count replaces that shared cell; the
-//! [`builder`] module demonstrates this distinction.
+//! ## Using Extensions for per-task data
 //!
-//! # Converting Arguments
+//! ```rust
+//! # use miju_core::task::builder::TaskBuilder;
+//! use miju_core::task::{Task, extensions::Extensions};
+//! #[derive(Debug, Clone, PartialEq)]
+//! pub struct TracingId(String);
+//! let mut extensions = Extensions::default();
+//! extensions.insert(TracingId("abc123".to_owned()));
+//! let task: Task<String> = TaskBuilder::new("work".to_string()).with_data(extensions).build();
+//! assert_eq!(task.data().get::<TracingId>(), Some(&TracingId("abc123".to_owned())));
+//! ```
 //!
-//! [`Task::map_args`] and [`Task::try_map_args`] change the payload type while
-//! carrying the original context handle into the new task. This lets an adapter
-//! prepare a storage representation without rebuilding identity and execution
-//! information. [`Task::take`] separates the payload and context when an
-//! integration needs to handle them independently.
+//! # See Also
+//!
+//! - [`Task`]: Represents a unit of work to be executed.
+//! - [`ExecutionContext`]: Holds metadata, status, and control information for a task.
+//! - [`Extensions`]: Type-safe storage for per-task data.
+//! - [`Status`]: Enum representing the lifecycle state of a task.
+//! - [`Attempt`]: Tracks the number of execution attempts for a task.
+//! - [`TaskId`]: Unique identifier type for tasks.
+//! - [`TaskBuilder`]: Fluent builder for constructing tasks with optional configuration.
+//!
+//! [`TaskBuilder`]: crate::task::builder::TaskBuilder
 
-use std::{ops::Deref, sync::Arc};
+use std::{fmt::Debug, ops::Deref, sync::Arc};
 
-use self::{
-    attempt::Attempt,
-    builder::TaskBuilder,
-    extensions::Extensions,
-    metadata::{Metadata, MetadataStore},
-    status::{AtomicStatus, Status},
-    task_id::TaskId,
+use crate::{
+    backend::queue::Queue,
+    task::{
+        attempt::Attempt,
+        builder::TaskBuilder,
+        extensions::Extensions,
+        metadata::{Metadata, MetadataStore},
+        runs::Run,
+        status::{AtomicStatus, Status},
+        task_id::TaskId,
+    },
 };
-use crate::backend::queue::Queue;
 
 pub mod attempt;
 pub mod builder;
+pub mod data;
 pub mod extensions;
 pub mod metadata;
+pub mod runs;
 pub mod status;
 pub mod task_id;
 
-/// A unit of work with typed arguments and a shared execution context.
-///
-/// `Args` is the application's payload type. Construction and payload mapping
-/// do not require it to implement [`Clone`]; cloning a task does.
-///
-/// Context accessors are available through [`Deref`]. Clones initially share
-/// that context, and data injection uses copy-on-write while preserving shared
-/// status and attempt tracking. See the [module documentation](self) for examples.
-#[derive(Clone, Debug)]
+/// Represents a task which will be executed
+/// Should be considered a single unit of work
+#[derive(Debug, Clone, Default)]
 pub struct Task<Args> {
-    /// Arguments passed to the task handler.
+    /// The argument task part
     pub args: Args,
+    /// ExecutionContext of the task eg id, attempts and context
     ctx: Arc<ExecutionContext>,
 }
 
-/// Identity, progress, and execution settings associated with a task.
-///
-/// The default context has [`Status::Pending`], zero attempts, empty data and
-/// metadata stores, and no identifier, queue, time, priority, or attempt limit.
-/// Use [`TaskBuilder`] to supply those optional values.
-///
-/// Cloning copies data using each stored value's `Clone` implementation, copies
-/// metadata and scheduling fields, and shares the status and attempt cells.
-/// A context clone is therefore not a snapshot of execution progress.
-#[derive(Clone, Debug, Default)]
+/// Execution context of a `Task`
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ExecutionContext {
+    /// The task's id if allocated
     task_id: Option<TaskId>,
+
+    /// The tasks's extensions
+    #[cfg_attr(feature = "serde", serde(skip))]
     data: Extensions,
-    metadata: MetadataStore,
+
+    /// The tasks's attempts
+    /// Keeps track of the number of attempts a task has been worked on
     attempt: Attempt,
+
+    /// The task status that is wrapped in an atomic status
     status: AtomicStatus,
+
+    /// The time a task should be run
     run_at: Option<u64>,
+
+    /// The time the task was completed, if applicable
+    done_at: Option<u64>,
+
+    /// The time the task was locked, if applicable
+    lock_at: Option<u64>,
+
+    /// Identifier of the worker/process that currently holds the lock on this task
+    lock_by: Option<String>,
+
+    /// Adds a unique key to enforce job uniqueness when used
+    idempotency_key: Option<String>,
+
+    /// Metadata associated with the task
+    metadata: MetadataStore,
+
+    /// The maximum number of attempts allowed for the task
     max_attempts: Option<usize>,
+
+    /// The priority of the task, which can be used for scheduling
     priority: Option<usize>,
+
+    /// The queue to which the task belongs, if applicable
     queue: Option<Queue>,
+
+    /// A list of all runs for this task
+    runs: Vec<Run>,
 }
 
 impl ExecutionContext {
-    /// Returns the assigned identifier, if any.
+    /// Returns the task's ID, if one has been allocated.
     #[must_use]
     pub fn task_id(&self) -> Option<&TaskId> {
         self.task_id.as_ref()
     }
 
-    /// Borrows process-local typed data.
-    ///
-    /// See [`Extensions`] for exact-type lookup and cloning behavior.
+    /// Returns the extensions associated with the task.
     #[must_use]
     pub fn data(&self) -> &Extensions {
         &self.data
     }
 
-    /// Borrows persistable string metadata.
-    ///
-    /// Use [`Metadata::extract`] to interpret entries as an application type.
-    #[must_use]
-    pub fn metadata(&self) -> &MetadataStore {
-        &self.metadata
-    }
-
-    /// Reads the current attempt count.
+    /// Returns the number of attempts made to execute the task.
     #[must_use]
     pub fn attempt(&self) -> usize {
         self.attempt.current()
     }
 
-    /// Borrows the shared attempt counter.
-    ///
-    /// Updates through this counter are visible to every context sharing it.
+    /// Get the atomic attempt
     #[must_use]
     pub fn raw_attempt(&self) -> &Attempt {
         &self.attempt
     }
 
-    /// Reads the current status.
+    /// Returns the current status of the task.
     #[must_use]
     pub fn status(&self) -> Status {
         self.status.load()
     }
 
-    /// Borrows the shared status cell.
-    ///
-    /// Writing this cell updates observers; it does not execute or cancel a task.
+    /// Get the atomic status
     #[must_use]
     pub fn raw_status(&self) -> &AtomicStatus {
         &self.status
     }
 
-    /// Returns the requested execution time in seconds since the Unix epoch.
+    /// Returns the time at which the task is scheduled to run.
     ///
-    /// Returns `None` when no time was configured. The value is a request for an
-    /// integration to interpret, not a timer managed by this context.
+    /// Returns `None` if no run time has been specified.
     #[must_use]
     pub fn run_at(&self) -> Option<u64> {
         self.run_at
     }
 
-    /// Returns the requested attempt limit; its meaning is enforced by a worker.
+    /// Returns the time at which the task was completed.
     ///
-    /// `None` means no limit was configured here. `Some(0)` is retained as an
-    /// explicit value, without assigning it a special meaning.
+    /// Returns `None` if the task has not been completed.
+    #[must_use]
+    pub fn done_at(&self) -> Option<u64> {
+        self.done_at
+    }
+
+    /// Returns the time at which the task was locked.
+    ///
+    /// Returns `None` if the task is not locked.
+    #[must_use]
+    pub fn lock_at(&self) -> Option<u64> {
+        self.lock_at
+    }
+
+    /// Returns the identifier of the worker or process currently holding
+    /// the lock on this task.
+    ///
+    /// Returns `None` if the task is not currently locked.
+    #[must_use]
+    pub fn lock_by(&self) -> Option<&str> {
+        self.lock_by.as_deref()
+    }
+
+    /// Returns the idempotency key associated with the task.
+    ///
+    /// Returns `None` if no idempotency key has been specified.
+    #[must_use]
+    pub fn idempotency_key(&self) -> Option<&str> {
+        self.idempotency_key.as_deref()
+    }
+
+    /// Returns the metadata associated with the task.
+    #[must_use]
+    pub fn metadata(&self) -> &MetadataStore {
+        &self.metadata
+    }
+
+    /// Returns the maximum number of attempts allowed for the task.
+    ///
+    /// Returns `None` if no maximum has been specified.
     #[must_use]
     pub fn max_attempts(&self) -> Option<usize> {
         self.max_attempts
     }
 
-    /// Returns the priority value for the backend to interpret.
+    /// Returns the priority of the task.
     ///
-    /// Returns `None` when unspecified. This type does not define whether larger
-    /// or smaller values take precedence.
+    /// Returns `None` if no priority has been specified.
     #[must_use]
     pub fn priority(&self) -> Option<usize> {
         self.priority
     }
 
-    /// Borrows the requested queue name.
+    /// Returns the queue to which the task belongs.
     ///
-    /// Returns `None` when no destination was selected.
+    /// Returns `None` if the task is not associated with a queue.
     #[must_use]
     pub fn queue(&self) -> Option<&Queue> {
         self.queue.as_ref()
     }
+
+    /// Returns the runs recorded for this task.
+    #[must_use]
+    pub fn runs(&self) -> &[Run] {
+        &self.runs
+    }
 }
 
 impl<Args> Task<Args> {
-    /// Creates a pending task without assigning an identifier.
+    /// Creates a new task given some args
     ///
-    /// The context starts with zero attempts and no scheduling preferences.
-    /// Use [`TaskBuilder`] when the task needs additional configuration.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use miju_core::task::{Task, status::Status};
-    ///
-    /// let task = Task::new("rebuild summary");
-    /// assert_eq!(task.args, "rebuild summary");
-    /// assert_eq!(task.status(), Status::Pending);
-    /// assert!(task.task_id().is_none());
-    /// ```
-    #[must_use]
+    /// Used to easily create a ready task.
+    /// Please prefer to use [`TaskBuilder`] if you need to modify [`ExecutionContext`]
     pub fn new(args: Args) -> Self {
-        Self::new_with_ctx(args, Arc::new(ExecutionContext::default()))
+        Self {
+            args,
+            ctx: Default::default(),
+        }
     }
-
-    /// Attaches a payload to an existing context without copying the context.
-    ///
-    /// Use this when reconstructing a task from [`take`](Self::take) or when an
-    /// integration already owns the context. The supplied context is retained
-    /// as-is, including its identifier and shared progress cells.
-    #[must_use]
-    pub fn new_with_ctx(args: Args, ctx: Arc<ExecutionContext>) -> Self {
-        Self { args, ctx }
-    }
-
-    /// Borrows the shared context handle.
-    ///
-    /// Cloning this handle keeps observing the current context. A later
-    /// copy-on-write data update may give the task a different context handle;
-    /// see the [module documentation](self#sharing-and-updating-context).
+    /// Returns the execution context associated with the task.
     #[must_use]
     pub fn ctx(&self) -> &Arc<ExecutionContext> {
         &self.ctx
     }
+}
 
-    /// Consumes the task and returns its payload and context.
+impl Default for ExecutionContext {
+    fn default() -> Self {
+        Self {
+            task_id: None,
+            data: Extensions::default(),
+            attempt: Attempt::default(),
+            status: AtomicStatus::new(Status::Pending),
+            run_at: None,
+            done_at: None,
+            lock_at: None,
+            lock_by: None,
+            idempotency_key: None,
+            metadata: MetadataStore::default(),
+            max_attempts: None,
+            priority: None,
+            queue: None,
+            runs: Vec::new(),
+        }
+    }
+}
+
+impl Debug for ExecutionContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExecutionContext")
+            .field("task_id", &self.task_id)
+            .field("data", &"<Extensions>")
+            .field("attempt", &self.attempt)
+            .field("status", &self.status.load())
+            .field("run_at", &self.run_at)
+            .field("done_at", &self.done_at)
+            .field("lock_at", &self.lock_at)
+            .field("lock_by", &self.lock_by)
+            .field("idempotency_key", &self.idempotency_key)
+            .field("metadata", &self.metadata)
+            .field("max_attempts", &self.max_attempts)
+            .field("runs", &self.runs)
+            .field("priority", &self.priority)
+            .field("queue", &self.queue)
+            .finish()
+    }
+}
+
+impl Clone for ExecutionContext {
+    fn clone(&self) -> Self {
+        Self {
+            task_id: self.task_id.clone(),
+            data: self.data.clone(),
+            attempt: self.attempt.clone(),
+            status: self.status.clone(),
+            run_at: self.run_at,
+            done_at: self.done_at,
+            lock_at: self.lock_at,
+            lock_by: self.lock_by.clone(),
+            idempotency_key: self.idempotency_key.clone(),
+            metadata: self.metadata.clone(),
+            runs: self.runs.clone(),
+            max_attempts: self.max_attempts,
+            priority: self.priority,
+            queue: self.queue.clone(),
+        }
+    }
+}
+
+impl<Args> Task<Args> {
+    /// Take the task into its parts
     #[must_use]
     pub fn take(self) -> (Args, Arc<ExecutionContext>) {
         (self.args, self.ctx)
     }
 
-    /// Converts the payload while preserving the exact context handle.
-    ///
-    /// The mapping consumes the arguments, so the payload need not be cloneable.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use std::sync::Arc;
-    /// use miju_core::task::builder::TaskBuilder;
-    ///
-    /// let task = TaskBuilder::new(81_u64).task_id(12).build();
-    /// let context = Arc::clone(task.ctx());
-    /// let encoded = task.map_args(|value| value.to_string());
-    ///
-    /// assert_eq!(encoded.args, "81");
-    /// assert!(Arc::ptr_eq(encoded.ctx(), &context));
-    /// ```
+    /// Maps the `args` field using the provided function, consuming the task.
+    pub fn map_args<F, NewArgs>(self, f: F) -> Task<NewArgs>
+    where
+        F: FnOnce(Args) -> NewArgs,
+    {
+        Task {
+            args: f(self.args),
+            ctx: self.ctx,
+        }
+    }
+
+    /// Maps the `args` field using the provided function, consuming the task.
+    #[must_use = "A mapped task should be used or handled to avoid unused value warnings."]
+    pub fn try_map_args<F, NewArgs, Err>(self, f: F) -> Result<Task<NewArgs>, Err>
+    where
+        F: FnOnce(Args) -> Result<NewArgs, Err>,
+    {
+        Ok(Task {
+            args: f(self.args)?,
+            ctx: self.ctx,
+        })
+    }
+
+    /// Maps the `execution_context` using the provided function, consuming the task
     #[must_use]
-    pub fn map_args<T>(self, map: impl FnOnce(Args) -> T) -> Task<T> {
-        Task::new_with_ctx(map(self.args), self.ctx)
+    pub fn map_context<F>(self, f: F) -> Self
+    where
+        F: FnOnce(Arc<ExecutionContext>) -> Arc<ExecutionContext>,
+    {
+        Self {
+            args: self.args,
+            ctx: f(self.ctx),
+        }
     }
 
-    /// Converts the payload while preserving its context on success.
-    ///
-    /// # Errors
-    ///
-    /// Returns the conversion error, consuming the original task in either case.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use miju_core::task::Task;
-    ///
-    /// let parsed = Task::new("81").try_map_args(str::parse::<u64>)?;
-    /// assert_eq!(parsed.args, 81);
-    /// assert!(Task::new("invalid").try_map_args(str::parse::<u64>).is_err());
-    /// # Ok::<(), std::num::ParseIntError>(())
-    /// ```
-    pub fn try_map_args<T, E>(self, map: impl FnOnce(Args) -> Result<T, E>) -> Result<Task<T>, E> {
-        Ok(Task::new_with_ctx(map(self.args)?, self.ctx))
-    }
-
-    /// Opens the task for configuration, cloning its context only if shared.
-    ///
-    /// Existing configuration is retained. Status and attempts remain shared
-    /// until explicitly replaced through [`TaskBuilder::status`] or
-    /// [`TaskBuilder::attempt`].
+    /// Converts the task into a [`TaskBuilder`]
+    #[must_use = "Converting a task into a builder allows for further modifications before rebuilding the task."]
     pub fn into_builder(self) -> TaskBuilder<Args> {
         TaskBuilder {
             args: self.args,
@@ -323,29 +453,34 @@ impl<Args> Task<Args> {
         }
     }
 
-    /// Inserts process-local data and returns any previous value of its type.
+    /// Inject data into the execution context via [`Arc::make_mut`]
     ///
-    /// If the context is shared, its data is cloned before insertion. Other task
-    /// clones retain their entries; stored handles may still share resources
-    /// according to their own [`Clone`] implementations. See [`Extensions`].
-    pub fn inject_data<T: Clone + Send + Sync + 'static>(&mut self, value: T) -> Option<T> {
-        Arc::make_mut(&mut self.ctx).data.insert(value)
+    /// If an extension of this type already existed, it will
+    /// be returned.
+    pub fn inject_data<D>(&mut self, data: D) -> Option<D>
+    where
+        D: Send + Clone + Sync + 'static,
+    {
+        let ctx = Arc::make_mut(&mut self.ctx);
+        ctx.data.insert(data)
     }
 
-    /// Adds typed metadata, committing the changes only if injection succeeds.
-    ///
-    /// # Errors
-    ///
-    /// Returns the injection error while leaving the stored metadata and context
-    /// handle unchanged. Even an implementation that writes some entries before
-    /// returning an error cannot publish those entries through this method.
-    /// See [`Metadata`] for an implementation example.
-    pub fn inject_metadata<M: Metadata>(&mut self, value: &M) -> Result<(), M::Error> {
-        let mut metadata = self.ctx.metadata.clone();
-        value.inject(&mut metadata)?;
-        // Detach the context only after all metadata writes have succeeded.
-        Arc::make_mut(&mut self.ctx).metadata = metadata;
+    /// Inject metadata into the execution context via [`Arc::make_mut`]
+    pub fn inject_metadata<M>(&mut self, value: &M) -> Result<(), M::Error>
+    where
+        M: Metadata,
+    {
+        let ctx = Arc::make_mut(&mut self.ctx);
+        value.inject(&mut ctx.metadata)?;
         Ok(())
+    }
+
+    /// Build a new task with ready parts
+    ///
+    /// Usually you wanna use [TaskBuilder] so this is considered an internal api
+    #[doc(hidden)]
+    pub fn new_with_ctx(args: Args, ctx: Arc<ExecutionContext>) -> Self {
+        Self { args, ctx }
     }
 }
 
@@ -356,3 +491,15 @@ impl<Args> Deref for Task<Args> {
         &self.ctx
     }
 }
+
+impl<A: Send + 'static> From<A> for Task<A> {
+    fn from(value: A) -> Self {
+        Self {
+            args: value,
+            ctx: Default::default(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests;

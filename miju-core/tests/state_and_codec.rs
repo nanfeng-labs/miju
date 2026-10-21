@@ -3,39 +3,14 @@
 use std::{collections::HashSet, num::ParseIntError};
 
 use miju_core::{
-    backend::{codec::Codec, queue::Queue, results::TaskResult},
+    backend::{TaskResult, codec::Codec, queue::Queue},
     task::{
-        attempt::Attempt,
+        metadata::{Metadata, MetadataStore},
+        runs::Run,
         status::{AtomicStatus, Status, StatusError},
         task_id::{TaskId, TaskIdError},
     },
 };
-
-#[test]
-fn concurrent_attempts_return_each_previous_value_once() {
-    let attempts = Attempt::new_with_value(7);
-    let handles: Vec<_> = (0..8)
-        .map(|_| {
-            let counter = attempts.clone();
-            std::thread::spawn(move || (0..500).map(|_| counter.increment()).collect::<Vec<_>>())
-        })
-        .collect();
-    let mut observed: Vec<_> = handles
-        .into_iter()
-        .flat_map(|handle| handle.join().unwrap())
-        .collect();
-    observed.sort_unstable();
-    assert_eq!(observed, (7..4_007).collect::<Vec<_>>());
-    assert_eq!(attempts.current(), 4_007);
-    assert_eq!(Attempt::new().current(), 0);
-}
-
-#[test]
-fn attempt_overflow_matches_atomic_wrapping_semantics() {
-    let attempts = Attempt::new_with_value(usize::MAX);
-    assert_eq!(attempts.increment(), usize::MAX);
-    assert_eq!(attempts.current(), 0);
-}
 
 #[test]
 fn statuses_round_trip_and_shared_cells_accept_each_state() {
@@ -50,8 +25,8 @@ fn statuses_round_trip_and_shared_cells_accept_each_state() {
         Status::Killed,
         Status::Pending,
     ] {
-        assert_eq!(next.to_string().parse::<Status>(), Ok(next));
-        assert_eq!(status.swap(next), previous);
+        assert_eq!(next.to_string().parse::<Status>().unwrap(), next);
+        assert_eq!(status.swap(next.clone()), previous);
         assert_eq!(shared.load(), next);
         previous = next;
     }
@@ -61,33 +36,32 @@ fn statuses_round_trip_and_shared_cells_accept_each_state() {
     assert_eq!(Status::from(status), Status::Done);
     assert_eq!(AtomicStatus::from(Status::Failed).load(), Status::Failed);
     for invalid in ["", "running", " Done", "Queued ", "unknown"] {
-        assert_eq!(
-            invalid.parse::<Status>(),
-            Err(StatusError::UnknownState(invalid.to_owned()))
-        );
+        let error = invalid.parse::<Status>().unwrap_err();
+        assert!(matches!(&error, StatusError::UnknownState(value) if value == invalid));
+        assert_eq!(error.to_string(), format!("Unknown state: {invalid}"));
     }
 }
 
 #[test]
 fn identifier_parsing_distinguishes_typed_keys_from_text() {
-    assert_eq!(
-        TaskId::try_from(""),
-        Err(TaskIdError::Decode(String::new()))
-    );
+    let error = TaskId::try_from("").unwrap_err();
+    assert!(matches!(&error, TaskIdError::Decode(value) if value.is_empty()));
+    assert_eq!(error.to_string(), "could not decode task_id: ``");
     for (input, expected) in [
         ("0", 0),
         ("0042", 42),
         ("+42", 42),
         ("18446744073709551615", u64::MAX),
     ] {
-        assert_eq!(input.parse::<TaskId>(), Ok(TaskId::Int(expected)));
+        assert_eq!(input.parse::<TaskId>().unwrap(), TaskId::Int(expected));
     }
     for input in ["job-42", "-1", "18446744073709551616", " 42 ", "任务"] {
         assert_eq!(
-            TaskId::try_from(input),
-            Ok(TaskId::String(input.to_owned()))
+            TaskId::try_from(input).unwrap(),
+            TaskId::String(input.to_owned())
         );
     }
+    assert!(TaskId::Int(u64::MAX) < TaskId::String(String::new()));
     let integer = TaskId::from_int(42);
     let opaque = TaskId::from_string("42");
     assert_eq!(integer.to_string(), opaque.to_string());
@@ -135,6 +109,18 @@ fn queue_names_and_recorded_results_preserve_storage_data() {
     assert_eq!(queue.as_ref(), "tasks/日报");
     assert_eq!(Queue::from(queue.to_string()), queue);
     assert_eq!(Queue::from("").as_ref(), "");
+    let mut metadata = MetadataStore::new();
+    assert!(Queue::extract(&metadata).is_err());
+    queue.inject(&mut metadata).unwrap();
+    assert_eq!(Queue::extract(&metadata).unwrap(), queue);
+    let duplicate = Queue::from("replacement")
+        .inject(&mut metadata)
+        .unwrap_err();
+    assert_eq!(
+        duplicate.to_string(),
+        "Queue data not found in task context. This is likely a bug. Please report it."
+    );
+    assert_eq!(metadata.get("queue"), Some(queue.as_ref()));
     let outcome = TaskResult {
         task_id: TaskId::from(8),
         attempt: 2,
@@ -148,4 +134,17 @@ fn queue_names_and_recorded_results_preserve_storage_data() {
     assert_eq!(outcome.result.as_ref().unwrap_err(), "temporary failure");
     assert_eq!(snapshot.task_id, outcome.task_id);
     assert_eq!(snapshot.attempt, outcome.attempt);
+    assert_eq!(snapshot.task_id(), &TaskId::Int(8));
+    assert_eq!(snapshot.status(), &Status::Done);
+    assert_eq!(snapshot.result(), &Ok(vec![1, 2]));
+    let run = Run {
+        result: Some(snapshot),
+        lock_at: -1,
+        lock_by: "worker".to_owned(),
+        done_at: Some(2),
+    };
+    assert_eq!(run.lock_at, -1);
+    assert_eq!(run.clone().result.unwrap().take(), Ok(vec![1, 2]));
+    assert_eq!(run.result.as_ref().unwrap().result(), &Ok(vec![1, 2]));
+    assert_eq!(outcome.take(), Err("temporary failure".to_owned()));
 }

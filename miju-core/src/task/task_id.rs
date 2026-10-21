@@ -1,165 +1,109 @@
-//! Task identifiers supplied by producers or assigned by storage.
+//! Defines the `TaskId` type and related functionality.
 //!
-//! [`TaskId`] supports integer keys and opaque string keys. Choose an explicit
-//! constructor when the storage representation is known, or parse text when
-//! numeric input should be interpreted as an integer identifier.
-//!
-//! # Construction and Parsing
-//!
-//! [`TaskId::from_string`] and conversion from an owned [`String`] preserve text
-//! as a string key, including empty strings. [`FromStr`] and `TryFrom<&str>`
-//! reject empty input, attempt to parse a `u64`, and otherwise preserve the input
-//! as a string key. Numeric parsing can therefore normalize input such as `0081`
-//! to the integer `81`.
-//!
-//! ```
-//! use miju_core::task::task_id::TaskId;
-//!
-//! let parsed: TaskId = "0081".parse()?;
-//! let opaque = TaskId::from_string("0081");
-//!
-//! assert_eq!(parsed.as_int(), Some(81));
-//! assert_eq!(opaque.as_string(), Some("0081"));
-//! assert_ne!(parsed, opaque);
-//! assert!("".parse::<TaskId>().is_err());
-//! # Ok::<(), miju_core::task::task_id::TaskIdError>(())
-//! ```
-//!
-//! Identifiers are not generated or checked for uniqueness here. Producers and
-//! storage integrations must agree on their representation and allocation.
+//! `TaskId` is an identifier for a task, supporting a fixed set of common
+//! id representations (integer and string).
+use std::{
+    fmt::{Debug, Display},
+    str::FromStr,
+};
 
-use std::{fmt, str::FromStr};
-
-/// An integer or opaque string key identifying a task.
+/// A wrapper type that defines a task id.
 ///
-/// Equality and hashing include the variant. Integer and string keys therefore
-/// remain distinct even if [`Display`](fmt::Display) produces the same text.
-/// Displaying and reparsing an ID does not always preserve its original variant:
-///
-/// ```
-/// use miju_core::task::task_id::TaskId;
-///
-/// let integer = TaskId::from_int(81);
-/// let text = TaskId::from_string("81");
-/// assert_eq!(integer.to_string(), text.to_string());
-/// assert_ne!(integer, text);
-/// assert_eq!(text.to_string().parse::<TaskId>()?, integer);
-/// # Ok::<(), miju_core::task::task_id::TaskIdError>(())
-/// ```
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+/// Supports a fixed set of common identifier representations.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, Eq, Hash, PartialEq, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", serde(untagged))]
 #[non_exhaustive]
 pub enum TaskId {
-    /// An integer key assigned by a producer or store.
+    /// An integer-based id
     Int(u64),
-    /// An opaque string key.
+    /// A string-based id
     String(String),
 }
 
 impl TaskId {
-    /// Constructs an integer identifier.
+    /// Construct a `TaskId` from an integer.
     #[must_use]
     pub fn from_int(id: u64) -> Self {
         Self::Int(id)
     }
 
-    /// Constructs an opaque identifier without interpreting its contents.
-    ///
-    /// Numeric text stays a string, and an empty string is accepted. Use
-    /// [`str::parse`] when numeric text should become an integer identifier.
+    /// Construct a `TaskId` from a string.
     #[must_use]
     pub fn from_string(id: impl Into<String>) -> Self {
         Self::String(id.into())
     }
 
-    /// Returns the integer only when this is an integer identifier.
-    ///
-    /// A string containing digits still returns `None`.
+    /// Returns the inner value as an integer, if this is an `Int` variant.
     #[must_use]
+    #[allow(clippy::match_wildcard_for_single_variants)]
     pub fn as_int(&self) -> Option<u64> {
         match self {
             Self::Int(id) => Some(*id),
-            Self::String(_) => None,
+            _ => None,
         }
     }
 
-    /// Borrows the string only when this is a string identifier.
-    ///
-    /// Integer identifiers are not formatted into strings by this accessor.
+    /// Returns the inner value as a string slice, if this is a `String` variant.
     #[must_use]
+    #[allow(clippy::match_wildcard_for_single_variants)]
     pub fn as_string(&self) -> Option<&str> {
         match self {
-            Self::String(id) => Some(id),
-            Self::Int(_) => None,
+            Self::String(id) => Some(id.as_str()),
+            _ => None,
         }
     }
 }
 
-/// An error returned when parsing an identifier from text.
-///
-/// Currently only empty input is rejected. Nonempty text that cannot be parsed
-/// as a `u64` is accepted as [`TaskId::String`].
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Errors that can occur when parsing a `TaskId` from a string
+#[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum TaskIdError {
-    /// The rejected input.
+    /// The string did not match any known `TaskId` representation
+    #[error("could not decode task_id: `{0}`")]
     Decode(String),
 }
 
-impl fmt::Display for TaskIdError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Decode(value) => write!(f, "invalid task identifier: {value:?}"),
-        }
-    }
-}
-
-impl std::error::Error for TaskIdError {}
-
 impl FromStr for TaskId {
     type Err = TaskIdError;
-
-    /// Parses a nonempty identifier, preferring a `u64` when possible.
-    ///
-    /// Non-numeric input and integers outside the `u64` range become string
-    /// identifiers. String fallback preserves whitespace and other characters.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TaskIdError::Decode`] only when `value` is empty.
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        if value.is_empty() {
-            return Err(TaskIdError::Decode(value.to_owned()));
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if let Ok(id) = u64::from_str(s) {
+            return Ok(Self::Int(id));
         }
-        Ok(value
-            .parse::<u64>()
-            .map_or_else(|_| Self::from_string(value), Self::Int))
+
+        if !s.is_empty() {
+            return Ok(Self::String(s.to_owned()));
+        }
+
+        Err(TaskIdError::Decode(s.to_owned()))
     }
 }
 
-impl TryFrom<&str> for TaskId {
+impl TryFrom<&'_ str> for TaskId {
     type Error = TaskIdError;
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
-        value.parse()
+
+    fn try_from(value: &'_ str) -> Result<Self, Self::Error> {
+        Self::from_str(value)
+    }
+}
+
+impl Display for TaskId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Int(id) => Display::fmt(id, f),
+            Self::String(id) => Display::fmt(id, f),
+        }
     }
 }
 
 impl From<u64> for TaskId {
-    fn from(value: u64) -> Self {
-        Self::Int(value)
+    fn from(id: u64) -> Self {
+        Self::Int(id)
     }
 }
 
 impl From<String> for TaskId {
-    fn from(value: String) -> Self {
-        Self::String(value)
-    }
-}
-
-impl fmt::Display for TaskId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Int(id) => id.fmt(f),
-            Self::String(id) => f.write_str(id),
-        }
+    fn from(id: String) -> Self {
+        Self::String(id)
     }
 }

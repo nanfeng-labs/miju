@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use miju_core::task::{
+use crate::task::{
     Task,
     builder::TaskBuilder,
     metadata::{Metadata, MetadataStore},
@@ -50,12 +50,131 @@ fn new_tasks_are_pending_and_have_no_storage_or_scheduling_defaults() {
         (None, None, None)
     );
     assert!(task.queue().is_none());
+    assert_eq!(task.done_at(), None);
+    assert_eq!(task.lock_at(), None);
+    assert_eq!(task.lock_by(), None);
+    assert_eq!(task.idempotency_key(), None);
+    assert!(task.runs().is_empty());
 
-    task.raw_attempt().increment();
+    assert_eq!(task.raw_attempt().increment(), 0);
     task.raw_status().store(Status::Running);
     let unrelated = Task::new("another payload");
     assert_eq!(unrelated.attempt(), 0);
     assert_eq!(unrelated.status(), Status::Pending);
+}
+
+#[test]
+fn default_and_from_payload_use_fresh_contexts() {
+    let default = Task::<String>::default();
+    let converted: Task<String> = "payload".to_owned().into();
+    assert_eq!(default.args, "");
+    assert_eq!(converted.args, "payload");
+    assert_eq!(default.status(), Status::Pending);
+    assert_eq!(converted.attempt(), 0);
+    assert!(!Arc::ptr_eq(default.ctx(), converted.ctx()));
+}
+
+#[test]
+fn storage_fields_survive_clone_mapping_and_rebuild() {
+    use super::{extensions::Extensions, runs::Run};
+
+    let mut data = Extensions::new();
+    data.insert(3_u32);
+    let metadata = [("region", "west")].into_iter().collect();
+    let task = TaskBuilder::new(7_u32)
+        .data("discarded")
+        .with_data(data)
+        .metadata(&Tenant("discarded".to_owned()))
+        .with_metadata(metadata)
+        .idempotency_key("unique")
+        .done_at(Some(30))
+        .lock_at(Some(20))
+        .lock_by(Some("worker".to_owned()))
+        .map_context(|mut ctx| {
+            ctx.runs.push(Run {
+                result: None,
+                lock_at: -1,
+                lock_by: "previous".to_owned(),
+                done_at: Some(10),
+            });
+            ctx
+        })
+        .build();
+    let observer = task.clone();
+    let mapped = task.map_args(|n| n.to_string()).into_builder().build();
+    assert_eq!(mapped.done_at(), Some(30));
+    assert_eq!(mapped.lock_at(), Some(20));
+    assert_eq!(mapped.lock_by(), Some("worker"));
+    assert_eq!(mapped.idempotency_key(), Some("unique"));
+    assert_eq!(mapped.runs()[0].lock_at, -1);
+    assert_eq!(mapped.data().get::<u32>(), Some(&3));
+    assert!(mapped.data().get::<&str>().is_none());
+    assert_eq!(mapped.metadata().get("region"), Some("west"));
+    assert!(mapped.metadata().get("tenant").is_none());
+    let cleared = mapped
+        .into_builder()
+        .done_at(None)
+        .lock_at(None)
+        .lock_by(None)
+        .build();
+    assert_eq!(
+        (cleared.done_at(), cleared.lock_at(), cleared.lock_by()),
+        (None, None, None)
+    );
+    assert_eq!(observer.done_at(), Some(30));
+    let replaced = cleared.map_context(|_| Arc::clone(observer.ctx()));
+    assert!(Arc::ptr_eq(replaced.ctx(), observer.ctx()));
+    assert_eq!(replaced.args, "7");
+}
+
+#[test]
+fn schedule_helpers_store_unix_seconds_without_enforcing_a_timer() {
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    let task = TaskBuilder::new(())
+        .run_at_time(UNIX_EPOCH + Duration::from_millis(1999))
+        .build();
+    assert_eq!(task.run_at(), Some(1));
+    assert_eq!(
+        TaskBuilder::new(()).run_at_timestamp(0).build().run_at(),
+        Some(0)
+    );
+    for (builder, seconds) in [
+        (
+            TaskBuilder::run_in_seconds as fn(TaskBuilder<()>, u64) -> TaskBuilder<()>,
+            1,
+        ),
+        (TaskBuilder::run_in_minutes, 60),
+        (TaskBuilder::run_in_hours, 3600),
+    ] {
+        let before = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let scheduled = builder(TaskBuilder::new(()), 2).build().run_at().unwrap();
+        let after = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        assert!((before + 2 * seconds..=after + 2 * seconds).contains(&scheduled));
+    }
+    let before = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let task = TaskBuilder::new(()).run_after(Duration::ZERO).build();
+    let after = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    assert!((before..=after).contains(&task.run_at().unwrap()));
+}
+
+#[test]
+#[should_panic(expected = "Time went backwards")]
+fn schedule_before_epoch_preserves_the_panic_contract() {
+    let _ =
+        TaskBuilder::new(()).run_at_time(std::time::UNIX_EPOCH - std::time::Duration::from_secs(1));
 }
 
 #[test]
@@ -64,8 +183,8 @@ fn builder_mapping_preserves_configuration_and_does_not_require_clone() {
     struct Payload(u64);
 
     let task = TaskBuilder::new(Payload(7))
-        .task_id(42)
-        .queue("reports")
+        .task_id(42.into())
+        .queue("reports".into())
         .run_at_timestamp(1_800_000_000)
         .max_attempts(0)
         .priority(0)
@@ -73,7 +192,6 @@ fn builder_mapping_preserves_configuration_and_does_not_require_clone() {
         .status(Status::Queued)
         .data(vec![1_u8, 2])
         .metadata(&Tenant("east".to_owned()))
-        .unwrap()
         .map_args(|payload| payload.0.to_string())
         .try_map_args(|payload| payload.parse::<u64>())
         .unwrap()
@@ -119,39 +237,53 @@ fn task_clones_isolate_data_but_continue_to_observe_shared_execution() {
 }
 
 #[test]
-fn failed_metadata_injection_preserves_values_and_context_identity() {
+fn failed_metadata_injection_keeps_partial_writes_and_detaches_context() {
     let mut task = Task::new(());
     let observer = task.clone();
     assert_eq!(
         task.inject_metadata(&Tenant(String::new())),
         Err("empty tenant")
     );
-    assert!(task.metadata().is_empty());
-    assert!(Arc::ptr_eq(task.ctx(), observer.ctx()));
+    assert_eq!(task.metadata().get("tenant"), Some(""));
+    assert!(observer.metadata().is_empty());
+    assert!(!Arc::ptr_eq(task.ctx(), observer.ctx()));
+    assert_eq!(task.raw_attempt().increment(), 0);
+    assert_eq!(observer.attempt(), 1);
 
+    let mut task = Task::new(());
     task.inject_metadata(&Tenant("west".to_owned())).unwrap();
     let before = Arc::clone(task.ctx());
     assert_eq!(
         task.inject_metadata(&Tenant("east".to_owned())),
         Err("duplicate tenant")
     );
-    assert!(Arc::ptr_eq(task.ctx(), &before));
+    assert!(!Arc::ptr_eq(task.ctx(), &before));
     assert_eq!(
         Tenant::extract(task.metadata()),
         Ok(Tenant("west".to_owned()))
     );
-    assert!(observer.metadata().is_empty());
+    assert_eq!(before.metadata().get("tenant"), Some("west"));
 }
 
 #[test]
-fn builder_propagates_metadata_errors() {
-    let invalid = TaskBuilder::new(()).metadata(&Tenant(String::new()));
-    assert_eq!(invalid.unwrap_err(), "empty tenant");
-    let duplicate = TaskBuilder::new(())
-        .metadata(&Tenant("first".to_owned()))
-        .unwrap()
-        .metadata(&Tenant("second".to_owned()));
-    assert_eq!(duplicate.unwrap_err(), "duplicate tenant");
+fn builder_panics_on_metadata_errors() {
+    let invalid =
+        std::panic::catch_unwind(|| TaskBuilder::new(()).metadata(&Tenant(String::new())))
+            .unwrap_err();
+    assert_eq!(
+        invalid.downcast_ref::<String>().unwrap(),
+        "Could not add Metadata: \"empty tenant\""
+    );
+    let duplicate = std::panic::catch_unwind(|| {
+        TaskBuilder::new(())
+            .metadata(&Tenant("first".to_owned()))
+            .metadata(&Tenant("second".to_owned()))
+    })
+    .unwrap_err();
+    assert_eq!(
+        duplicate.downcast_ref::<String>().unwrap(),
+        "Could not add Metadata: \"duplicate tenant\""
+    );
     assert_eq!(
         Tenant::extract(&MetadataStore::new()),
         Err("missing tenant")
@@ -160,7 +292,7 @@ fn builder_propagates_metadata_errors() {
 
 #[test]
 fn mapping_and_taking_payloads_preserve_the_original_context() {
-    let source = TaskBuilder::new("42".to_owned()).task_id(5).build();
+    let source = TaskBuilder::new("42".to_owned()).task_id(5.into()).build();
     let observer = Arc::clone(source.ctx());
     let parsed = source.try_map_args(|args| args.parse::<u64>()).unwrap();
     assert!(Arc::ptr_eq(&observer, parsed.ctx()));
@@ -189,11 +321,10 @@ fn payload_conversion_errors_are_returned_unchanged() {
 #[test]
 fn rebuilding_retains_context_but_explicit_resets_do_not_change_observers() {
     let original = TaskBuilder::new(7)
-        .task_id(9)
+        .task_id(9.into())
         .data(vec![1_u8])
         .metadata(&Tenant("south".to_owned()))
-        .unwrap()
-        .queue("batch")
+        .queue("batch".into())
         .run_at_timestamp(123)
         .max_attempts(4)
         .attempt(2)
@@ -212,7 +343,7 @@ fn rebuilding_retains_context_but_explicit_resets_do_not_change_observers() {
     assert_eq!(changed.queue(), original.queue());
     assert_eq!(changed.run_at(), Some(123));
     assert_eq!(changed.max_attempts(), Some(4));
-    changed.raw_attempt().increment();
+    assert_eq!(changed.raw_attempt().increment(), 2);
     changed.raw_status().store(Status::Done);
     assert_eq!((original.attempt(), original.status()), (3, Status::Done));
 
@@ -221,7 +352,7 @@ fn rebuilding_retains_context_but_explicit_resets_do_not_change_observers() {
         .attempt(0)
         .status(Status::Pending)
         .build();
-    reset.raw_attempt().increment();
+    assert_eq!(reset.raw_attempt().increment(), 0);
     reset.raw_status().store(Status::Queued);
     assert_eq!((reset.attempt(), reset.status()), (1, Status::Queued));
     assert_eq!((original.attempt(), original.status()), (3, Status::Done));
