@@ -317,6 +317,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "miju-workflow"
+version = "0.1.0"
+dependencies = [
+ "miju-core",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "mio"
 version = "1.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
