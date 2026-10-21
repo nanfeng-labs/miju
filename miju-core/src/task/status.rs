@@ -1,30 +1,14 @@
-//! Recorded task states and shared observation of state changes.
+//! The status of a task
 //!
-//! [`Status`] is a copyable state value suitable for recording an outcome.
-//! [`AtomicStatus`] holds a state shared between observers, so changes are
-//! visible without replacing a task's execution context.
+//! ## Overview
 //!
-//! These types represent progress but do not drive execution. Updating a cell
-//! neither starts nor stops a task, and no lifecycle transitions are validated.
-//! The execution integration decides when a transition is appropriate.
+//! The `Status` enum defines the various states
+//! a task can be in, such as `Pending`, `Running`, `Done`, `Failed`, etc.
 //!
-//! # State Names
-//!
-//! Display and parsing use `Pending`, `Queued`, `Running`, `Done`, `Failed`, and
-//! `Killed`. Parsing is case-sensitive and does not trim whitespace:
-//!
-//! ```
-//! use miju_core::task::status::Status;
-//!
-//! assert_eq!("Running".parse::<Status>()?, Status::Running);
-//! assert_eq!(Status::Done.to_string(), "Done");
-//! assert!("running".parse::<Status>().is_err());
-//! assert!("Done ".parse::<Status>().is_err());
-//! # Ok::<(), miju_core::task::status::StatusError>(())
-//! ```
-
+//! - It includes functionality for parsing a `Status` from a string and formatting it for display.
+//! - This is useful for tracking the lifecycle of tasks.
+use core::fmt;
 use std::{
-    fmt,
     str::FromStr,
     sync::{
         Arc,
@@ -32,168 +16,160 @@ use std::{
     },
 };
 
-/// A task's recorded execution state.
-///
-/// The default is [`Pending`](Self::Pending). Copying this value produces a
-/// snapshot; use [`AtomicStatus`] to observe later changes. Backends and workers
-/// are responsible for enforcing allowed transitions.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+/// Represents the state of a task
 #[repr(u8)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
+#[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub enum Status {
-    /// Waiting to become eligible for execution.
+    /// Task is pending
     #[default]
-    Pending = 0,
-    /// Available for a worker to receive.
-    Queued = 1,
-    /// Being executed by a worker.
-    Running = 2,
-    /// Completed successfully.
-    Done = 3,
-    /// Completed with an error.
-    Failed = 4,
-    /// Execution was terminated.
-    Killed = 5,
+    Pending,
+    /// Task is queued for execution, but no worker has picked it up
+    Queued,
+    /// Task is running
+    Running,
+    /// Task was done successfully
+    Done,
+    /// Task has failed.
+    Failed,
+    /// Task has been killed
+    Killed,
 }
 
-impl fmt::Display for Status {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::Pending => "Pending",
-            Self::Queued => "Queued",
-            Self::Running => "Running",
-            Self::Done => "Done",
-            Self::Failed => "Failed",
-            Self::Killed => "Killed",
-        })
-    }
-}
-
-/// An unrecognized, case-sensitive state name.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Errors that can occur when parsing a `Status` from a string
+#[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum StatusError {
-    /// Preserves the input that could not be parsed.
+    #[error("Unknown state: {0}")]
+    /// Unknown state error
     UnknownState(String),
 }
-
-impl fmt::Display for StatusError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::UnknownState(value) => write!(f, "unknown task status: {value:?}"),
-        }
-    }
-}
-
-impl std::error::Error for StatusError {}
 
 impl FromStr for Status {
     type Err = StatusError;
 
-    /// Parses an exact state name as produced by [`Display`](fmt::Display).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StatusError::UnknownState`] for an unrecognized name, preserving
-    /// the input without trimming or case normalization.
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value {
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
             "Pending" => Ok(Self::Pending),
             "Queued" => Ok(Self::Queued),
             "Running" => Ok(Self::Running),
             "Done" => Ok(Self::Done),
             "Failed" => Ok(Self::Failed),
             "Killed" => Ok(Self::Killed),
-            _ => Err(StatusError::UnknownState(value.to_owned())),
+            _ => Err(StatusError::UnknownState(s.to_owned())),
         }
     }
 }
 
-/// An atomic status cell shared by all of its clones.
-///
-/// A default cell contains [`Status::Pending`]. Cloning the cell keeps observing
-/// the same state; [`load`](Self::load) returns an independent value representing
-/// the state at the time of the read.
-///
-/// # Example
-///
-/// ```
-/// use miju_core::task::status::{AtomicStatus, Status};
-///
-/// let status = AtomicStatus::default();
-/// let observer = status.clone();
-/// let snapshot = status.load();
-///
-/// status.store(Status::Running);
-/// assert_eq!(observer.load(), Status::Running);
-/// assert_eq!(snapshot, Status::Pending);
-/// ```
-#[derive(Clone, Debug, Default)]
-pub struct AtomicStatus {
-    value: Arc<AtomicU8>,
+impl fmt::Display for Status {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self {
+            Self::Pending => write!(f, "Pending"),
+            Self::Queued => write!(f, "Queued"),
+            Self::Running => write!(f, "Running"),
+            Self::Done => write!(f, "Done"),
+            Self::Failed => write!(f, "Failed"),
+            Self::Killed => write!(f, "Killed"),
+        }
+    }
 }
+
+impl Status {
+    fn from_u8(val: u8) -> Option<Self> {
+        match val {
+            0 => Some(Self::Pending),
+            1 => Some(Self::Queued),
+            2 => Some(Self::Running),
+            3 => Some(Self::Done),
+            4 => Some(Self::Failed),
+            5 => Some(Self::Killed),
+            _ => None,
+        }
+    }
+}
+
+/// Atomic version of `Status` for concurrent scenarios
+#[repr(transparent)]
+#[derive(Debug, Clone, Default)]
+pub struct AtomicStatus(Arc<AtomicU8>);
 
 impl AtomicStatus {
-    /// Creates an independent status cell.
-    ///
-    /// Use [`Clone::clone`] to share an existing cell instead.
+    /// Create a new `AtomicStatus` with the given initial status
     #[must_use]
     pub fn new(status: Status) -> Self {
-        Self {
-            value: Arc::new(AtomicU8::new(status as u8)),
-        }
+        Self(Arc::new(AtomicU8::new(status as u8)))
     }
 
-    /// Reads the current state.
+    /// Load the current status
     #[must_use]
     pub fn load(&self) -> Status {
-        Self::decode(self.value.load(Ordering::SeqCst))
+        Status::from_u8(self.0.load(Ordering::SeqCst)).unwrap()
     }
 
-    /// Replaces the current state without validating a lifecycle transition.
+    /// Store a new status
     pub fn store(&self, status: Status) {
-        self.value.store(status as u8, Ordering::SeqCst);
+        self.0.store(status as u8, Ordering::SeqCst);
     }
-
-    /// Replaces the current state and returns the previous one.
-    ///
-    /// Like [`store`](Self::store), this accepts any [`Status`] without checking
-    /// a lifecycle transition. The read and replacement are one atomic operation.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # use miju_core::task::status::{AtomicStatus, Status};
-    /// let status = AtomicStatus::new(Status::Running);
-    /// assert_eq!(status.swap(Status::Done), Status::Running);
-    /// assert_eq!(status.load(), Status::Done);
-    /// ```
+    /// Swap the current status with a new one, returning the old status
     #[must_use]
     pub fn swap(&self, status: Status) -> Status {
-        Self::decode(self.value.swap(status as u8, Ordering::SeqCst))
-    }
-
-    fn decode(value: u8) -> Status {
-        // Only typed Status values enter the private cell, so each stored value has a variant.
-        match value {
-            0 => Status::Pending,
-            1 => Status::Queued,
-            2 => Status::Running,
-            3 => Status::Done,
-            4 => Status::Failed,
-            5 => Status::Killed,
-            _ => unreachable!("status cells only store Status discriminants"),
-        }
-    }
-}
-
-impl From<Status> for AtomicStatus {
-    fn from(value: Status) -> Self {
-        Self::new(value)
+        Status::from_u8(self.0.swap(status as u8, Ordering::AcqRel)).unwrap()
     }
 }
 
 impl From<AtomicStatus> for Status {
-    fn from(value: AtomicStatus) -> Self {
-        value.load()
+    fn from(val: AtomicStatus) -> Self {
+        val.load()
+    }
+}
+
+impl From<Status> for AtomicStatus {
+    fn from(val: Status) -> Self {
+        Self::new(val)
+    }
+}
+
+#[cfg(feature = "serde")]
+mod serde_impl {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    use super::*;
+
+    // Custom serialization function
+    fn serialize<S>(status: &AtomicStatus, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let value = status.load();
+        serializer.serialize_str(&value.to_string())
+    }
+
+    // Custom deserialization function
+    fn deserialize<'de, D>(deserializer: D) -> Result<AtomicStatus, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        let status = Status::from_str(&value).map_err(serde::de::Error::custom)?;
+        Ok(AtomicStatus::new(status))
+    }
+
+    impl Serialize for AtomicStatus {
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            serialize(self, serializer)
+        }
+    }
+
+    impl<'de> Deserialize<'de> for AtomicStatus {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            deserialize(deserializer)
+        }
     }
 }

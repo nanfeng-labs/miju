@@ -1,80 +1,45 @@
-//! Conversion between task arguments and a storage representation.
+//! Utilities for encoding and decoding task arguments and results
 //!
-//! Implement [`Codec`] when a storage or transport format differs from the
-//! application's payload type. Both directions borrow their input, allowing the
-//! caller to retain the original value while preparing or reading stored data.
+//! # Overview
 //!
-//! # Choosing a Representation
-//!
-//! [`Codec::Compact`] is the encoded type understood by the integration. It may
-//! be text, bytes, or a structured value; the name does not require compression
-//! or a smaller in-memory size. The implementation also chooses one error type
-//! capable of describing encoding and decoding failures.
-//!
-//! # Example
-//!
-//! This codec stores an unsigned integer as four little-endian bytes. Its fixed
-//! input sizes make both conversions infallible:
-//!
-//! ```
-//! use std::convert::Infallible;
-//! use miju_core::backend::codec::Codec;
-//!
-//! struct WordCodec;
-//!
-//! impl Codec<u32> for WordCodec {
-//!     type Compact = [u8; 4];
-//!     type Error = Infallible;
-//!
-//!     fn encode(&self, value: &u32) -> Result<Self::Compact, Self::Error> {
-//!         Ok(value.to_le_bytes())
-//!     }
-//!
-//!     fn decode(&self, value: &Self::Compact) -> Result<u32, Self::Error> {
-//!         Ok(u32::from_le_bytes(*value))
-//!     }
-//! }
-//!
-//! let codec = WordCodec;
-//! let stored = codec.encode(&513)?;
-//! assert_eq!(stored, [1, 2, 0, 0]);
-//! assert_eq!(codec.decode(&stored)?, 513);
-//! # Ok::<(), Infallible>(())
-//! ```
+//! The `Codec` trait allows for converting values
+//! between a type `T` and a more compact or transport-friendly representation.
+//! This is particularly useful for serializing/deserializing, compressing/expanding,
+//! or otherwise encoding/decoding values in a custom format.
 
-/// Encodes borrowed arguments and reconstructs them from borrowed storage data.
+/// A trait for converting values between a type `T` and a more compact or
+/// transport-friendly representation for a `Backend`. Examples include json
+/// and bytes.
 ///
-/// Implementations choose both the storage representation and the error type.
-/// Encoding and decoding define a format together; an integration must use a
-/// compatible codec when reading data written earlier. The trait itself does
-/// not persist values or manage format versions.
+/// This is useful when you need to serialize/deserialize, compress/expand,
+/// or otherwise encode/decode values in a custom format.
 ///
-/// # Type Parameter
+/// By default, a backend doesn't care about the specific type implementing [`Codec`]
+/// but rather the [`Codec::Compact`] type. This means if it can accept bytes, you
+/// can use familiar crates such as bincode and rkyv
 ///
-/// `T` is the decoded application value. It does not need to implement a
-/// particular serialization trait unless the codec implementation requires one.
-/// See the [module documentation](self) for an implementation example.
+/// # Type Parameters
+/// - `T`: The type of value being encoded/decoded.
 pub trait Codec<T> {
-    /// The representation accepted by the backing store.
-    ///
-    /// This type is independent of the application's decoded type `T`.
-    type Compact;
-    /// An encoding or decoding failure reported by this implementation.
+    /// The error type returned if encoding or decoding fails.
     type Error;
 
-    /// Produces a storage value without consuming the arguments.
+    /// The compact or encoded representation of `T`.
     ///
-    /// # Errors
-    ///
-    /// Returns [`Self::Error`] if the input cannot be represented in this codec's
-    /// format. Validation and supported values are implementation-specific.
-    fn encode(&self, value: &T) -> Result<Self::Compact, Self::Error>;
+    /// This could be a primitive type, a byte buffer, or any other
+    /// representation that is more efficient to store or transmit.
+    type Compact;
 
-    /// Reconstructs arguments without consuming the storage value.
+    /// Encode a value of type `T` into its compact representation.
     ///
     /// # Errors
+    /// Returns [`Self::Error`] if the value cannot be encoded.
+    fn encode(&self, val: &T) -> Result<Self::Compact, Self::Error>;
+
+    /// Decode a compact representation back into a value of type `T`.
     ///
-    /// Returns [`Self::Error`] if the stored value cannot be decoded as `T`, for
-    /// example because its format is invalid or incompatible with this codec.
-    fn decode(&self, value: &Self::Compact) -> Result<T, Self::Error>;
+    /// # Errors
+    /// Returns [`Self::Error`] if the compact representation cannot
+    /// be decoded into a valid `T`.
+    fn decode(&self, val: &Self::Compact) -> Result<T, Self::Error>;
 }

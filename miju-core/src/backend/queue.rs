@@ -1,65 +1,113 @@
-//! Destination names carried in task execution context.
+//! Represents a queue in the backend
 //!
-//! [`Queue`] represents a queue's name. A producer can select one with
-//! [`TaskBuilder::queue`](crate::task::builder::TaskBuilder::queue), and an
-//! integration can read it through
-//! [`ExecutionContext::queue`](crate::task::ExecutionContext::queue).
+//! This module provides the `Queue` struct and related functionality for managing
+//! queues in the backend. A queue is identified by its name and is used to group
+//! tasks for processing by workers.
 //!
-//! The name does not create a queue or determine how it routes tasks. Storage
-//! integrations define valid names, default destinations, and routing behavior.
+//! The `Queue` struct is designed to be lightweight and easily clonable, allowing
+//! it to be passed around in various contexts. It uses an `Arc<str>` internally
+//! to store the queue name, ensuring efficient memory usage and thread safety.
+//!
+//! The module also includes an implementation of the `FromRequest` trait, allowing
+//! extraction of the queue information from a task context. This is useful for
+//! workers that need to know which queue they are processing tasks from.
+use std::{str::FromStr, sync::Arc};
 
-use std::{convert::Infallible, fmt, str::FromStr};
+use crate::task::{
+    Task,
+    from_request::FromRequest,
+    metadata::{Metadata, MetadataStore},
+};
 
-/// An owned queue name preserved without normalization or validation.
-///
-/// Construction and parsing accept any string, including an empty name. The
-/// backend decides whether the name identifies an available destination.
-/// [`AsRef<str>`] borrows the stored name, and [`Display`](fmt::Display) emits
-/// the same text.
-///
-/// # Example
-///
-/// ```
-/// use miju_core::backend::queue::Queue;
-///
-/// let queue: Queue = "reports/monthly".parse()?;
-/// assert_eq!(queue.as_ref(), "reports/monthly");
-/// assert_eq!(queue.to_string(), "reports/monthly");
-/// assert_eq!(Queue::from("").as_ref(), "");
-/// # Ok::<(), std::convert::Infallible>(())
-/// ```
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct Queue(String);
+/// Represents a queue in the backend
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Queue(Arc<str>);
 
 impl From<String> for Queue {
     fn from(value: String) -> Self {
-        Self(value)
+        Self(Arc::from(value))
     }
 }
-
-impl From<&str> for Queue {
-    fn from(value: &str) -> Self {
-        Self(value.to_owned())
-    }
-}
-
 impl AsRef<str> for Queue {
     fn as_ref(&self) -> &str {
         &self.0
     }
 }
 
-impl fmt::Display for Queue {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_ref())
+impl From<&str> for Queue {
+    fn from(value: &str) -> Self {
+        Self(Arc::from(value))
     }
 }
 
 impl FromStr for Queue {
-    type Err = Infallible;
+    type Err = std::convert::Infallible;
 
-    /// Copies the input into a queue name without validation.
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        Ok(Self::from(value))
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Self(Arc::from(s)))
+    }
+}
+
+impl std::fmt::Display for Queue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl serde::Serialize for Queue {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for Queue {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Ok(Self(Arc::from(s)))
+    }
+}
+
+impl<Args> FromRequest<Task<Args>> for Queue
+where
+    Args: Sync,
+{
+    type Error = QueueError;
+
+    async fn from_request(req: &Task<Args>) -> Result<Self, Self::Error> {
+        let queue = req.queue().cloned().ok_or(QueueError::NotFound)?;
+        Ok(queue)
+    }
+}
+
+/// Errors that can occur when extracting queue information from a task context
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum QueueError {
+    /// Queue data not found in task context
+    #[error("Queue data not found in task context. This is likely a bug. Please report it.")]
+    NotFound,
+}
+
+impl Metadata for Queue {
+    type Error = QueueError;
+
+    fn extract(store: &MetadataStore) -> Result<Self, Self::Error> {
+        store
+            .get("queue")
+            .map(Self::from)
+            .ok_or(QueueError::NotFound)
+    }
+
+    fn inject(&self, map: &mut MetadataStore) -> Result<(), Self::Error> {
+        map.insert("queue", self.0.to_string())
+            .map_err(|_| QueueError::NotFound)
     }
 }

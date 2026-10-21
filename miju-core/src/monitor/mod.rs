@@ -1,0 +1,987 @@
+//! # Monitor
+//!
+//! `Monitor` provides centralized coordination and lifecycle management for multiple workers.
+//! It is responsible for executing, monitoring, and gracefully shutting down all registered workers in a robust and customizable manner.
+//!
+//! ## Features
+//!
+//! - Register and run one or more workers.
+//! - Handle graceful shutdown with optional timeout.
+//! - Register custom event handlers to observe worker events (e.g. task received, completed, errored).
+//! - Integrate shutdown with system signals (e.g. `SIGINT`, `SIGTERM`) or custom triggers.
+//! - **Restart Strategy:** Configure custom logic to automatically restart workers on failure.
+//!
+//! ## Usage
+//!
+//! ```rust,no_run
+//! # use miju_core::monitor::Monitor;
+//! # use miju_core::worker::builder::WorkerBuilder;
+//! # use miju_core::backend::memory::MemoryStorage;
+//! # use miju_core::task::Task;
+//! # use miju_core::backend::TaskSink;
+//! use tower::service_fn;
+//! # use std::time::Duration;
+//!
+//! #[tokio::main]
+//! async fn main() {
+//!
+//!     async fn task(req: u32) -> Result<u32, std::io::Error> {
+//!         println!("Processing task: {:?}", req);
+//!         Ok::<_, std::io::Error>(req)
+//!     }
+//!
+//!     let monitor = Monitor::new()
+//!         .on_event(|worker, event| println!("{}: {:?}", worker.name(), event))
+//!         .register(move |_| {
+//!             WorkerBuilder::new("demo-worker")
+//!                 .backend(MemoryStorage::new())
+//!                 .build(task)
+//!          });
+//!
+//!     // Start monitor and run all registered workers
+//!     monitor.run().await.unwrap();
+//! }
+//! ```
+//!
+//! ## Graceful Shutdown with Timeout
+//!
+//! To force shutdown after a certain duration, use the `shutdown_timeout` method:
+//!
+//! ```ignore
+//! # use miju_core::monitor::Monitor;
+//! # use std::time::Duration;
+//! let monitor = Monitor::new()
+//!     .shutdown_timeout(Duration::from_secs(10))
+//!     .run_with_signal(signal::ctrl_c())
+//!     .await
+//!     .unwrap();
+//! ```
+//!
+//! This ensures that if any worker hangs or takes too long to finish, the monitor will shut down after 10 seconds.
+//!
+//! ## Restarting Workers on Failure
+//!
+//! You can configure the monitor to restart workers when they fail, using custom logic:
+//!
+//! ```rust
+//! use miju_core::monitor::Monitor;
+//!
+//! let monitor = Monitor::new()
+//!     .should_restart(|worker, error| {
+//!         let restarts = worker.restarts();
+//!         println!("Worker failed: {error:?}, attempt: {restarts}");
+//!         restarts < 3 // Run up to 3 times
+//!     });
+//! ```
+//!
+//! ## Observing Worker Events
+//!
+//! Register event handlers to observe worker lifecycle events:
+//!
+//! ```rust
+//! use miju_core::monitor::Monitor;
+//!
+//! let monitor = Monitor::new()
+//!     .on_event(|worker, event| println!("Worker {}: {:?}", worker.name(), event));
+//! ```
+//!
+//! ## Registering Multiple Workers
+//!
+//! You can register multiple workers by building and registering each worker individually.
+//! This is useful when you want to run several workers with the same configuration:
+//!
+//! `rust
+//! # use miju_core::worker::builder::WorkerBuilder;
+//! # use miju_core::monitor::Monitor;
+//! # use miju_core::backend::memory::MemoryStorage;
+//! # async fn task(_: u32) {}
+//! let mut monitor = Monitor::new();
+//!
+//! for index in 0..3 {
+//!     monitor = monitor.register(|restarts|
+//!         WorkerBuilder::new(format!("worker-{index}-run-{restarts}"))
+//!             .backend(MemoryStorage::new())
+//!             .build(task),
+//!     );
+//! }
+//! `.
+//!
+//! ## Example: Full Monitor Usage
+//!
+//! This example requires the `sleep` feature.
+//!
+//! ```rust
+//! # #[cfg(feature = "sleep")]
+//! # {
+//! # use std::time::Duration;
+//! # use miju_core::worker::builder::WorkerBuilder;
+//! # use miju_core::monitor::Monitor;
+//! # use miju_core::backend::memory::MemoryStorage;
+//! # async fn example() {
+//! # async fn task(_: u32) {}
+//! let monitor = Monitor::new()
+//!     .register(|index|
+//!         WorkerBuilder::new(format!("worker-{index}"))
+//!         .backend(MemoryStorage::new())
+//!         .build(task)
+//!     )
+//!     .should_restart(|wrk, _| wrk.restarts() < 5)
+//!     .on_event(|worker, event| println!("Event: {:?}", event))
+//!     .shutdown_timeout(Duration::from_secs(10));
+//! let ctx = monitor.context();
+//! monitor.run().await.unwrap();
+//! # }
+//! # }
+//! ```
+//!
+//! ## Error Handling
+//!
+//! Without a terminator, worker failures are collected into `MonitorError`.
+//! The terminator branch of `run_with_signal` returns `Ok(())` after either branch
+//! completes, including when that branch produced an error.
+//! You can inspect the error to see which workers failed and why.
+//!
+//! [Worker]: crate::worker::Worker
+
+use std::{
+    fmt::{self, Debug, Formatter},
+    pin::Pin,
+    sync::{Arc, RwLock},
+    task::{Context, Poll},
+};
+
+use futures_util::{
+    Future, FutureExt, StreamExt,
+    future::{BoxFuture, Shared},
+    stream::FuturesUnordered,
+};
+use tower_layer::Layer;
+use tower_service::Service;
+
+use crate::{
+    backend::{Backend, BackendConfig, future::BoxSyncFuture},
+    error::{BoxDynError, WorkerError},
+    monitor::{context::MonitorContext, shutdown::Shutdown},
+    task::Task,
+    worker::{
+        Worker,
+        context::WorkerContext,
+        event::{Event, EventHandlerBuilder},
+        lifecycle::LifecycleService,
+    },
+};
+
+pub mod context;
+pub mod shutdown;
+
+type WorkerFactory = Box<
+    dyn Fn(&mut WorkerContext) -> BoxFuture<'static, Result<(), WorkerError>>
+        + 'static
+        + Send
+        + Sync,
+>;
+
+type ShouldRestart =
+    Arc<RwLock<Option<Box<dyn Fn(&WorkerContext, &WorkerError) -> bool + 'static + Send + Sync>>>>;
+
+#[pin_project::pin_project]
+/// A worker that is monitored by the `Monitor`.
+struct MonitoredWorker {
+    factory: WorkerFactory,
+    worker: WorkerContext,
+    #[pin]
+    fut: Option<BoxSyncFuture<Result<(), WorkerError>>>,
+    should_restart: ShouldRestart,
+}
+
+/// Represents errors that occurred in a monitored worker, including its context and the error itself.
+#[derive(Debug)]
+pub struct MonitoredWorkerError {
+    ctx: WorkerContext,
+    error: WorkerError,
+}
+
+impl Future for MonitoredWorker {
+    type Output = Result<(), MonitoredWorkerError>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+
+        loop {
+            let mut this = self.as_mut().project();
+            let worker = this.worker;
+            let _name = worker.name().to_owned();
+            debug!(name = ?_name, "polling worker");
+
+            // There is no future to poll.
+            if this.fut.is_none() {
+                let fut = (this.factory)(worker);
+                debug!(name = ?_name, "created new future");
+                this.fut.set(Some(fut.into()));
+            }
+
+            // Worker is running but shutdown has been called
+            if worker.is_running() && worker.is_shutting_down() {
+                info!(name = ?_name, "worker shutting down, stopping");
+                if let Err(err) = worker.stop() {
+                    error!(name = ?_name, ?err, "failed to stop worker");
+                    return Poll::Ready(Err(MonitoredWorkerError {
+                        ctx: worker.clone(),
+                        error: err,
+                    }));
+                }
+                continue;
+            }
+
+            let fut = this
+                .fut
+                .as_mut()
+                .get_mut()
+                .as_mut()
+                .expect("future was just set above; this should be unreachable");
+
+            let poll_result =
+                catch_unwind(AssertUnwindSafe(|| fut.poll_unpin(cx))).map_err(|err| {
+                    let err = if let Some(s) = err.downcast_ref::<&str>() {
+                        (*s).to_owned()
+                    } else if let Some(s) = err.downcast_ref::<String>() {
+                        s.clone()
+                    } else {
+                        "Unknown panic".to_owned()
+                    };
+                    WorkerError::PanicError(err)
+                });
+
+            match poll_result {
+                Ok(Poll::Pending) => return Poll::Pending,
+                Ok(Poll::Ready(Ok(()))) => return Poll::Ready(Ok(())),
+                Ok(Poll::Ready(Err(error))) | Err(error) => {
+                    warn!(name = ?_name, ?error, "worker future ended with error");
+                    let _fut = this.fut.as_mut().get_mut().take();
+
+                    let should_restart = match this.should_restart.read() {
+                        Ok(guard) => guard,
+                        Err(_poison_err) => {
+                            error!(name = ?_name, poison_err = ?_poison_err, "should_restart lock poisoned");
+                            return Poll::Ready(Err(MonitoredWorkerError {
+                                ctx: worker.clone(),
+                                error,
+                            }));
+                        }
+                    };
+
+                    match should_restart.as_ref().map(|s| s.as_ref()) {
+                        Some(cb) => {
+                            if !(cb)(worker, &error) {
+                                info!(name = ?_name, "restart callback declined restart");
+                                if let Err(_stop_err) = worker.stop() {
+                                    error!(name = ?_name, stop_err = ?_stop_err, "failed to stop worker");
+                                }
+                                return Poll::Ready(Err(MonitoredWorkerError {
+                                    ctx: worker.clone(),
+                                    error,
+                                }));
+                            }
+                            info!(name = ?_name, "restarting worker");
+                            if let Err(_restart_err) = worker.restart() {
+                                error!(name = ?_name, restart_err = ?_restart_err, "failed to restart worker");
+                                return Poll::Ready(Err(MonitoredWorkerError {
+                                    ctx: worker.clone(),
+                                    error,
+                                }));
+                            }
+                        }
+                        _ => {
+                            return Poll::Ready(Err(MonitoredWorkerError {
+                                ctx: worker.clone(),
+                                error,
+                            }));
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// A monitor for coordinating and managing a collection of workers.
+#[derive(Default)]
+pub struct Monitor {
+    workers: Vec<MonitoredWorker>,
+    terminator: Option<Shared<BoxFuture<'static, ()>>>,
+    shutdown: Shutdown,
+    event_handler: EventHandlerBuilder,
+    should_restart: ShouldRestart,
+}
+
+impl Debug for Monitor {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Monitor")
+            .field("shutdown", &"[Graceful shutdown listener]")
+            .field("workers", &self.workers.len())
+            .finish()
+    }
+}
+
+impl Monitor {
+    fn run_worker<Args, S, FB, M>(
+        worker: Worker<Args, FB, S, M>,
+    ) -> BoxFuture<'static, Result<(), WorkerError>>
+    where
+        FB: BackendConfig + Backend<Task = Task<FB::Args>> + Send + Unpin + 'static,
+        S: Service<Task<FB::Args>> + Send + 'static,
+        FB::Args: Send + 'static,
+        Args: Send + 'static,
+        FB::Error: Into<BoxDynError> + Send + 'static,
+        M: Layer<LifecycleService<S>> + 'static,
+        FB::Layer: Layer<<M as Layer<LifecycleService<S>>>::Service>,
+        <FB::Layer as Layer<<M as Layer<LifecycleService<S>>>::Service>>::Service:
+            Service<Task<FB::Args>>,
+        <FB::Layer as Layer<<M as Layer<LifecycleService<S>>>::Service>>::Service: Send + 'static,
+        <<FB::Layer as Layer<<M as Layer<LifecycleService<S>>>::Service>>::Service as Service<
+            Task<<FB as BackendConfig>::Args>,
+        >>::Future: Send,
+        <<FB::Layer as Layer<<M as Layer<LifecycleService<S>>>::Service>>::Service as Service<
+            Task<<FB as BackendConfig>::Args>,
+        >>::Error: Into<BoxDynError> + Send + Sync + 'static,
+        <<FB::Layer as Layer<<M as Layer<LifecycleService<S>>>::Service>>::Service as Service<
+            Task<<FB as BackendConfig>::Args>,
+        >>::Response: Send + Sync + 'static,
+    {
+        let mut stream = worker.stream();
+        async move {
+            loop {
+                match stream.next().await {
+                    Some(Err(e)) => return Err(e),
+                    None => return Ok(()),
+                    _ => (),
+                }
+            }
+        }
+        .boxed()
+    }
+    /// Registers a worker into the monitor registry.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use miju_core::monitor::Monitor;
+    /// # use miju_core::backend::memory::MemoryStorage;
+    /// # use miju_core::worker::builder::WorkerBuilder;
+    /// # async fn example() {
+    /// let monitor = Monitor::new();
+    /// monitor
+    /// .register(|restarts| {
+    ///     WorkerBuilder::new("example-worker")
+    ///         .backend(MemoryStorage::new())
+    ///         .build(|args: u32| async {})
+    /// })
+    /// .run()
+    /// .await;
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn register<Args, S, FB, M>(
+        mut self,
+        factory: impl Fn(usize) -> Worker<Args, FB, S, M> + 'static + Send + Sync,
+    ) -> Self
+    where
+        FB: BackendConfig + Backend<Task = Task<FB::Args>> + Send + Unpin + 'static,
+        S: Service<Task<FB::Args>> + Send + 'static,
+        FB::Args: Send + 'static,
+        Args: Send + 'static,
+        FB::Error: Into<BoxDynError> + Send + 'static,
+        M: Layer<LifecycleService<S>> + 'static,
+        FB::Layer: Layer<<M as Layer<LifecycleService<S>>>::Service>,
+        <FB::Layer as Layer<<M as Layer<LifecycleService<S>>>::Service>>::Service:
+            Service<Task<FB::Args>>,
+        <FB::Layer as Layer<<M as Layer<LifecycleService<S>>>::Service>>::Service: Send + 'static,
+        <<FB::Layer as Layer<<M as Layer<LifecycleService<S>>>::Service>>::Service as Service<
+            Task<<FB as BackendConfig>::Args>,
+        >>::Future: Send,
+        <<FB::Layer as Layer<<M as Layer<LifecycleService<S>>>::Service>>::Service as Service<
+            Task<<FB as BackendConfig>::Args>,
+        >>::Error: Into<BoxDynError> + Send + Sync + 'static,
+        <<FB::Layer as Layer<<M as Layer<LifecycleService<S>>>::Service>>::Service as Service<
+            Task<<FB as BackendConfig>::Args>,
+        >>::Response: Send + Sync + 'static,
+    {
+        let shutdown = Some(self.shutdown.clone());
+        let handler = self.event_handler.clone();
+
+        let (fut, worker) = {
+            let mut w = factory(0);
+            let ctx = &mut w.context;
+            ctx.bind_service::<M::Service>();
+            ctx.add_listener(move |ctx, ev| {
+                let handlers = handler.read();
+                if let Ok(handlers) = handlers {
+                    for h in handlers.iter() {
+                        h(ctx, ev);
+                    }
+                }
+            });
+            ctx.shutdown = shutdown;
+            let c = ctx.clone();
+            let fut = Self::run_worker(w).into();
+            (Some(fut), c)
+        };
+
+        let worker = MonitoredWorker {
+            fut,
+            factory: Box::new(move |worker| {
+                let mut new_worker = factory(worker.restarts());
+
+                // Replace current worker name with new name
+                if worker.name().ne(new_worker.context.name()) {
+                    let name = Arc::make_mut(&mut worker.name);
+                    *name = new_worker.context.name().to_owned();
+                }
+
+                // Reuse the current context
+                new_worker.context = worker.clone();
+
+                (Self::run_worker(new_worker)) as _
+            }),
+            worker,
+            should_restart: self.should_restart.clone(),
+        };
+        self.workers.push(worker);
+        self
+    }
+
+    /// Registers N workers into the monitor registry.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use miju_core::monitor::Monitor;
+    /// # use miju_core::backend::memory::MemoryStorage;
+    /// # use miju_core::worker::builder::WorkerBuilder;
+    /// # async fn example() {
+    /// let monitor = Monitor::new();
+    /// monitor
+    /// .register_n(5, |index, restarts| {
+    ///     WorkerBuilder::new("example-worker")
+    ///         .backend(MemoryStorage::new())
+    ///         .build(|_: u32| async {})
+    /// })
+    /// .run()
+    /// .await;
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn register_n<Args, S, FB, M>(
+        mut self,
+        count: usize,
+        factory: impl Fn(usize, usize) -> Worker<Args, FB, S, M> + 'static + Send + Sync,
+    ) -> Self
+    where
+        FB: BackendConfig + Backend<Task = Task<FB::Args>> + Send + Unpin + 'static,
+        S: Service<Task<FB::Args>> + Send + 'static,
+        FB::Args: Send + 'static,
+        Args: Send + 'static,
+        FB::Error: Into<BoxDynError> + Send + 'static,
+        M: Layer<LifecycleService<S>> + 'static,
+        FB::Layer: Layer<<M as Layer<LifecycleService<S>>>::Service>,
+        <FB::Layer as Layer<<M as Layer<LifecycleService<S>>>::Service>>::Service:
+            Service<Task<FB::Args>>,
+        <FB::Layer as Layer<<M as Layer<LifecycleService<S>>>::Service>>::Service: Send + 'static,
+        <<FB::Layer as Layer<<M as Layer<LifecycleService<S>>>::Service>>::Service as Service<
+            Task<<FB as BackendConfig>::Args>,
+        >>::Future: Send,
+        <<FB::Layer as Layer<<M as Layer<LifecycleService<S>>>::Service>>::Service as Service<
+            Task<<FB as BackendConfig>::Args>,
+        >>::Error: Into<BoxDynError> + Send + Sync + 'static,
+        <<FB::Layer as Layer<<M as Layer<LifecycleService<S>>>::Service>>::Service as Service<
+            Task<<FB as BackendConfig>::Args>,
+        >>::Response: Send + Sync + 'static,
+    {
+        let factory = Arc::new(factory);
+        for index in 0..count {
+            let f = factory.clone();
+            self = self.register(move |id| f(index, id));
+        }
+        self
+    }
+
+    /// Runs the monitor and all its registered workers until they have all completed or a shutdown signal is received.
+    ///
+    /// # Arguments
+    ///
+    /// * `signal` - A `Future` that resolves when a shutdown signal is received.
+    ///
+    /// # Errors
+    ///
+    /// If the monitor fails to shutdown gracefully, an `std::io::Error` will be returned.
+    ///
+    /// # Remarks
+    ///
+    /// If a timeout has been set using the `Monitor::shutdown_timeout` method, the monitor
+    /// will wait for all workers to complete up to the timeout duration before exiting.
+    /// If the timeout is reached and workers have not completed, the monitor will exit forcefully.
+    pub async fn run_with_signal<S>(self, signal: S) -> Result<(), MonitorError>
+    where
+        S: Send + Future<Output = std::io::Result<()>>,
+    {
+        let shutdown = self.shutdown.clone();
+        let ctx = self.context();
+        let shutdown_after = async move {
+            let res = signal.await;
+            let _ = ctx.shutdown();
+            res
+        };
+        if let Some(terminator) = self.terminator {
+            let _res = futures_util::future::select(
+                Self::run_all_workers(self.workers, shutdown).boxed(),
+                async {
+                    let res = shutdown_after.await;
+                    terminator.await;
+                    res.map_err(MonitorError::ShutdownSignal)
+                }
+                .boxed(),
+            )
+            .await;
+        } else {
+            let runner = self.run();
+            let res = futures_util::join!(shutdown_after, runner); // If no terminator is provided, we wait for both the shutdown call and all workers to complete
+            match res {
+                (Ok(_), Ok(_)) => {
+                    // All good
+                }
+                (Err(e), Ok(_) | Err(_)) => return Err(e.into()),
+                (Ok(_), Err(e)) => return Err(e),
+            }
+        }
+        Ok(())
+    }
+
+    /// Runs the monitor and all its registered workers until they have all completed.
+    ///
+    /// # Errors
+    ///
+    /// Worker failures are collected into [`MonitorError::ExitError`].
+    ///
+    /// # Remarks
+    ///
+    /// If all workers have completed execution, then by default the monitor will start a shutdown
+    pub async fn run(self) -> Result<(), MonitorError> {
+        let shutdown = self.shutdown.clone();
+        let shutdown_future = self.shutdown.boxed().map(|_| ());
+        let (result, _) = futures_util::join!(
+            Self::run_all_workers(self.workers, shutdown),
+            shutdown_future,
+        );
+
+        result
+    }
+    async fn run_all_workers(
+        workers: Vec<MonitoredWorker>,
+        shutdown: Shutdown,
+    ) -> Result<(), MonitorError> {
+        // `FuturesUnordered` only polls a worker whose waker fired, so every shutdown path
+        // must wake the workers explicitly; `MonitorContext::shutdown` does that.
+        let results: Vec<_> = FuturesUnordered::from_iter(workers).collect().await;
+
+        shutdown.start_shutdown();
+
+        let mut errors = Vec::new();
+        // Check if any worker errored
+        for r in results {
+            match r {
+                Ok(_) => {}
+                Err(MonitoredWorkerError { ctx, error }) => {
+                    errors.push(MonitoredWorkerError { ctx, error })
+                }
+            }
+        }
+        if !errors.is_empty() {
+            return Err(MonitorError::ExitError(ExitError(errors)));
+        }
+        Ok(())
+    }
+
+    /// Handles all workers' events emitted
+    #[must_use]
+    pub fn on_event<F: Fn(&WorkerContext, &Event) + Send + Sync + 'static>(self, f: F) -> Self {
+        let _ = self.event_handler.write().map(|mut res| {
+            let _ = res.insert(Box::new(f));
+        });
+        self
+    }
+}
+
+impl Monitor {
+    /// Creates a new monitor instance.
+    ///
+    /// # Returns
+    ///
+    /// A new monitor instance, with an empty collection of workers.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Sets a timeout duration for the monitor's shutdown process.
+    ///
+    /// # Arguments
+    ///
+    /// * `duration` - The timeout duration.
+    ///
+    /// # Returns
+    ///
+    /// The monitor instance, with the shutdown timeout duration set.
+    #[cfg(feature = "sleep")]
+    #[must_use]
+    pub fn shutdown_timeout(self, duration: std::time::Duration) -> Self {
+        self.with_terminator(crate::timer::sleep(duration))
+    }
+
+    /// Sets a future that will start being polled when the monitor's shutdown process starts.
+    ///
+    /// After shutdown has been initiated, the `terminator` future will be run, and if it completes
+    /// before all tasks are completed the shutdown process will complete, thus finishing the
+    /// shutdown even if there are outstanding tasks. This can be useful for using a timeout or
+    /// signal (or combination) to force a full shutdown even if one or more tasks are taking
+    /// longer than expected to finish.
+    #[must_use]
+    pub fn with_terminator(mut self, fut: impl Future<Output = ()> + Send + 'static) -> Self {
+        self.terminator = Some(fut.boxed().shared());
+        self
+    }
+
+    /// Allows controlling the restart strategy for workers
+    #[must_use]
+    pub fn should_restart<F>(self, cb: F) -> Self
+    where
+        F: Fn(&WorkerContext, &WorkerError) -> bool + Send + Sync + 'static,
+    {
+        let _ = self.should_restart.write().map(|mut res| {
+            let _ = res.insert(Box::new(cb));
+        });
+        self
+    }
+
+    /// Gets an instance of the Monitor's context
+    ///
+    /// Used to:
+    /// 1. Expose monitor to http and cli tools
+    /// 2. Shutdown the monitor and workers
+    #[must_use]
+    pub fn context(&self) -> MonitorContext {
+        MonitorContext {
+            shutdown: self.shutdown.clone(),
+            workers: self.workers.iter().map(|w| w.worker.clone()).collect(),
+        }
+    }
+}
+
+/// Error type for monitor operations.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum MonitorError {
+    /// Error occurred while running one or more workers
+    #[error("Worker errors:\n{0}")]
+    ExitError(#[from] ExitError),
+
+    /// Error occurred while waiting for shutdown signal
+    #[error("Shutdown signal error: {0}")]
+    ShutdownSignal(#[from] std::io::Error),
+}
+
+impl fmt::Debug for ExitError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
+        std::fmt::Display::fmt(&self, f)
+    }
+}
+
+/// Represents errors that occurred in a monitored worker, including its context and the error itself.
+#[derive(thiserror::Error)]
+pub struct ExitError(pub Vec<MonitoredWorkerError>);
+
+impl std::fmt::Display for ExitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "MonitoredErrors:")?;
+        for worker in &self.0 {
+            writeln!(f, " - Worker `{}`: {}", worker.ctx.name(), worker.error)?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        backend::{TaskSink, dequeue::VecDequeBackend},
+        task::task_id::TaskId,
+        worker::context::WorkerContext,
+    };
+    use core::panic;
+    use std::{io, time::Duration};
+
+    use tokio::time::sleep;
+    use tower::limit::ConcurrencyLimitLayer;
+
+    use crate::{monitor::Monitor, worker::builder::WorkerBuilder};
+
+    #[tokio::test]
+    async fn basic_with_workers() {
+        let mut backend = VecDequeBackend::new();
+
+        for i in 0..10 {
+            backend.push(i).await.unwrap();
+        }
+
+        let monitor: Monitor = Monitor::new();
+        let monitor = monitor.register(move |index| {
+            WorkerBuilder::new(format!("rango-tango-{index}"))
+                .backend(backend.clone())
+                .build(move |r: u32, id: TaskId, w: WorkerContext| async move {
+                    println!("{id:?}, {}", w.name());
+                    tokio::time::sleep(Duration::from_secs(index as u64)).await;
+                    Ok::<_, io::Error>(r)
+                })
+        });
+        let m = monitor.context();
+        tokio::spawn(async move {
+            sleep(Duration::from_millis(1500)).await;
+            m.shutdown().unwrap();
+        });
+        monitor.run().await.unwrap();
+    }
+    #[tokio::test]
+    async fn test_monitor_run() {
+        let mut backend = VecDequeBackend::new();
+
+        for i in 0..10 {
+            backend.push(i).await.unwrap();
+        }
+
+        let monitor: Monitor = Monitor::new()
+            .register(move |index| {
+                WorkerBuilder::new(format!("rango-tango-{index}"))
+                    .backend(backend.clone())
+                    .layer(ConcurrencyLimitLayer::new(1))
+                    .build(move |r| async move {
+                        sleep(Duration::from_millis(1000)).await;
+                        if r % 2 == 0 {
+                            panic!("Brrr")
+                        }
+                    })
+            })
+            .should_restart(|worker, e| {
+                let restarts = worker.restarts();
+                println!(
+                    "Encountered error in {} with {e:?} for attempt {restarts}",
+                    worker.name()
+                );
+                if restarts < 3 {
+                    return true;
+                }
+                false
+            })
+            .on_event(|wrk, e| {
+                println!("{}: {e:?}", wrk.name());
+            });
+        assert_eq!(monitor.workers.len(), 1);
+        let m = monitor.context();
+
+        tokio::spawn(async move {
+            sleep(Duration::from_millis(10000)).await;
+            m.shutdown().unwrap();
+        });
+
+        let result = monitor.run().await;
+        eprintln!("{result:?}");
+        assert!(
+            result.is_err_and(|e| matches!(e, MonitorError::ExitError(_))),
+            "Monitor did not return an error as expected"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_monitor_register_multiple() {
+        let mut int_backend = VecDequeBackend::new();
+
+        let mut str_backend = VecDequeBackend::new();
+
+        for i in 0..10 {
+            int_backend.push(i).await.unwrap();
+        }
+
+        for i in 0..10 {
+            str_backend.push(i.to_string()).await.unwrap();
+        }
+
+        let monitor: Monitor = Monitor::new();
+
+        assert_send_sync::<Monitor>();
+
+        let monitor = monitor.on_event(|wrk, e| {
+            println!("{:?}, {e:?}", wrk.name());
+        });
+        let monitor = monitor
+            .register(move |index| {
+                WorkerBuilder::new(format!("worker0-{index}"))
+                    .backend(int_backend.clone())
+                    .layer(ConcurrencyLimitLayer::new(1))
+                    .build(
+                        move |request: i32, id: TaskId, w: WorkerContext| async move {
+                            println!("{id:?}, {}", w.name());
+                            tokio::time::sleep(Duration::from_secs(1)).await;
+                            Ok::<_, io::Error>(request)
+                        },
+                    )
+            })
+            .register(move |index| {
+                WorkerBuilder::new(format!("worker1-{index}"))
+                    .backend(str_backend.clone())
+                    .layer(ConcurrencyLimitLayer::new(1))
+                    .build(
+                        move |request: String, id: TaskId, w: WorkerContext| async move {
+                            println!("{id:?}, {}", w.name());
+                            tokio::time::sleep(Duration::from_secs(1)).await;
+                            Ok::<_, io::Error>(request)
+                        },
+                    )
+            });
+        assert_eq!(monitor.workers.len(), 2);
+        let m = monitor.context();
+
+        tokio::spawn(async move {
+            sleep(Duration::from_millis(5000)).await;
+            m.shutdown().unwrap();
+        });
+
+        let result = monitor.run().await;
+        assert!(result.is_ok());
+    }
+
+    /// Regression: shutting down a monitor of idle workers must wake every one of them.
+    ///
+    /// The monitor polls a worker only when its waker fires, and signalling shutdown just
+    /// flips a shared flag, so unless every worker is woken explicitly the idle ones are
+    /// never re-polled and never observe it. Historically this only showed above 30
+    /// workers, because `join_all` re-polled every future while it held 30 or fewer;
+    /// `FuturesUnordered` has no such fast path, so the count here is just the old
+    /// threshold kept for reference.
+    #[tokio::test]
+    async fn shutdown_wakes_idle_workers() {
+        use crate::backend::memory::MemoryStorage;
+
+        const WORKERS: usize = 31;
+
+        let mut monitor = Monitor::new();
+        for index in 0..WORKERS {
+            monitor = monitor.register(move |_| {
+                WorkerBuilder::new(format!("idle-{index}"))
+                    // An empty `MemoryStorage` never yields a task, so the worker parks
+                    // exactly like a cron worker waiting for a distant tick.
+                    .backend(MemoryStorage::<u32>::new())
+                    .build(|_: u32| async {})
+            });
+        }
+
+        let ctx = monitor.context();
+        tokio::spawn(async move {
+            sleep(Duration::from_millis(100)).await;
+            ctx.shutdown().unwrap();
+        });
+
+        let result = tokio::time::timeout(Duration::from_secs(5), monitor.run()).await;
+
+        let exit = result.expect("monitor did not shut down idle workers");
+        exit.unwrap();
+    }
+
+    /// Shutting down many idle workers must not cut short the one worker that is busy.
+    #[tokio::test]
+    async fn signal_shutdown_drains_active_work_with_many_idle_workers() {
+        use crate::backend::memory::MemoryStorage;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        const IDLE_WORKERS: usize = 40;
+
+        let mut busy_backend = VecDequeBackend::new();
+        busy_backend.push(1u32).await.unwrap();
+
+        let completed = Arc::new(AtomicBool::new(false));
+        let flag = completed.clone();
+
+        let mut monitor = Monitor::new().register(move |_| {
+            let flag = flag.clone();
+            WorkerBuilder::new("busy")
+                .backend(busy_backend.clone())
+                .build(move |_: u32| {
+                    let flag = flag.clone();
+                    async move {
+                        sleep(Duration::from_millis(300)).await;
+                        flag.store(true, Ordering::SeqCst);
+                    }
+                })
+        });
+
+        for index in 0..IDLE_WORKERS {
+            monitor = monitor.register(move |_| {
+                WorkerBuilder::new(format!("idle-{index}"))
+                    .backend(MemoryStorage::<u32>::new())
+                    .build(|_: u32| async {})
+            });
+        }
+
+        let signal = async {
+            sleep(Duration::from_millis(50)).await;
+            Ok(())
+        };
+
+        let result =
+            tokio::time::timeout(Duration::from_secs(5), monitor.run_with_signal(signal)).await;
+
+        let exit = result.expect("monitor did not shut down idle workers");
+        exit.unwrap();
+        assert!(
+            completed.load(Ordering::SeqCst),
+            "shutdown cut short the in-flight task"
+        );
+    }
+
+    fn assert_send_sync<T: Send + Sync>() {}
+
+    #[tokio::test]
+    async fn terminator_branch_discards_worker_and_signal_errors() {
+        fn failing_monitor() -> Monitor {
+            Monitor::new().register(|_| {
+                let backend =
+                    futures_util::stream::iter([Err::<u32, _>(io::Error::other("backend"))])
+                        .boxed();
+                WorkerBuilder::new("failed")
+                    .backend(backend)
+                    .build(|_: u32| async {})
+            })
+        }
+        assert!(matches!(
+            failing_monitor().run().await,
+            Err(MonitorError::ExitError(_))
+        ));
+        assert!(
+            failing_monitor()
+                .with_terminator(std::future::pending())
+                .run_with_signal(std::future::pending())
+                .await
+                .is_ok()
+        );
+        let signal = || async { Err::<(), _>(io::Error::other("signal")) };
+        assert!(matches!(
+            Monitor::new().run_with_signal(signal()).await,
+            Err(MonitorError::ShutdownSignal(_))
+        ));
+        assert!(
+            Monitor::new()
+                .with_terminator(std::future::ready(()))
+                .run_with_signal(signal())
+                .await
+                .is_ok()
+        );
+    }
+}

@@ -1,140 +1,306 @@
-//! Task models and storage contracts for background processing in Rust.
+#![cfg_attr(docsrs, feature(doc_cfg))]
+//! Task backends and worker execution for background processing in Rust.
 //!
-//! `miju-core` provides the task model and storage contracts used by miju. It lets
-//! applications describe work with typed arguments, carry execution state and
-//! metadata alongside those arguments, and convert payloads for storage without
-//! coupling the task model to a particular database or asynchronous runtime.
-//!
-//! This documentation covers the core APIs and their integration points. Application
-//! code can access them through `miju`; libraries implementing task producers or
-//! storage adapters can depend on `miju-core` directly.
+//! `miju-core` provides task data structures, backend protocols, workers, and
+//! monitoring. Workers execute handlers with middleware and lifecycle tracking;
+//! backends supply tasks and define their storage capabilities.
 //!
 //! # Core Concepts
 //!
-//! The core API brings together two parts of a task system:
-//!
-//! - **[Tasks](#tasks)** describe the work to perform and the execution information
-//!   that travels with it.
-//! - **[Backends](#backends)** provide storage-facing contracts for representing
-//!   payloads, selecting queues, and recording results.
-//!
-//! A producer constructs a task, and a storage integration uses its arguments and
-//! context to prepare it for delivery. These types describe the work and its state;
-//! running handlers and delivering queued tasks require an execution layer.
+//! - **[`Tasks`](#tasks)**: Type-safe task data structures with processing metadata
+//! - **[`Backends`](#backends)**: Task sources, submission, and storage contracts
+//! - **[`Workers`](#workers)**: Handler execution and lifecycle control
+//! - **[`Monitors`](#monitors)**: Coordinated workers, shutdown, and restart policies
 //!
 //! ## Tasks
 //!
-//! A [`Task`](task::Task) is the unit of work exchanged between application code
-//! and a backend. Its arguments retain their concrete Rust type, while execution
-//! information is carried in a separate context. This lets payloads be transformed
-//! without losing the identity or state associated with the work.
+//! The task struct provides type-safe components for task data and metadata:
+//! - [`Args`](crate::task::task_fn) - The primary structure for the task
+//! - [`ExecutionContext`](crate::task::ExecutionContext) - Backend persisted info on task execution.
+//! - [`Status`](crate::task::status::Status) - Represents the current state of a task
+//! - [`TaskId`](crate::task::task_id::TaskId) - Unique identifier for task tracking
+//! - [`Attempt`](crate::task::attempt::Attempt) - Retry tracking and attempt information
+//! - [`Extensions`](crate::task::extensions::Extensions) - Type-safe storage for additional task data
+//! - [`Metadata`](crate::task::metadata) - metadata associated with the task
 //!
-//! ### Task Components
+//! ### Example: Using `TaskBuilder`
 //!
-//! - **Arguments** contain the application data needed to perform the work.
-//! - **[Execution context](task::ExecutionContext)** carries identification, shared
-//!   status and attempt tracking, and requested execution settings.
-//! - **Attached data** uses [`Extensions`](task::extensions::Extensions) for
-//!   process-local values and [`MetadataStore`](task::metadata::MetadataStore)
-//!   for string metadata that an integration can persist with the task.
+//! ```rust
+//! use miju_core::task::{Task, builder::TaskBuilder};
 //!
-//! The [`TaskBuilder`](task::builder::TaskBuilder) brings these parts together.
-//! Queue selection, priority, scheduling, and attempt limits describe the desired
-//! execution; a backend and worker decide how to honor those settings.
-//!
-//! ### Example: Preparing a Task
-//!
-//! ```
-//! use miju_core::task::builder::TaskBuilder;
-//!
-//! #[derive(Debug)]
-//! struct ReportRequest {
-//!     customer_id: u64,
-//! }
-//!
-//! let task = TaskBuilder::new(ReportRequest { customer_id: 42 })
-//!     .queue("reports")
+//! let task: Task<String> = TaskBuilder::new("my-task".to_string())
+//!     .task_id("task-123".to_string().into())
 //!     .max_attempts(3)
+//!     .run_in_minutes(10)
 //!     .build();
-//!
-//! assert_eq!(task.args.customer_id, 42);
-//! assert_eq!(task.queue().map(AsRef::as_ref), Some("reports"));
 //! ```
+//! Specific documentation for tasks can be found in the [`task`] and [`task::builder`] modules.
 //!
-//! Building a task does not enqueue it or assign an identifier automatically.
-//! The task is ready for an integration to accept and store.
-//!
-//! ### Context and Metadata
-//!
-//! Observers of a task share its status and attempt counter. Task clones initially
-//! share the context too; changing attached data or metadata uses copy-on-write.
-//! This allows execution progress to remain visible while task-specific data can
-//! be changed independently, according to each stored value's `Clone` behavior.
-//!
-//! Process-local data is accessed by Rust type. Persistable metadata uses string
-//! keys and values, with typed extraction and injection rules supplied by the
-//! application's [`Metadata`](task::metadata::Metadata) implementations.
-//! Application resources stay in the process, while a storage adapter can carry
-//! metadata across executions.
-//!
-//! See [`task`] for ownership and context behavior, and [`task::builder`] for the
-//! available construction options.
+//! #### Relevant Guides:
+//! - [**Defining Task arguments**](crate::task::task_fn) - Creating effective task arguments that are scalable and type-safe
 //!
 //! ## Backends
 //!
-//! Backend integrations connect the task model to a storage system. The
-//! [`backend`] module supplies the data contracts for that connection, allowing
-//! application arguments to stay independent of a database's representation.
+//! The [`backend`] module defines [`Backend`](backend::Backend) for polling tasks,
+//! [`TaskSink`](backend::TaskSink) for submission, and management capabilities.
+//! [`MemoryStorage`](backend::memory::MemoryStorage),
+//! [`VecDequeBackend`](backend::dequeue::VecDequeBackend), and
+//! [`CustomBackend`](backend::custom::CustomBackend) provide task sources.
+//! [`Codec`](backend::codec::Codec) and [`FinalizeBackend`](backend::finalize::FinalizeBackend)
+//! connect encoded payloads with typed handlers.
 //!
-//! ### Storage Contracts
+//! [`BackendExt`](backend::ext::BackendExt) adds error inspection and mapping,
+//! lifecycle callbacks, task piping, stream interleaving, and polling strategies.
+//! Strategies supply wakeups and collect polling statistics; they do not gate
+//! calls to the underlying backend. Enable `sleep` for interval and backoff
+//! strategies, `tracing` for span instrumentation, and `shared` for cloneable
+//! backend handles.
 //!
-//! - **Payload conversion** uses [`Codec`](backend::codec::Codec) to encode and
-//!   decode arguments with a representation and error type chosen by the adapter.
-//! - **Queue selection** uses [`Queue`](backend::queue::Queue) to carry a
-//!   destination name for the backend to interpret.
-//! - **Execution outcomes** use [`TaskResult`](backend::results::TaskResult) to
-//!   associate a task and attempt with a recorded status and either an output
-//!   value or a failure description.
+//! With `sleep`, `backend::persistence` provides the `Persistence` provider
+//! contract and the `Persisted` driver for registration, heartbeats, task
+//! batches, and lifecycle events. Storage integrations bridge that driver to
+//! `Backend` and configure its event layer; the driver itself is not a backend
+//! implementation. Providers supply storage operations and atomic task claims.
 //!
-//! These contracts can be used to implement an adapter; the adapter is responsible
-//! for persistence, task delivery, and writing execution results.
+//! ## Workers
 //!
-//! ### Example: Defining a Storage Representation
+//! Workers are the execution engines that process tasks from backends. They are
+//! configured with a backend, middleware, and a task handler using
+//! [`WorkerBuilder`](worker::builder::WorkerBuilder).
 //!
-//! A codec can use any representation accepted by its storage system. This one
-//! converts an integer payload to decimal text and reports invalid stored text as
-//! a parse error.
-//!
+//! ```rust
+//! # use miju_core::backend::{memory::MemoryStorage, TaskSink};
+//! # use miju_core::worker::{builder::WorkerBuilder, context::WorkerContext};
+//! # #[tokio::main]
+//! # async fn main() {
+//! let mut backend = MemoryStorage::new();
+//! backend.push(42u32).await.unwrap();
+//! let worker = WorkerBuilder::new("example")
+//!     .backend(backend)
+//!     .build(|value: u32, worker: WorkerContext| async move {
+//!         assert_eq!(value, 42);
+//!         worker.stop().unwrap();
+//!     });
+//! worker.run().await.unwrap();
+//! # }
 //! ```
-//! use std::num::ParseIntError;
-//! use miju_core::backend::codec::Codec;
 //!
-//! #[derive(Debug)]
-//! struct DecimalCodec;
+//! [`WorkerContext`](worker::context::WorkerContext) controls pause, resume, and
+//! shutdown. Lifecycle tracking records attempts and task status. Handler errors
+//! become worker events; retry-classified errors update status without automatically
+//! requeuing tasks. Backend exhaustion alone does not stop the worker context.
 //!
-//! impl Codec<u64> for DecimalCodec {
-//!     type Compact = String;
-//!     type Error = ParseIntError;
+//! ## Monitors
 //!
-//!     fn encode(&self, value: &u64) -> Result<String, Self::Error> {
-//!         Ok(value.to_string())
+//! [`Monitor`](monitor::Monitor) manages multiple workers, coordinates shutdown,
+//! and optionally restarts failed workers according to a supplied policy.
+//! Normal shutdown drains tracked work. A configured terminator can end the wait
+//! early; see [`Monitor::run_with_signal`](monitor::Monitor::run_with_signal).
+//!
+//! Enable `task-context` for individual task tracking and cancellation, `sleep`
+//! for timer-based task and shutdown limits, and `tracing` for lifecycle logs.
+//! Enable `test-utils` for task function signature validation helpers.
+//! Default features remain empty.
+//!
+//! ### Example: Using `Monitor` with a Worker
+//!
+//! ```rust
+//! # use miju_core::monitor::Monitor;
+//! # use miju_core::worker::builder::WorkerBuilder;
+//! # use miju_core::task::Task;
+//! # use miju_core::backend::{TaskSink, dequeue::VecDequeBackend};
+//! # use tower::service_fn;
+//! # use std::time::Duration;
+//! # use miju_core::worker::context::WorkerContext;
+//! #[tokio::main]
+//! async fn main() {
+//!     let mut storage = VecDequeBackend::new();
+//!     storage.push(1u32).await.unwrap();
+//!
+//!     let monitor = Monitor::new()
+//!         .on_event(|worker, event| println!("{}: {:?}", worker.name(), event))
+//!         .register(move |_| {
+//!             WorkerBuilder::new("demo-worker")
+//!                 .backend(storage.clone())
+//!                 .build(|req: u32, worker: WorkerContext| async move {
+//!                     println!("Processing task: {:?}", req);
+//! #                   worker.stop().unwrap();
+//!                     Ok::<_, std::io::Error>(req)
+//!                 })
+//!         });
+//!
+//!     // Start monitor and run all registered workers
+//!     monitor.run().await.unwrap();
+//! }
+//! ```
+//!
+//! ## Middleware
+//!
+//! Built on the `tower` ecosystem, `miju-core` supports middleware for error handling, timeouts, rate limiting, and observability.
+//!
+//! ### Core Middleware
+//!
+//! The following middleware layers are included with their worker extensions:
+//! - [`AcknowledgeLayer`](crate::worker::ext::ack::AcknowledgeLayer) - Task acknowledgment after processing
+//! - [`EventListenerLayer`](crate::worker::ext::event_listener) - Worker event emission and handling
+//! - [`CircuitBreakerLayer`](crate::worker::ext::circuit_breaker) - Circuit breaker pattern for failure handling
+//! - [`LongRunningLayer`](crate::worker::ext::long_running) - Support for tracking long-running tasks
+//!
+//! ### Extending with middleware
+//!
+//! You can write your own middleware to run code before or after a task is processed.
+//!
+//! <details>
+//! <summary>Creating Custom Middleware</summary>
+//!
+//! Here's a simple example of a logging middleware layer:
+//!
+//! ```rust
+//! use miju_core::task::Task;
+//! use tower::{Layer, Service};
+//! use std::task::{Context, Poll};
+//!
+//! // Define a logging service that wraps another service
+//! pub struct LoggingService<S> {
+//!     inner: S,
+//! }
+//!
+//! impl<S, Args, Res, Err> Service<Task<Args>> for LoggingService<S>
+//! where
+//!     S: Service<Task<Args>, Response = Res, Error = Err>,
+//!     Args: std::fmt::Debug,
+//! {
+//!     type Response = Res;
+//!     type Error = Err;
+//!     type Future = S::Future;
+//!
+//!     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+//!         self.inner.poll_ready(cx)
 //!     }
 //!
-//!     fn decode(&self, value: &String) -> Result<u64, Self::Error> {
-//!         value.parse()
+//!     fn call(&mut self, req: Task<Args>) -> Self::Future {
+//!         println!("Processing task: {:?}", req.args);
+//!         self.inner.call(req)
 //!     }
 //! }
 //!
-//! let codec = DecimalCodec;
-//! let stored = codec.encode(&42)?;
-//! assert_eq!(codec.decode(&stored)?, 42);
-//! assert!(codec.decode(&"invalid".to_owned()).is_err());
-//! # Ok::<(), ParseIntError>(())
+//! // Define a layer that wraps services with LoggingService
+//! pub struct LoggingLayer;
+//!
+//! impl<S> Layer<S> for LoggingLayer {
+//!     type Service = LoggingService<S>;
+//!
+//!     fn layer(&self, service: S) -> Self::Service {
+//!         LoggingService { inner: service }
+//!     }
+//! }
+//! ```
+//! </details>
+//!
+//! If you want your middleware to do more than just intercept requests and responses, you can use extension traits. See the [`worker::ext`] module for examples.
+//!
+//! ## Error Handling
+//!
+//! Errors classify the result of a handler for lifecycle tracking:
+//! - [`AbortError`](error::AbortError) marks a task as killed.
+//! - [`RetryAfterError`](error::RetryAfterError) marks a task as pending and carries a retry delay.
+//! - [`DeferredError`](error::DeferredError) marks a task as pending.
+//!
+//! Backends and middleware implement the corresponding rescheduling policy.
+//! These error types do not themselves requeue tasks.
+//!
+//! ## Graceful Shutdown
+//!
+//! Workers track in-flight tasks and drain tracked work during shutdown.
+//! A shared [`Shutdown`](monitor::shutdown::Shutdown) token coordinates workers.
+//! A configured [`Monitor::with_terminator`](monitor::Monitor::with_terminator)
+//! can end the drain early; provider integrations determine task recovery.
+//!
+//! # Serialization
+//!
+//! Enable `serde` to serialize a [`TaskBuilder`](task::builder::TaskBuilder),
+//! [`ExecutionContext`](task::ExecutionContext), identifiers, states, metadata,
+//! and recorded results. Process-local extensions are skipped. Deserialization
+//! creates independent status and attempt cells; it does not reconnect observers
+//! of an existing task. A [`Task`](task::Task) itself is not serializable.
+//!
+//! # Task identifiers
+//!
+//! [`GenerateId`](task::task_id::GenerateId) provides ID generation with
+//! [`RandomId`](task::task_id::RandomId) or `u64`. Enable `uuid` or `ulid` for
+//! the corresponding [`TaskId`](task::task_id::TaskId) variants and generators.
+//! Constructing a task does not automatically assign an ID.
+//!
+//! `serde` adds serialization support for the enabled ID types without enabling
+//! either ID feature. `TaskId` uses an untagged representation: UUID and ULID
+//! strings deserialize as its `String` variant, while string parsing recognizes
+//! the enabled ID formats.
+//!
+//! The default and `serde` configurations support Rust 1.85. Enabling `uuid` or
+//! `ulid` requires Rust 1.89 because of the UUID dependency.
+//!
+//! # Tracing metadata
+//!
+//! With `tracing`, `task::metadata::TracingContext` stores explicit trace fields
+//! under `miju_core.tracing.context`. The value is a semicolon-separated string
+//! with decimal flags and `-` for absent fields. It does not capture the current
+//! span or validate W3C trace IDs. Supply a subscriber separately for runtime logs.
+//!
+//! ```rust
+//! # #[cfg(feature = "tracing")]
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! use miju_core::task::{builder::TaskBuilder, metadata::TracingContext};
+//!
+//! let trace = TracingContext::new()
+//!     .with_trace_id("4bf92f3577b34da6a3ce929d0e0e4736")
+//!     .with_span_id("00f067aa0ba902b7")
+//!     .with_trace_flags(1);
+//! let task = TaskBuilder::new("send-email").metadata(&trace).build();
+//! let restored = task.metadata().extract_as::<TracingContext>()?;
+//! assert_eq!(restored.to_string(), trace.to_string());
+//! # Ok(())
+//! # }
+//! # #[cfg(not(feature = "tracing"))]
+//! # fn main() {}
 //! ```
 //!
-//! See [`backend`] for the storage contracts and [`backend::codec`] for the
-//! conversion interface. These types do not select a storage engine or runtime;
-//! integrations supply those choices.
+//! # Feature flags
+//!
+//! All features are opt-in. Enable `docsrs` when building documentation to
+//! generate the feature reference from the package manifest.
+#![cfg_attr(
+    feature = "docsrs",
+    cfg_attr(doc, doc = ::document_features::document_features!())
+)]
+//!
+//! # Development
+//!
+//! - [**Using CustomBackend**](crate::backend::custom) - using custom backend to integrate with already existing systems
+//! - [**Extending Workers using extension traits**](crate::worker::ext#creating-a-custom-worker-extension-trait) - implementing custom worker functionality via extension traits
+
+#[macro_use]
+pub(crate) mod macros;
 
 pub mod backend;
+/// Includes internal error types.
+pub mod error;
 pub mod task;
+
+/// Actively manage and observe workers.
+pub mod monitor;
+pub mod worker;
+
+/// Layers for building middleware stacks
+pub mod layers {
+    pub use tower_layer::*;
+    pub use tower_service::Service;
+}
+/// Timing and delaying utilities
+#[cfg(feature = "sleep")]
+pub mod timer {
+    pub use futures_timer::Delay;
+    /// Runtime agnostic sleep function based on [Delay]
+    pub async fn sleep(duration: std::time::Duration) {
+        futures_timer::Delay::new(duration).await;
+    }
+}

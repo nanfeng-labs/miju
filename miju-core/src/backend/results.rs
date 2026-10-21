@@ -1,50 +1,62 @@
-//! Recorded outcomes for individual execution attempts.
-//!
-//! [`TaskResult`] associates a task identifier and attempt number with a status
-//! and either an output value or a failure description. Integrations can use
-//! it when saving or returning completed attempt information.
-//!
-//! A result is an ordinary owned value. It does not observe live task state,
-//! increment an attempt counter, or write an outcome to storage automatically.
+use futures_core::Stream;
 
-use crate::task::{status::Status, task_id::TaskId};
+use crate::{
+    backend::Backend,
+    task::{status::Status, task_id::TaskId},
+};
 
-/// The outcome of one execution attempt.
-///
-/// `T` is the successful output type; failures carry a string description. The
-/// integration supplies all fields and keeps [`status`](Self::status) consistent
-/// with [`result`](Self::result). Construction performs no such validation.
-///
-/// # Example
-///
-/// ```
-/// use miju_core::{
-///     backend::results::TaskResult,
-///     task::{status::Status, task_id::TaskId},
-/// };
-///
-/// let outcome = TaskResult {
-///     task_id: TaskId::from_int(81),
-///     attempt: 2,
-///     status: Status::Failed,
-///     result: Err::<u64, _>("report source unavailable".to_owned()),
-/// };
-///
-/// assert_eq!(outcome.task_id.as_int(), Some(81));
-/// assert_eq!(outcome.result.as_ref().unwrap_err(), "report source unavailable");
-/// ```
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Represents the result of a task execution
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone)]
 pub struct TaskResult<T> {
-    /// The task whose execution produced this result.
+    /// The unique identifier of the task
     pub task_id: TaskId,
-    /// The attempt number associated with the outcome.
-    ///
-    /// Supplied by the integration; this field is not a shared counter.
+    /// The most recent result
     pub attempt: usize,
-    /// The recorded execution state.
-    ///
-    /// Changing it does not update an existing task's status cell.
+    /// The status of the task
     pub status: Status,
-    /// The output or a stored description of the failure.
+    /// The result of the task execution
     pub result: Result<T, String>,
+}
+
+impl<T> TaskResult<T> {
+    /// Get the ID of the task
+    pub fn task_id(&self) -> &TaskId {
+        &self.task_id
+    }
+
+    /// Get the status of the task
+    pub fn status(&self) -> &Status {
+        &self.status
+    }
+
+    /// Get the result of the task
+    pub fn result(&self) -> &Result<T, String> {
+        &self.result
+    }
+
+    /// Take the result of the task
+    pub fn take(self) -> Result<T, String> {
+        self.result
+    }
+}
+
+/// Allows waiting for tasks to complete and checking their status
+pub trait WaitForCompletion<Output>: Backend {
+    /// The result stream type yielding task results
+    type ResultStream: Stream<Item = Result<TaskResult<Output>, Self::Error>> + Send + 'static;
+
+    /// Wait for multiple tasks to complete, yielding results as they become available
+    fn wait_for(&mut self, task_ids: impl IntoIterator<Item = TaskId>) -> Self::ResultStream;
+
+    /// Wait for a single task to complete, yielding its result
+    fn wait_for_single(&mut self, task_id: TaskId) -> Self::ResultStream {
+        self.wait_for(std::iter::once(task_id))
+    }
+
+    /// Check current status of tasks without waiting
+    fn check_status(
+        &mut self,
+        task_ids: impl IntoIterator<Item = TaskId> + Send,
+    ) -> impl Future<Output = Result<Vec<TaskResult<Output>>, Self::Error>> + Send;
 }

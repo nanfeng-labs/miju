@@ -16,9 +16,10 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = []
+serde = ["miju-core/serde"]
 
 [dependencies]
-miju-core = "0.1.0"
+miju-core = { version = "0.1.0", default-features = false }
 
 [dev-dependencies]
 

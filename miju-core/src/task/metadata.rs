@@ -1,263 +1,902 @@
-//! String metadata that can be persisted alongside a task.
+//! Task metadata extension trait and implementations
 //!
-//! Metadata gives integrations a common representation for information such as
-//! routing labels and request identifiers, independent of the task's payload.
-//! This module separates the stored entries from their application meaning:
-//!
-//! - [`MetadataStore`] owns the string keys and values, with distinct operations
-//!   for inserting new entries and replacing existing ones.
-//! - [`Metadata`] defines how an application type reads and writes those entries,
-//!   including required keys and validation.
-//!
-//! A store does not persist itself. Integrations decide how to save and restore
-//! its entries. Use [`Extensions`](super::extensions::Extensions) for typed
-//! process-local resources that do not need a string representation.
-//!
-//! # Updating Task Metadata
-//!
-//! [`TaskBuilder::metadata`](super::builder::TaskBuilder::metadata) adds typed
-//! metadata during construction. [`Task::inject_metadata`](super::Task::inject_metadata)
-//! updates an existing task and publishes the new entries only after injection
-//! succeeds. Direct calls to [`Metadata::inject`] operate on the provided store
-//! and may leave partial changes if an implementation fails after writing.
-//!
-//! See [`Metadata`] for a complete implementation and task update example.
+//! ## Overview
+//! - `Metadata`: A trait for extracting and injecting metadata.
+use crate::task::Task;
+use crate::task::from_request::FromRequest;
+use std::convert::Infallible;
+#[cfg(feature = "tracing")]
+use std::fmt;
+use std::ops::{Deref, Index};
+#[cfg(feature = "tracing")]
+use std::str::FromStr;
+use std::{collections::HashMap, ops::IndexMut};
 
-use std::{
-    collections::{HashMap, hash_map::Entry},
-    fmt,
-};
+/// Metadata wrapper for task contexts.
+#[derive(Debug, Clone)]
+pub struct Meta<T>(pub T);
 
-/// An error returned when a metadata insertion would overwrite an existing key.
+impl<T> Deref for Meta<T> {
+    type Target = T;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+/// A lightweight key-value metadata store backed by a `HashMap`.
 ///
-/// Use [`MetadataStore::replace`] when replacement is intentional.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// `MetadataStore` is designed for storing arbitrary string metadata such as
+/// task attributes, labels, annotations, headers, or contextual information.
+///
+/// Keys are unique within the store. Attempting to insert a duplicate key
+/// returns a [`MetadataError::DuplicateKey`] error.
+///
+/// # Examples
+///
+/// ```rust
+/// # use std::collections::HashMap;
+/// # use miju_core::task::metadata::Metadata;
+/// # use miju_core::task::metadata::MetadataStore;
+/// # use miju_core::task::metadata::MetadataError;
+/// #
+/// let mut metadata = MetadataStore::new();
+///
+/// metadata.insert("request_id", "abc-123")?;
+/// metadata.insert("environment", "production")?;
+///
+/// assert_eq!(
+///     metadata.get("request_id"),
+///     Some("abc-123")
+/// );
+///
+/// assert!(metadata.contains_key("environment"));
+///
+/// # Ok::<(), MetadataError>(())
+/// ```
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MetadataStore(HashMap<String, String>);
+
+/// Errors returned by [`MetadataStore`].
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum MetadataError {
-    /// The key already exists; its original value was retained.
+    /// Returned when attempting to insert a key that already exists.
+    #[error("The key already exists in the store")]
     DuplicateKey(String),
 }
 
-impl fmt::Display for MetadataError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::DuplicateKey(key) => write!(f, "metadata key already exists: {key:?}"),
+impl MetadataStore {
+    /// Creates an empty [`MetadataStore`].
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # use miju_core::task::metadata::Metadata;
+    /// # use miju_core::task::metadata::MetadataStore;
+    /// let metadata = MetadataStore::new();
+    ///
+    /// assert_eq!(metadata.iter().count(), 0);
+    /// ```
+    #[must_use]
+    pub fn new() -> Self {
+        Self(HashMap::new())
+    }
+
+    /// Inserts a key-value pair into the store.
+    ///
+    /// Returns an error if the key already exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MetadataError::DuplicateKey`] if the provided key is already
+    /// present in the store.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # use miju_core::task::metadata::Metadata;
+    /// # use miju_core::task::metadata::MetadataStore;
+    /// # use miju_core::task::metadata::MetadataError;
+    /// let mut metadata = MetadataStore::new();
+    ///
+    /// metadata.insert("region", "us-east-1")?;
+    ///
+    /// assert_eq!(
+    ///     metadata.get("region"),
+    ///     Some("us-east-1")
+    /// );
+    ///
+    /// # Ok::<(), MetadataError>(())
+    /// ```
+    ///
+    /// Duplicate keys are rejected:
+    ///
+    /// ```rust
+    /// # use miju_core::task::metadata::Metadata;
+    /// # use miju_core::task::metadata::MetadataStore;
+    /// # use miju_core::task::metadata::MetadataError;
+    /// let mut metadata = MetadataStore::new();
+    ///
+    /// metadata.insert("service", "api")?;
+    ///
+    /// let err = metadata.insert("service", "worker").unwrap_err();
+    ///
+    /// assert_eq!(
+    ///     err,
+    ///     MetadataError::DuplicateKey("service".to_string())
+    /// );
+    ///
+    /// # Ok::<(), MetadataError>(())
+    /// ```
+    pub fn insert<K, V>(&mut self, key: K, value: V) -> Result<(), MetadataError>
+    where
+        K: Into<String>,
+        V: Into<String>,
+    {
+        let key = key.into();
+
+        if self.0.contains_key(&key) {
+            return Err(MetadataError::DuplicateKey(key));
+        }
+
+        self.0.insert(key, value.into());
+
+        Ok(())
+    }
+
+    /// Returns a reference to the value corresponding to the given key.
+    ///
+    /// Returns `None` if the key does not exist.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # use miju_core::task::metadata::Metadata;
+    /// # use miju_core::task::metadata::MetadataStore;
+    /// # use miju_core::task::metadata::MetadataError;
+    /// let mut metadata = MetadataStore::new();
+    ///
+    /// metadata.insert("version", "1.0")?;
+    ///
+    /// assert_eq!(
+    ///     metadata.get("version"),
+    ///     Some("1.0")
+    /// );
+    ///
+    /// assert_eq!(metadata.get("missing"), None);
+    ///
+    /// # Ok::<(), MetadataError>(())
+    /// ```
+    #[must_use]
+    pub fn get(&self, key: &str) -> Option<&str> {
+        self.0.get(key).map(String::as_str)
+    }
+
+    /// Removes a key from the store, returning the stored value if it existed.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # use miju_core::task::metadata::Metadata;
+    /// # use miju_core::task::metadata::MetadataStore;
+    /// # use miju_core::task::metadata::MetadataError;
+    /// let mut metadata = MetadataStore::new();
+    ///
+    /// metadata.insert("token", "secret")?;
+    ///
+    /// assert_eq!(
+    ///     metadata.remove("token"),
+    ///     Some("secret".to_string())
+    /// );
+    ///
+    /// assert!(!metadata.contains_key("token"));
+    ///
+    /// # Ok::<(), MetadataError>(())
+    /// ```
+    pub fn remove(&mut self, key: &str) -> Option<String> {
+        self.0.remove(key)
+    }
+
+    /// Returns `true` if the store contains the specified key.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # use miju_core::task::metadata::Metadata;
+    /// # use miju_core::task::metadata::MetadataStore;
+    /// # use miju_core::task::metadata::MetadataError;
+    /// let mut metadata = MetadataStore::new();
+    ///
+    /// metadata.insert("owner", "alice")?;
+    ///
+    /// assert!(metadata.contains_key("owner"));
+    /// assert!(!metadata.contains_key("missing"));
+    ///
+    /// # Ok::<(), MetadataError>(())
+    /// ```
+    #[must_use]
+    pub fn contains_key(&self, key: &str) -> bool {
+        self.0.contains_key(key)
+    }
+
+    /// Returns an iterator over all key-value pairs in the store.
+    ///
+    /// The iterator yields `(&String, &String)` pairs.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # use miju_core::task::metadata::Metadata;
+    /// # use miju_core::task::metadata::MetadataStore;
+    /// # use miju_core::task::metadata::MetadataError;
+    /// let mut metadata = MetadataStore::new();
+    ///
+    /// metadata.insert("a", "1")?;
+    /// metadata.insert("b", "2")?;
+    ///
+    /// let items: Vec<_> = metadata.iter().collect();
+    ///
+    /// assert_eq!(items.len(), 2);
+    ///
+    /// # Ok::<(), MetadataError>(())
+    /// ```
+    pub fn iter(&self) -> impl Iterator<Item = (&String, &String)> {
+        self.0.iter()
+    }
+
+    /// Consumes the store and returns the underlying `HashMap`.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # use miju_core::task::metadata::Metadata;
+    /// # use miju_core::task::metadata::MetadataStore;
+    /// # use miju_core::task::metadata::MetadataError;
+    /// let mut metadata = MetadataStore::new();
+    ///
+    /// metadata.insert("key", "value")?;
+    ///
+    /// let inner = metadata.into_inner();
+    ///
+    /// assert_eq!(
+    ///     inner.get("key"),
+    ///     Some(&"value".to_string())
+    /// );
+    ///
+    /// # Ok::<(), MetadataError>(())
+    /// ```
+    #[must_use]
+    pub fn into_inner(self) -> HashMap<String, String> {
+        self.0
+    }
+
+    /// Get a typed metadata entry.
+    #[must_use = "Extracted metadata should be used or handled"]
+    pub fn extract_as<M: Metadata>(&self) -> Result<M, M::Error> {
+        M::extract(self)
+    }
+
+    /// Create a `MetadataStore` from a `HashMap<String, String>`.
+    #[must_use]
+    pub fn from_map(map: HashMap<String, String>) -> Self {
+        Self(map)
+    }
+
+    /// Returns the number of entries in the store.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Returns `true` if the store contains no entries.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Removes all entries from the store.
+    pub fn clear(&mut self) {
+        self.0.clear();
+    }
+
+    /// Returns a mutable reference to the value corresponding to the key.
+    ///
+    /// Returns `None` if the key does not exist.
+    #[must_use]
+    pub fn get_mut(&mut self, key: &str) -> Option<&mut String> {
+        self.0.get_mut(key)
+    }
+
+    /// Returns a mutable iterator over all key-value pairs in the store.
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (&String, &mut String)> {
+        self.0.iter_mut()
+    }
+
+    /// Returns an iterator over all keys in the store.
+    pub fn keys(&self) -> impl Iterator<Item = &String> {
+        self.0.keys()
+    }
+
+    /// Returns an iterator over all values in the store.
+    pub fn values(&self) -> impl Iterator<Item = &String> {
+        self.0.values()
+    }
+
+    /// Returns a mutable iterator over all values in the store.
+    pub fn values_mut(&mut self) -> impl Iterator<Item = &mut String> {
+        self.0.values_mut()
+    }
+
+    /// Extends the store with key-value pairs.
+    ///
+    /// Existing keys are overwritten.
+    ///
+    /// Use [`MetadataStore::insert`] when duplicate keys should be rejected.
+    pub fn extend<I, K, V>(&mut self, iter: I)
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<String>,
+        V: Into<String>,
+    {
+        self.0.extend(
+            iter.into_iter()
+                .map(|(key, value)| (key.into(), value.into())),
+        );
+    }
+
+    /// Returns a reference to the underlying map.
+    #[must_use]
+    pub fn as_map(&self) -> &HashMap<String, String> {
+        &self.0
+    }
+
+    /// Inserts or updates a value.
+    ///
+    /// Returns `None` if the key does not exist.
+    pub fn replace<K, V>(&mut self, key: K, value: V) -> Option<String>
+    where
+        K: AsRef<str>,
+        V: Into<String>,
+    {
+        self.0.insert(key.as_ref().to_owned(), value.into())
+    }
+
+    /// Inserts a value only if the key does not already exist.
+    pub fn insert_if_absent<K, V>(&mut self, key: K, value: V) -> bool
+    where
+        K: Into<String>,
+        V: Into<String>,
+    {
+        let key = key.into();
+
+        if let std::collections::hash_map::Entry::Vacant(e) = self.0.entry(key) {
+            e.insert(value.into());
+            true
+        } else {
+            false
         }
     }
 }
 
-impl std::error::Error for MetadataError {}
-
-/// String key/value pairs with explicit insertion and replacement operations.
-///
-/// Keys and values are stored as provided, including empty strings. Key matching
-/// is case-sensitive. Cloning copies all entries, so updates to one store do not
-/// modify another. Iteration order is unspecified.
-///
-/// # Example
-///
-/// ```
-/// use miju_core::task::metadata::{MetadataError, MetadataStore};
-///
-/// let mut metadata = MetadataStore::new();
-/// metadata.insert("region", "west")?;
-/// metadata.insert("report", "daily")?;
-///
-/// assert_eq!(metadata.get("region"), Some("west"));
-/// assert_eq!(metadata.get("missing"), None);
-/// assert_eq!(metadata.len(), 2);
-/// # Ok::<(), MetadataError>(())
-/// ```
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct MetadataStore {
-    values: HashMap<String, String>,
+impl<K, V> FromIterator<(K, V)> for MetadataStore
+where
+    K: Into<String>,
+    V: Into<String>,
+{
+    fn from_iter<I: IntoIterator<Item = (K, V)>>(iter: I) -> Self {
+        Self(
+            iter.into_iter()
+                .map(|(key, value)| (key.into(), value.into()))
+                .collect(),
+        )
+    }
 }
 
-impl MetadataStore {
-    /// Creates an empty store.
+impl IntoIterator for MetadataStore {
+    type Item = (String, String);
+    type IntoIter = std::collections::hash_map::IntoIter<String, String>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a MetadataStore {
+    type Item = (&'a String, &'a String);
+    type IntoIter = std::collections::hash_map::Iter<'a, String, String>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a mut MetadataStore {
+    type Item = (&'a String, &'a mut String);
+    type IntoIter = std::collections::hash_map::IterMut<'a, String, String>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter_mut()
+    }
+}
+
+impl AsRef<HashMap<String, String>> for MetadataStore {
+    fn as_ref(&self) -> &HashMap<String, String> {
+        &self.0
+    }
+}
+
+impl AsMut<HashMap<String, String>> for MetadataStore {
+    fn as_mut(&mut self) -> &mut HashMap<String, String> {
+        &mut self.0
+    }
+}
+
+impl Index<&str> for MetadataStore {
+    type Output = String;
+
+    fn index(&self, key: &str) -> &Self::Output {
+        &self.0[key]
+    }
+}
+
+impl IndexMut<&str> for MetadataStore {
+    fn index_mut(&mut self, key: &str) -> &mut Self::Output {
+        self.0
+            .get_mut(key)
+            .unwrap_or_else(|| panic!("metadata key `{key}` does not exist"))
+    }
+}
+
+/// Implemented by types that can be stored as metadata.
+/// Provides a stable key and string-based serialization.
+pub trait Metadata: Sized {
+    /// The error produced when extracting the Metadata
+    type Error;
+
+    /// Extract `Metadata` from the store
+    fn extract(store: &MetadataStore) -> Result<Self, Self::Error>;
+
+    /// Inject [`Self`] into the store
+    fn inject(&self, map: &mut MetadataStore) -> Result<(), Self::Error>;
+}
+
+impl<T: Metadata, Args: Send + Sync> FromRequest<Task<Args>> for Meta<T> {
+    type Error = T::Error;
+
+    async fn from_request(task: &Task<Args>) -> Result<Self, Self::Error> {
+        let metadata = task.metadata();
+        let value = T::extract(metadata)?;
+        Ok(Self(value))
+    }
+}
+
+impl<Args: Send + Sync> FromRequest<Task<Args>> for MetadataStore {
+    type Error = Infallible;
+
+    async fn from_request(task: &Task<Args>) -> Result<Self, Self::Error> {
+        Ok(task.metadata().clone())
+    }
+}
+
+/// Metadata used specifically for storing tracing context.
+///
+/// Enable `tracing` to store explicit trace fields with a task. This type does
+/// not capture the current span or configure a tracing subscriber.
+///
+/// The string format is `trace_id;span_id;trace_flags;trace_state`, with `-`
+/// for absent fields and decimal flags. It is not a W3C `traceparent` header:
+/// IDs are not validated and fields are not escaped. The final field may contain
+/// semicolons; IDs containing semicolons or the literal `-` do not round-trip.
+#[cfg(feature = "tracing")]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Default, Clone)]
+pub struct TracingContext {
+    trace_id: Option<String>,
+    span_id: Option<String>,
+    trace_flags: Option<u8>,
+    trace_state: Option<String>,
+}
+
+#[cfg(feature = "tracing")]
+#[allow(clippy::ref_option)]
+impl TracingContext {
+    /// Create a new empty `TracingContext`.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Adds a new key, preserving the existing value on a duplicate.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`MetadataError::DuplicateKey`] if the key already exists.
-    /// The existing entry is retained, even when the new value is identical.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # use miju_core::task::metadata::{MetadataError, MetadataStore};
-    /// let mut metadata = MetadataStore::new();
-    /// metadata.insert("region", "west")?;
-    /// assert_eq!(
-    ///     metadata.insert("region", "east"),
-    ///     Err(MetadataError::DuplicateKey("region".to_owned())),
-    /// );
-    /// assert_eq!(metadata.get("region"), Some("west"));
-    /// # Ok::<(), MetadataError>(())
-    /// ```
-    pub fn insert(
-        &mut self,
-        key: impl Into<String>,
-        value: impl Into<String>,
-    ) -> Result<(), MetadataError> {
-        match self.values.entry(key.into()) {
-            Entry::Occupied(entry) => Err(MetadataError::DuplicateKey(entry.key().clone())),
-            Entry::Vacant(entry) => {
-                entry.insert(value.into());
-                Ok(())
-            }
-        }
-    }
-
-    /// Borrows the value for a key.
-    ///
-    /// Returns `None` when the key is absent. An empty stored value is returned
-    /// as `Some("")`, rather than being treated as missing.
+    /// Set the trace ID.
     #[must_use]
-    pub fn get(&self, key: &str) -> Option<&str> {
-        self.values.get(key).map(String::as_str)
+    pub fn with_trace_id(mut self, trace_id: impl Into<String>) -> Self {
+        self.trace_id = Some(trace_id.into());
+        self
     }
 
-    /// Removes a key and returns its previous value.
-    ///
-    /// Returns `None` when the key is absent; other entries are unchanged.
-    pub fn remove(&mut self, key: &str) -> Option<String> {
-        self.values.remove(key)
-    }
-
-    /// Inserts or overwrites a key, returning any previous value.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # use miju_core::task::metadata::MetadataStore;
-    /// let mut metadata = MetadataStore::new();
-    /// assert_eq!(metadata.replace("region", "west"), None);
-    /// assert_eq!(metadata.replace("region", "east"), Some("west".to_owned()));
-    /// assert_eq!(metadata.get("region"), Some("east"));
-    /// ```
-    pub fn replace(&mut self, key: impl Into<String>, value: impl Into<String>) -> Option<String> {
-        self.values.insert(key.into(), value.into())
-    }
-
-    /// Inserts entries, overwriting existing keys. Later entries take precedence.
-    ///
-    /// Unlike [`insert`](Self::insert), this operation accepts duplicate keys.
-    /// That includes duplicates within the supplied iterator.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # use miju_core::task::metadata::MetadataStore;
-    /// let mut metadata = MetadataStore::new();
-    /// metadata.extend([("region", "west"), ("report", "daily"), ("region", "east")]);
-    /// assert_eq!(metadata.get("region"), Some("east"));
-    /// assert_eq!(metadata.len(), 2);
-    /// ```
-    pub fn extend<K: Into<String>, V: Into<String>>(
-        &mut self,
-        values: impl IntoIterator<Item = (K, V)>,
-    ) {
-        self.values.extend(
-            values
-                .into_iter()
-                .map(|(key, value)| (key.into(), value.into())),
-        );
-    }
-
-    /// Borrows all entries in unspecified order.
-    pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
-        self.values
-            .iter()
-            .map(|(key, value)| (key.as_str(), value.as_str()))
-    }
-
-    /// Returns the number of keys.
+    /// Set the span ID.
     #[must_use]
-    pub fn len(&self) -> usize {
-        self.values.len()
+    pub fn with_span_id(mut self, span_id: impl Into<String>) -> Self {
+        self.span_id = Some(span_id.into());
+        self
     }
 
-    /// Returns whether no keys are stored.
+    /// Set the trace flags.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.values.is_empty()
+    pub fn with_trace_flags(mut self, trace_flags: u8) -> Self {
+        self.trace_flags = Some(trace_flags);
+        self
+    }
+
+    /// Set the trace state.
+    #[must_use]
+    pub fn with_trace_state(mut self, trace_state: impl Into<String>) -> Self {
+        self.trace_state = Some(trace_state.into());
+        self
+    }
+
+    /// Get the trace ID.
+    #[must_use]
+    pub fn trace_id(&self) -> &Option<String> {
+        &self.trace_id
+    }
+
+    /// Get the span ID.
+    #[must_use]
+    pub fn span_id(&self) -> &Option<String> {
+        &self.span_id
+    }
+
+    /// Get the trace flags.
+    #[must_use]
+    pub fn trace_flags(&self) -> &Option<u8> {
+        &self.trace_flags
+    }
+
+    /// Get the trace state.
+    #[must_use]
+    pub fn trace_state(&self) -> &Option<String> {
+        &self.trace_state
     }
 }
 
-/// Maps an application type to entries in a [`MetadataStore`].
-///
-/// Implementations choose their keys, representation, and validation rules.
-/// Coordinate key names when several metadata types share a store. Extraction
-/// borrows the store; injection may modify it and is not inherently transactional.
-/// [`Task::inject_metadata`](super::Task::inject_metadata) stages those writes
-/// and only updates the task after success.
-///
-/// # Example
-///
-/// Define a region label that rejects empty values and duplicate keys, then
-/// attach it to a task and read it back:
-///
-/// ```
-/// use miju_core::task::{Task, metadata::{Metadata, MetadataStore}};
-///
-/// #[derive(Debug, PartialEq, Eq)]
-/// struct Region(String);
-///
-/// impl Metadata for Region {
-///     type Error = &'static str;
-///
-///     fn extract(store: &MetadataStore) -> Result<Self, Self::Error> {
-///         let value = store.get("region").ok_or("missing region")?;
-///         if value.is_empty() {
-///             return Err("empty region");
-///         }
-///         Ok(Self(value.to_owned()))
-///     }
-///
-///     fn inject(&self, store: &mut MetadataStore) -> Result<(), Self::Error> {
-///         if self.0.is_empty() {
-///             return Err("empty region");
-///         }
-///         store.insert("region", self.0.clone()).map_err(|_| "duplicate region")
-///     }
-/// }
-///
-/// let mut task = Task::new("generate report");
-/// task.inject_metadata(&Region("west".to_owned()))?;
-/// assert_eq!(Region::extract(task.metadata())?, Region("west".to_owned()));
-///
-/// assert!(task.inject_metadata(&Region("east".to_owned())).is_err());
-/// assert_eq!(task.metadata().get("region"), Some("west"));
-/// # Ok::<(), &'static str>(())
-/// ```
-pub trait Metadata: Sized {
-    /// A validation, extraction, or insertion failure.
-    ///
-    /// The implementation selects a type that can describe both read and write
-    /// failures, including missing keys or a rejected stored representation.
-    type Error;
+#[cfg(feature = "tracing")]
+/// Error provided by parsing TracingContext
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum TracingContextParseError {
+    /// Missing Field
+    #[error("Missing Field: {0}")]
+    MissingField(&'static str),
+    /// Invalid flags
+    #[error("Invalid flags: {0}")]
+    InvalidTraceFlags(std::num::ParseIntError),
+    /// Invalid format, also returned when the metadata key is absent.
+    #[error("Invalid Format")]
+    InvalidFormat,
+    /// Missing metadata key; extraction currently returns [`Self::InvalidFormat`].
+    #[error("Key {{miju_core.tracing.context}} not found in Metadata")]
+    MissingKey,
+    /// Duplicate entry
+    #[error("Duplicate entry: {0}")]
+    DuplicateEntry(#[from] MetadataError),
+}
 
-    /// Reads and validates a typed value from the store.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Self::Error`] when required entries are missing or their values
-    /// do not satisfy the implementation's format and validation rules.
-    fn extract(store: &MetadataStore) -> Result<Self, Self::Error>;
+// Serialization format: a single semicolon-separated string.
+//
+//   <trace_id>;<span_id>;<trace_flags>;<trace_state>
+//
+// Each field is either its value or `-` if None.
+//
+// Example:
+//   "4bf92f3577b34da6a3ce929d0e0e4736;00f067aa0ba902b7;1;congo=t61rcWkgMzE"
+//   "4bf92f3577b34da6a3ce929d0e0e4736;00f067aa0ba902b7;-;-"
+#[cfg(feature = "tracing")]
+impl fmt::Display for TracingContext {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{};{};{};{}",
+            self.trace_id.as_deref().unwrap_or("-"),
+            self.span_id.as_deref().unwrap_or("-"),
+            self.trace_flags
+                .map(|v| v.to_string())
+                .as_deref()
+                .unwrap_or("-"),
+            self.trace_state.as_deref().unwrap_or("-"),
+        )
+    }
+}
 
-    /// Writes the value's entries to the store.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Self::Error`] when the value or an insertion is rejected.
-    /// Earlier writes may remain in `store` on failure; callers that require
-    /// all-or-nothing updates must stage them, as [`Task::inject_metadata`](super::Task::inject_metadata)
-    /// does.
-    fn inject(&self, store: &mut MetadataStore) -> Result<(), Self::Error>;
+#[cfg(feature = "tracing")]
+impl FromStr for TracingContext {
+    type Err = TracingContextParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut parts = s.splitn(4, ';');
+
+        let mut next = |field| {
+            parts
+                .next()
+                .ok_or(TracingContextParseError::MissingField(field))
+        };
+
+        let trace_id = match next("trace_id")? {
+            "-" => None,
+            v => Some(v.to_owned()),
+        };
+
+        let span_id = match next("span_id")? {
+            "-" => None,
+            v => Some(v.to_owned()),
+        };
+
+        let trace_flags = match next("trace_flags")? {
+            "-" => None,
+            v => Some(
+                v.parse::<u8>()
+                    .map_err(TracingContextParseError::InvalidTraceFlags)?,
+            ),
+        };
+
+        let trace_state = match next("trace_state")? {
+            "-" => None,
+            v => Some(v.to_owned()),
+        };
+
+        Ok(Self {
+            trace_id,
+            span_id,
+            trace_flags,
+            trace_state,
+        })
+    }
+}
+
+#[cfg(feature = "tracing")]
+const TRACING_CONTENT_KEY: &str = "miju_core.tracing.context";
+
+#[cfg(feature = "tracing")]
+impl Metadata for TracingContext {
+    type Error = TracingContextParseError;
+    fn extract(store: &MetadataStore) -> Result<Self, Self::Error> {
+        store
+            .get(TRACING_CONTENT_KEY)
+            .ok_or(TracingContextParseError::InvalidFormat)?
+            .parse()
+    }
+
+    fn inject(&self, map: &mut MetadataStore) -> Result<(), Self::Error> {
+        Ok(map.insert(TRACING_CONTENT_KEY, self.to_string())?)
+    }
+}
+
+#[cfg(test)]
+#[allow(unused)]
+mod tests {
+    use std::{convert::Infallible, fmt::Debug, num::ParseIntError, task::Poll, time::Duration};
+
+    use crate::{
+        error::BoxDynError,
+        task::from_request::FromRequest,
+        task::{
+            Task,
+            metadata::{Meta, Metadata, MetadataStore},
+        },
+    };
+    use futures_core::future::BoxFuture;
+    use tower::Service;
+
+    #[derive(Debug, Clone)]
+    struct ExampleService<S> {
+        service: S,
+    }
+    #[derive(Debug, Clone, Default)]
+    struct ExampleConfig {
+        timeout: Duration,
+    }
+
+    const EXAMPLE_CONFIG: &str = "miju_core.example.config";
+
+    impl Metadata for ExampleConfig {
+        type Error = ParseIntError;
+        fn extract(store: &MetadataStore) -> Result<Self, Self::Error> {
+            let timeout = store
+                .get(EXAMPLE_CONFIG)
+                .unwrap()
+                .parse::<u64>()
+                .map(Duration::from_secs)?;
+            Ok(Self { timeout })
+        }
+
+        fn inject(&self, map: &mut MetadataStore) -> Result<(), ParseIntError> {
+            let value = self.timeout.as_secs().to_string();
+            map.insert(EXAMPLE_CONFIG, value).unwrap();
+            Ok(())
+        }
+    }
+
+    impl<S, Args: Send + Sync + 'static> Service<Task<Args>> for ExampleService<S>
+    where
+        S: Service<Task<Args>> + Clone + Send + 'static,
+        S::Future: Send + 'static,
+    {
+        type Response = S::Response;
+        type Error = S::Error;
+        type Future = BoxFuture<'static, Result<Self::Response, Self::Error>>;
+
+        fn poll_ready(&mut self, cx: &mut std::task::Context<'_>) -> Poll<Result<(), Self::Error>> {
+            self.service.poll_ready(cx)
+        }
+
+        fn call(&mut self, request: Task<Args>) -> Self::Future {
+            let mut svc = self.service.clone();
+
+            // Do something with config
+            Box::pin(async move {
+                let _config: Meta<ExampleConfig> = request.extract().await.unwrap();
+                svc.call(request).await
+            })
+        }
+    }
+
+    #[cfg(feature = "tracing")]
+    #[test]
+    fn tracing_context_keeps_explicit_fields() {
+        let context = crate::task::metadata::TracingContext::new()
+            .with_trace_id("4bf92f3577b34da6a3ce929d0e0e4736")
+            .with_span_id("00f067aa0ba902b7")
+            .with_trace_flags(1)
+            .with_trace_state("vendor=acme");
+
+        assert_eq!(
+            context.trace_id(),
+            &Some("4bf92f3577b34da6a3ce929d0e0e4736".to_owned())
+        );
+        assert_eq!(context.span_id(), &Some("00f067aa0ba902b7".to_owned()));
+        assert_eq!(context.trace_flags(), &Some(1));
+        assert_eq!(context.trace_state(), &Some("vendor=acme".to_owned()));
+    }
+
+    #[cfg(feature = "tracing")]
+    #[test]
+    fn tracing_context_string_round_trip() {
+        use super::TracingContext;
+
+        assert_eq!(TracingContext::new().to_string(), "-;-;-;-");
+        for text in ["-;-;-;-", "trace;span;255;vendor=one;other=two", ";;0;"] {
+            let context: TracingContext = text.parse().unwrap();
+            assert_eq!(context.to_string(), text);
+        }
+        let empty: TracingContext = "-;-;-;-".parse().unwrap();
+        assert_eq!(empty.trace_id(), &None);
+        assert_eq!(empty.span_id(), &None);
+        assert_eq!(empty.trace_flags(), &None);
+        assert_eq!(empty.trace_state(), &None);
+
+        let context: TracingContext = "trace;span;01;vendor=one;other=two".parse().unwrap();
+        assert_eq!(context.trace_flags(), &Some(1));
+        assert_eq!(
+            context.trace_state().as_deref(),
+            Some("vendor=one;other=two")
+        );
+        assert_eq!(context.to_string(), "trace;span;1;vendor=one;other=two");
+    }
+
+    #[cfg(feature = "tracing")]
+    #[test]
+    fn tracing_context_reports_missing_fields_and_invalid_flags() {
+        use super::{TracingContext, TracingContextParseError};
+
+        for (text, field) in [
+            ("", "span_id"),
+            ("trace", "span_id"),
+            ("trace;span", "trace_flags"),
+            ("trace;span;1", "trace_state"),
+        ] {
+            assert!(matches!(
+                text.parse::<TracingContext>(),
+                Err(TracingContextParseError::MissingField(actual)) if actual == field
+            ));
+        }
+        for flags in ["", "256", "-1", "ff"] {
+            assert!(matches!(
+                format!("trace;span;{flags};-").parse::<TracingContext>(),
+                Err(TracingContextParseError::InvalidTraceFlags(_))
+            ));
+        }
+    }
+
+    #[cfg(feature = "tracing")]
+    #[test]
+    fn tracing_metadata_rejects_duplicates_and_preserves_the_first_value() {
+        use super::{MetadataError, TracingContext, TracingContextParseError};
+
+        let mut store = MetadataStore::new();
+        assert!(matches!(
+            TracingContext::extract(&store),
+            Err(TracingContextParseError::InvalidFormat)
+        ));
+        TracingContext::new()
+            .with_trace_id("first")
+            .inject(&mut store)
+            .unwrap();
+        assert_eq!(store.get("miju_core.tracing.context"), Some("first;-;-;-"));
+        let err = TracingContext::new()
+            .with_trace_id("second")
+            .inject(&mut store)
+            .unwrap_err();
+        assert!(matches!(err,
+            TracingContextParseError::DuplicateEntry(MetadataError::DuplicateKey(key))
+                if key == "miju_core.tracing.context"
+        ));
+        assert_eq!(store.len(), 1);
+        assert_eq!(
+            store
+                .extract_as::<TracingContext>()
+                .unwrap()
+                .trace_id()
+                .as_deref(),
+            Some("first")
+        );
+
+        store.replace("miju_core.tracing.context", "trace;span;invalid;-");
+        assert!(matches!(
+            store.extract_as::<TracingContext>(),
+            Err(TracingContextParseError::InvalidTraceFlags(_))
+        ));
+    }
+
+    #[cfg(feature = "tracing")]
+    #[tokio::test]
+    async fn tracing_metadata_is_available_to_task_extractors() {
+        use super::TracingContext;
+        use crate::task::builder::TaskBuilder;
+
+        let context = TracingContext::new()
+            .with_trace_id("trace")
+            .with_trace_flags(1);
+        let task = TaskBuilder::new(42u32).metadata(&context).build();
+        let extracted: Meta<TracingContext> = task.extract().await.unwrap();
+        assert_eq!(extracted.to_string(), "trace;-;1;-");
+        let mut copy: MetadataStore = task.extract().await.unwrap();
+        copy.clear();
+        assert_eq!(task.metadata().len(), 1);
+    }
+
+    #[cfg(all(feature = "tracing", feature = "serde"))]
+    #[test]
+    fn tracing_context_and_metadata_serde_round_trip() {
+        use super::TracingContext;
+
+        let context = TracingContext::new()
+            .with_trace_id("trace")
+            .with_span_id("span")
+            .with_trace_flags(255)
+            .with_trace_state("vendor=one");
+        let value = serde_json::to_value(&context).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "trace_id": "trace", "span_id": "span", "trace_flags": 255, "trace_state": "vendor=one"
+            })
+        );
+        let decoded: TracingContext = serde_json::from_value(value).unwrap();
+        assert_eq!(decoded.to_string(), context.to_string());
+        let mut store = MetadataStore::new();
+        context.inject(&mut store).unwrap();
+        let encoded = serde_json::to_string(&store).unwrap();
+        let decoded: MetadataStore = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(
+            decoded.extract_as::<TracingContext>().unwrap().to_string(),
+            context.to_string()
+        );
+        let empty = serde_json::to_value(TracingContext::new()).unwrap();
+        assert_eq!(
+            empty,
+            serde_json::json!({
+                "trace_id": null, "span_id": null, "trace_flags": null, "trace_state": null
+            })
+        );
+    }
 }

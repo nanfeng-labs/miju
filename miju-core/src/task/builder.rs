@@ -1,93 +1,61 @@
-//! Configuring task arguments and execution context.
+//! # Task Builder
 //!
-//! [`TaskBuilder`] collects a payload and its execution settings before creating
-//! a [`Task`]. Start with [`TaskBuilder::new`], apply the options needed by an
-//! integration, and call [`build`](TaskBuilder::build) to obtain the task.
+//! The `TaskBuilder` module provides a flexible builder pattern for constructing [`Task`] instances
+//! with customizable configuration options. It allows users to specify arguments, context, extensions,
+//! task identifiers, attempt information, status, and scheduling details for tasks.
 //!
-//! # Configuration
+//! ## Features
+//! - Create tasks with required arguments and optional context.
+//! - Attach custom extensions/data to tasks.
+//! - Assign unique task identifiers.
+//! - Configure attempt and status information.
+//! - Schedule tasks to run at specific times or after delays (seconds, minutes, hours).
+//! - Build tasks with sensible defaults for omitted fields.
 //!
-//! A builder can:
+//! ## Usage
+//! Use [`TaskBuilder`] to incrementally configure a task, then call `.build()` to obtain a [`Task`] instance.
+//! Convenience methods are provided for common scheduling scenarios.
 //!
-//! - Set an identifier, destination queue, priority, and requested execution time.
-//! - Attach process-local data and typed string metadata.
-//! - Supply a recorded status, attempt count, and requested attempt limit.
-//! - Convert the argument type while retaining the configured context.
-//!
-//! Unspecified fields keep the [`ExecutionContext`] defaults. The builder records
-//! settings for an integration to apply; it does not allocate IDs, enqueue work,
-//! or enforce scheduling and retry policies.
-//!
-//! # Example
-//!
-//! ```
+//! ### Example
+//! ```rust
 //! use miju_core::task::builder::TaskBuilder;
-//!
-//! let task = TaskBuilder::new("archive report")
-//!     .queue("archives")
-//!     .run_at_timestamp(1_800_000_000)
-//!     .max_attempts(4)
-//!     .data(vec!["monthly", "finance"])
+//! # let args = "send mail";
+//! let task = TaskBuilder::new(args)
+//!     .max_attempts(3)
+//!     .run_in_minutes(10)
 //!     .build();
-//!
-//! assert_eq!(task.run_at(), Some(1_800_000_000));
-//! assert_eq!(task.max_attempts(), Some(4));
-//! assert_eq!(task.data().get::<Vec<&str>>().unwrap().len(), 2);
 //! ```
 //!
-//! # Reconfiguring an Existing Task
-//!
-//! [`Task::into_builder`] retains the existing configuration, cloning the context
-//! if it is shared. Status and attempts continue to share their underlying cells
-//! until explicitly set on the builder. Setting either creates an independent
-//! cell, leaving existing observers unchanged:
-//!
-//! ```
-//! use miju_core::task::{builder::TaskBuilder, status::Status};
-//!
-//! let original = TaskBuilder::new("archive report")
-//!     .attempt(2)
-//!     .status(Status::Failed)
-//!     .build();
-//! let updated = original.clone().into_builder().priority(5).build();
-//! updated.raw_attempt().increment();
-//! assert_eq!(original.attempt(), 3);
-//!
-//! let reset = updated.into_builder()
-//!     .attempt(0)
-//!     .status(Status::Pending)
-//!     .build();
-//! assert_eq!(reset.attempt(), 0);
-//! assert_eq!(reset.status(), Status::Pending);
-//! assert_eq!(original.attempt(), 3);
-//! assert_eq!(original.status(), Status::Failed);
-//! ```
-
-use std::sync::Arc;
-
-use super::{
-    ExecutionContext, Task, attempt::Attempt, metadata::Metadata, status::AtomicStatus,
-    status::Status, task_id::TaskId,
+use crate::{
+    backend::queue::Queue,
+    task::{
+        ExecutionContext, Task,
+        attempt::Attempt,
+        extensions::Extensions,
+        metadata::{Metadata, MetadataStore},
+        status::Status,
+        task_id::TaskId,
+    },
 };
-use crate::backend::queue::Queue;
+use std::{
+    fmt::Debug,
+    sync::Arc,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
-/// A builder for a task's payload, attached data, and execution settings.
-///
-/// `Args` may be any payload type; construction does not require [`Clone`].
-/// Builder methods consume and return the builder, and [`build`](Self::build)
-/// completes construction. See the [module documentation](self) for a full
-/// example and the behavior of rebuilding a shared task.
+/// Builder for creating [`Task`] instances with optional configuration
 #[derive(Debug)]
-#[must_use = "build the configured task to use it"]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[must_use = "TaskBuilder is used to construct a Task. Ensure to call `.build()` to create the Task instance."]
 pub struct TaskBuilder<Args> {
+    /// The arguments for the task
     pub(super) args: Args,
+    /// Execution context for the task, including metadata and extensions
     pub(super) ctx: ExecutionContext,
 }
 
 impl<Args> TaskBuilder<Args> {
-    /// Starts with a fresh context and the supplied payload.
-    ///
-    /// The task starts pending with zero attempts. Optional settings, including
-    /// its identifier and queue, remain unset until supplied by the caller.
+    /// Create a new TaskBuilder with the required args
     pub fn new(args: Args) -> Self {
         Self {
             args,
@@ -95,120 +63,178 @@ impl<Args> TaskBuilder<Args> {
         }
     }
 
-    /// Sets an explicit task identifier.
-    ///
-    /// This stores the provided ID without generating or checking uniqueness.
-    /// See [`TaskId`] for the distinction between integer and string identifiers.
-    pub fn task_id(mut self, id: impl Into<TaskId>) -> Self {
-        self.ctx.task_id = Some(id.into());
+    /// Set the task's metadata
+    pub fn with_metadata(mut self, metadata: MetadataStore) -> Self {
+        self.ctx.metadata = metadata;
         self
     }
 
-    /// Inserts data, replacing any previous value of the same type.
-    ///
-    /// Each distinct Rust type has its own entry. Use separate wrapper types
-    /// when multiple values have the same underlying representation; see
-    /// [`Extensions`](super::extensions::Extensions).
-    pub fn data<T: Clone + Send + Sync + 'static>(mut self, value: T) -> Self {
+    /// Set the task's runtime data
+    pub fn with_data(mut self, data: Extensions) -> Self {
+        self.ctx.data = data;
+        self
+    }
+
+    /// Insert a value into the task's data context
+    pub fn data<D: Clone + Send + Sync + 'static>(mut self, value: D) -> Self {
         self.ctx.data.insert(value);
         self
     }
 
-    /// Writes typed metadata into this builder.
-    ///
-    /// # Errors
-    ///
-    /// Returns the injection error and consumes the builder on failure.
-    /// For an update that retains an existing task on failure, use
-    /// [`Task::inject_metadata`].
-    pub fn metadata<M: Metadata>(mut self, value: &M) -> Result<Self, M::Error> {
-        value.inject(&mut self.ctx.metadata)?;
-        Ok(self)
-    }
-
-    /// Replaces the attempt counter with a new cell, leaving existing observers alone.
-    ///
-    /// The count is stored verbatim. It is not checked against
-    /// [`max_attempts`](Self::max_attempts).
-    pub fn attempt(mut self, count: usize) -> Self {
-        self.ctx.attempt = Attempt::new_with_value(count);
+    /// Insert a value into the task's metadata
+    pub fn metadata<M>(mut self, value: &M) -> Self
+    where
+        M: Metadata,
+        M::Error: Debug,
+    {
+        value
+            .inject(&mut self.ctx.metadata)
+            .expect("Could not add Metadata");
         self
     }
 
-    /// Replaces the status with a new cell, leaving existing observers alone.
-    ///
-    /// No lifecycle transition is validated, and no execution is triggered.
+    /// Set the task ID
+    pub fn task_id(mut self, task_id: TaskId) -> Self {
+        self.ctx.task_id = Some(task_id);
+        self
+    }
+
+    /// Set the attempt information
+    pub fn attempt(mut self, attempt: usize) -> Self {
+        self.ctx.attempt = Attempt::new_with_value(attempt);
+        self
+    }
+
+    /// Set the task status
     pub fn status(mut self, status: Status) -> Self {
-        self.ctx.status = AtomicStatus::new(status);
+        self.ctx.status = status.into();
         self
     }
 
-    /// Records an attempt limit, including zero; enforcement belongs to the worker.
-    ///
-    /// Calling this method always stores `Some(count)`. The builder does not
-    /// interpret zero as unlimited or compare the value with the current count.
-    pub fn max_attempts(mut self, count: usize) -> Self {
-        self.ctx.max_attempts = Some(count);
+    /// Set the maximum number of attempts allowed for the task
+    pub fn max_attempts(mut self, max_attempts: usize) -> Self {
+        self.ctx.max_attempts = Some(max_attempts);
         self
     }
 
-    /// Records a priority value for the backend to interpret.
-    ///
-    /// The builder does not define which end of the numeric range runs first.
-    pub fn priority(mut self, value: usize) -> Self {
-        self.ctx.priority = Some(value);
+    /// Set the priority of the task
+    pub fn priority(mut self, priority: usize) -> Self {
+        self.ctx.priority = Some(priority);
         self
     }
 
-    /// Selects a queue name.
-    ///
-    /// Names are stored without normalization or validation; see [`Queue`].
-    pub fn queue(mut self, queue: impl Into<Queue>) -> Self {
-        self.ctx.queue = Some(queue.into());
+    /// Set the queue this task belongs to
+    pub fn queue(mut self, queue: Queue) -> Self {
+        self.ctx.queue = Some(queue);
         self
     }
 
-    /// Records an execution time in seconds since the Unix epoch.
-    ///
-    /// This is an absolute timestamp, not a delay. Past timestamps are accepted,
-    /// and the builder does not wait until the requested time.
+    /// Schedule the task to run at a specific Unix timestamp
     pub fn run_at_timestamp(mut self, timestamp: u64) -> Self {
         self.ctx.run_at = Some(timestamp);
         self
     }
 
-    /// Converts the payload while retaining all configured context.
-    ///
-    /// The mapping receives ownership of the arguments and may return a new
-    /// type, for example an encoded representation for storage.
-    pub fn map_args<T>(self, map: impl FnOnce(Args) -> T) -> TaskBuilder<T> {
+    /// Schedule the task to run at a specific SystemTime
+    pub fn run_at_time(mut self, time: SystemTime) -> Self {
+        let timestamp = time
+            .duration_since(UNIX_EPOCH)
+            .expect("Time went backwards")
+            .as_secs();
+        self.ctx.run_at = Some(timestamp);
+        self
+    }
+
+    /// Schedule the task to run after a delay from now
+    pub fn run_after(mut self, delay: Duration) -> Self {
+        let now = SystemTime::now();
+        let run_time = now + delay;
+        let timestamp = run_time
+            .duration_since(UNIX_EPOCH)
+            .expect("Time went backwards")
+            .as_secs();
+        self.ctx.run_at = Some(timestamp);
+        self
+    }
+
+    /// Schedule the task to run in the specified number of seconds
+    pub fn run_in_seconds(self, seconds: u64) -> Self {
+        self.run_after(Duration::from_secs(seconds))
+    }
+
+    /// Schedule the task to run in the specified number of minutes
+    pub fn run_in_minutes(self, minutes: u64) -> Self {
+        self.run_after(Duration::from_secs(minutes * 60))
+    }
+
+    /// Schedule the task to run in the specified number of hours
+    pub fn run_in_hours(self, hours: u64) -> Self {
+        self.run_after(Duration::from_secs(hours * 3600))
+    }
+
+    /// Set the idempotency key
+    pub fn idempotency_key<S: AsRef<str>>(mut self, idempotency_key: S) -> Self {
+        self.ctx.idempotency_key = Some(idempotency_key.as_ref().to_owned());
+        self
+    }
+
+    /// Set the time the task was completed
+    pub fn done_at(mut self, done_at: Option<u64>) -> Self {
+        self.ctx.done_at = done_at;
+        self
+    }
+
+    /// Set the time the task was locked
+    pub fn lock_at(mut self, lock_at: Option<u64>) -> Self {
+        self.ctx.lock_at = lock_at;
+        self
+    }
+
+    /// Set the worker/process identifier holding the lock on this task
+    pub fn lock_by(mut self, lock_by: Option<String>) -> Self {
+        self.ctx.lock_by = lock_by;
+        self
+    }
+
+    /// Build the Task with default context
+    pub fn build(self) -> Task<Args> {
+        Task {
+            args: self.args,
+            ctx: Arc::new(self.ctx),
+        }
+    }
+}
+
+impl<Args> TaskBuilder<Args> {
+    /// Maps the `args` field using the provided function, returning a result.
+    pub fn try_map_args<F, NewArgs, Err>(self, f: F) -> Result<TaskBuilder<NewArgs>, Err>
+    where
+        F: FnOnce(Args) -> Result<NewArgs, Err>,
+    {
+        Ok(TaskBuilder {
+            args: f(self.args)?,
+            ctx: self.ctx,
+        })
+    }
+    /// Maps the `args` field using the provided function, returning the new args.
+    pub fn map_args<F, NewArgs>(self, f: F) -> TaskBuilder<NewArgs>
+    where
+        F: FnOnce(Args) -> NewArgs,
+    {
         TaskBuilder {
-            args: map(self.args),
+            args: f(self.args),
             ctx: self.ctx,
         }
     }
 
-    /// Converts the payload while retaining all configured context on success.
-    ///
-    /// # Errors
-    ///
-    /// Returns the conversion error and consumes the builder on failure.
-    pub fn try_map_args<T, E>(
-        self,
-        map: impl FnOnce(Args) -> Result<T, E>,
-    ) -> Result<TaskBuilder<T>, E> {
-        Ok(TaskBuilder {
-            args: map(self.args)?,
-            ctx: self.ctx,
-        })
-    }
-
-    /// Produces a task with the configured context.
-    ///
-    /// The returned task owns a new context handle. Any status or attempt cells
-    /// retained from an existing task still share updates with their observers.
-    #[must_use]
-    pub fn build(self) -> Task<Args> {
-        Task::new_with_ctx(self.args, Arc::new(self.ctx))
+    /// Maps only the `execution_context` field.
+    pub fn map_context<F>(self, f: F) -> Self
+    where
+        F: FnOnce(ExecutionContext) -> ExecutionContext,
+    {
+        Self {
+            args: self.args,
+            ctx: f(self.ctx),
+        }
     }
 }

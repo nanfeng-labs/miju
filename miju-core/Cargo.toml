@@ -5,9 +5,62 @@ publish = false
 authors.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "Core task types, execution context, and storage contracts for miju"
+description = "Task backends, worker execution, and lifecycle management for miju"
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = []
+## Generate the feature flag reference when building documentation
+docsrs = ["dep:document-features"]
+## Enable task function signature validation helpers
+test-utils = []
+## Enable runtime-independent timers and task timeouts
+sleep = ["dep:futures-timer"]
+## Emit worker lifecycle logs and store explicit tracing metadata
+tracing = ["dep:tracing"]
+## Track and cancel individual running tasks
+task-context = ["dep:dashmap"]
+## Share a backend through cloneable handles
+shared = ["dep:dashmap"]
+## Enable serialization for task contexts, metadata, and enabled ID types
+serde = ["dep:serde", "ulid?/serde", "uuid?/serde"]
+## Enable ulid support for task ids (requires Rust 1.89)
+ulid = ["dep:ulid"]
+## Enable uuid support for task ids (requires Rust 1.89)
+uuid = ["dep:uuid"]
+
+[dependencies]
+document-features = { version = "0.2", optional = true }
+futures-util = { version = "0.3.34", default-features = false, features = ["sink", "async-await", "async-await-macro", "std"] }
+futures-core = { version = "0.3.34", default-features = false }
+futures-channel = { version = "0.3.34", default-features = false, features = ["sink", "std"] }
+futures-sink = { version = "0.3.34", default-features = false }
+futures-timer = { version = "3.0.4", optional = true }
+dashmap = { version = "6.2.1", default-features = false, optional = true }
+pin-project = "1"
+tracing = { version = "0.1.44", default-features = false, optional = true }
+rand = { version = "0.10", features = ["std"] }
+serde = { version = "1.0", features = ["derive"], optional = true }
+thiserror = "2.0.21"
+tower-layer = "0.3.3"
+tower-service = "0.3.3"
+ulid = { version = "3", optional = true, features = ["uuid"] }
+uuid = { version = "1.28.0", features = ["v4", "v5"], optional = true }
+
+[dev-dependencies]
+tokio = { version = "1.53.2", features = ["macros", "rt", "sync", "rt-multi-thread", "signal", "time"] }
+tower = { version = "0.5", features = ["limit", "util"] }
+serde_json = "1.0"
+
 [lints]
 workspace = true
+
+[package.metadata.docs.rs]
+# defines the configuration attribute `docsrs`
+rustdoc-args = ["--cfg", "docsrs"]
+all-features = true
+
+[package.metadata.cargo-udeps.ignore]
+# Used under cfg(doc) to generate the feature reference; checked by the rustdoc CI job.
+normal = ["document-features"]

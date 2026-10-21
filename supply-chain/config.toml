@@ -3,3 +3,330 @@
 
 [cargo-vet]
 version = "0.10"
+
+[imports.bytecode-alliance]
+url = "https://raw.githubusercontent.com/bytecodealliance/wasmtime/main/supply-chain/audits.toml"
+
+[imports.google]
+url = "https://raw.githubusercontent.com/google/supply-chain/main/audits.toml"
+
+[imports.mozilla]
+url = "https://raw.githubusercontent.com/mozilla/supply-chain/main/audits.toml"
+
+[imports.zcash]
+url = "https://raw.githubusercontent.com/zcash/rust-ecosystem/main/supply-chain/audits.toml"
+
+[[exemptions.bitflags]]
+version = "2.13.2"
+criteria = "safe-to-deploy"
+notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.bytes]]
+version = "1.12.1"
+criteria = "safe-to-run"
+notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.cfg-if]]
+version = "1.0.5"
+criteria = "safe-to-deploy"
+notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.chacha20]]
+version = "0.10.2"
+criteria = "safe-to-deploy"
+notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.cpufeatures]]
+version = "0.3.1"
+criteria = "safe-to-deploy"
+notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.crossbeam-utils]]
+version = "0.8.23"
+criteria = "safe-to-deploy"
+notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.dashmap]]
+version = "6.2.1"
+criteria = "safe-to-deploy"
+notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.futures-channel]]
+version = "0.3.34"
+criteria = "safe-to-deploy"
+notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.futures-macro]]
+version = "0.3.34"
+criteria = "safe-to-deploy"
+notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.futures-sink]]
+version = "0.3.34"
+criteria = "safe-to-deploy"
+notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.futures-task]]
+version = "0.3.34"
+criteria = "safe-to-deploy"
+notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.futures-timer]]
+version = "3.0.4"
+criteria = "safe-to-deploy"
+notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.futures-util]]
+version = "0.3.34"
+criteria = "safe-to-deploy"
+notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.getrandom]]
+version = "0.4.3"
+criteria = "safe-to-deploy"
+notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.hashbrown]]
+version = "0.14.5"
+criteria = "safe-to-deploy"
+notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.itoa]]
+version = "1.0.18"
+criteria = "safe-to-run"
+notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.js-sys]]
+version = "0.3.106"
+criteria = "safe-to-deploy"
+notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.libc]]
+version = "0.2.191"
+criteria = "safe-to-deploy"
+notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.litrs]]
+version = "1.0.1"
+criteria = "safe-to-deploy"
+notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.lock_api]]
+version = "0.4.14"
+criteria = "safe-to-deploy"
+notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.memchr]]
+version = "2.8.3"
+criteria = "safe-to-run"
+notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.mio]]
+version = "1.2.4"
+criteria = "safe-to-run"
+notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.once_cell]]
+version = "1.21.4"
+criteria = "safe-to-deploy"
+notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.parking_lot_core]]
+version = "0.9.12"
+criteria = "safe-to-deploy"
+notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.pin-project]]
+version = "1.1.13"
+criteria = "safe-to-deploy"
+notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.pin-project-internal]]
+version = "1.1.13"
+criteria = "safe-to-deploy"
+notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.pin-project-lite]]
+version = "0.2.17"
+criteria = "safe-to-deploy"
+notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.proc-macro2]]
+version = "1.0.107"
+criteria = "safe-to-deploy"
+notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.r-efi]]
+version = "6.0.0"
+criteria = "safe-to-deploy"
+notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.rand]]
+version = "0.10.3"
+criteria = "safe-to-deploy"
+notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.rand_core]]
+version = "0.10.1"
+criteria = "safe-to-deploy"
+notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.redox_syscall]]
+version = "0.5.18"
+criteria = "safe-to-deploy"
+notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.rustversion]]
+version = "1.0.23"
+criteria = "safe-to-deploy"
+notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.scopeguard]]
+version = "1.2.0"
+criteria = "safe-to-deploy"
+notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.serde]]
+version = "1.0.229"
+criteria = "safe-to-deploy"
+notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.serde_core]]
+version = "1.0.229"
+criteria = "safe-to-deploy"
+notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.serde_derive]]
+version = "1.0.229"
+criteria = "safe-to-deploy"
+notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.serde_json]]
+version = "1.0.154"
+criteria = "safe-to-run"
+notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.slab]]
+version = "0.4.12"
+criteria = "safe-to-deploy"
+notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.smallvec]]
+version = "1.16.3"
+criteria = "safe-to-deploy"
+notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.syn]]
+version = "2.0.119"
+criteria = "safe-to-deploy"
+notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.syn]]
+version = "3.0.9"
+criteria = "safe-to-deploy"
+notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.sync_wrapper]]
+version = "1.0.2"
+criteria = "safe-to-run"
+notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.thiserror]]
+version = "2.0.21"
+criteria = "safe-to-deploy"
+notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.thiserror-impl]]
+version = "2.0.21"
+criteria = "safe-to-deploy"
+notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.tokio]]
+version = "1.54.0"
+criteria = "safe-to-run"
+notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.tokio-macros]]
+version = "2.7.2"
+criteria = "safe-to-run"
+notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.tokio-util]]
+version = "0.7.20"
+criteria = "safe-to-run"
+notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.tower]]
+version = "0.5.3"
+criteria = "safe-to-run"
+notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.tower-layer]]
+version = "0.3.3"
+criteria = "safe-to-deploy"
+notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.tower-service]]
+version = "0.3.3"
+criteria = "safe-to-deploy"
+notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.tracing]]
+version = "0.1.44"
+criteria = "safe-to-deploy"
+notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.ulid]]
+version = "3.0.0"
+criteria = "safe-to-deploy"
+notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.unicode-ident]]
+version = "1.0.27"
+criteria = "safe-to-deploy"
+notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.uuid]]
+version = "1.28.0"
+criteria = "safe-to-deploy"
+notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.wasi]]
+version = "0.11.1+wasi-snapshot-preview1"
+criteria = "safe-to-run"
+notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.wasm-bindgen]]
+version = "0.2.129"
+criteria = "safe-to-deploy"
+notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.wasm-bindgen-macro]]
+version = "0.2.129"
+criteria = "safe-to-deploy"
+notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.wasm-bindgen-macro-support]]
+version = "0.2.129"
+criteria = "safe-to-deploy"
+notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.wasm-bindgen-shared]]
+version = "0.2.129"
+criteria = "safe-to-deploy"
+notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.web-time]]
+version = "1.1.0"
+criteria = "safe-to-deploy"
+notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.windows-sys]]
+version = "0.61.2"
+criteria = "safe-to-run"
+notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.zmij]]
+version = "1.0.23"
+criteria = "safe-to-run"
+notes = "Unaudited initial baseline; replace with a matching audit when available."

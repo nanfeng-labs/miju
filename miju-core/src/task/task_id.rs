@@ -1,165 +1,350 @@
-//! Task identifiers supplied by producers or assigned by storage.
+//! Defines the `TaskId` type and related functionality.
 //!
-//! [`TaskId`] supports integer keys and opaque string keys. Choose an explicit
-//! constructor when the storage representation is known, or parse text when
-//! numeric input should be interpreted as an integer identifier.
-//!
-//! # Construction and Parsing
-//!
-//! [`TaskId::from_string`] and conversion from an owned [`String`] preserve text
-//! as a string key, including empty strings. [`FromStr`] and `TryFrom<&str>`
-//! reject empty input, attempt to parse a `u64`, and otherwise preserve the input
-//! as a string key. Numeric parsing can therefore normalize input such as `0081`
-//! to the integer `81`.
-//!
-//! ```
-//! use miju_core::task::task_id::TaskId;
-//!
-//! let parsed: TaskId = "0081".parse()?;
-//! let opaque = TaskId::from_string("0081");
-//!
-//! assert_eq!(parsed.as_int(), Some(81));
-//! assert_eq!(opaque.as_string(), Some("0081"));
-//! assert_ne!(parsed, opaque);
-//! assert!("".parse::<TaskId>().is_err());
-//! # Ok::<(), miju_core::task::task_id::TaskIdError>(())
-//! ```
-//!
-//! Identifiers are not generated or checked for uniqueness here. Producers and
-//! storage integrations must agree on their representation and allocation.
+//! `TaskId` is an identifier for a task, supporting a fixed set of common
+//! id representations (integer, string, and optionally UUID/ULID when the
+//! corresponding features are enabled).
+use std::{
+    fmt::{Debug, Display},
+    str::FromStr,
+};
 
-use std::{fmt, str::FromStr};
+use crate::{
+    task::from_request::FromRequest,
+    task::{Task, data::MissingDataError},
+};
 
-/// An integer or opaque string key identifying a task.
+pub use random_id::RandomId;
+
+/// A wrapper type that defines a task id.
 ///
-/// Equality and hashing include the variant. Integer and string keys therefore
-/// remain distinct even if [`Display`](fmt::Display) produces the same text.
-/// Displaying and reparsing an ID does not always preserve its original variant:
-///
-/// ```
-/// use miju_core::task::task_id::TaskId;
-///
-/// let integer = TaskId::from_int(81);
-/// let text = TaskId::from_string("81");
-/// assert_eq!(integer.to_string(), text.to_string());
-/// assert_ne!(integer, text);
-/// assert_eq!(text.to_string().parse::<TaskId>()?, integer);
-/// # Ok::<(), miju_core::task::task_id::TaskIdError>(())
-/// ```
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+/// Supports a fixed set of common identifier representations. `Uuid` and
+/// `Ulid` variants are only available when the corresponding crate features
+/// are enabled.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, Eq, Hash, PartialEq, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", serde(untagged))]
 #[non_exhaustive]
 pub enum TaskId {
-    /// An integer key assigned by a producer or store.
+    /// An integer-based id
     Int(u64),
-    /// An opaque string key.
+    /// A string-based id
     String(String),
+    /// A UUID-based id
+    #[cfg(feature = "uuid")]
+    Uuid(uuid::Uuid),
+    /// A ULID-based id
+    #[cfg(feature = "ulid")]
+    Ulid(ulid::Ulid),
 }
 
 impl TaskId {
-    /// Constructs an integer identifier.
+    /// Construct a `TaskId` from an integer.
     #[must_use]
     pub fn from_int(id: u64) -> Self {
         Self::Int(id)
     }
 
-    /// Constructs an opaque identifier without interpreting its contents.
-    ///
-    /// Numeric text stays a string, and an empty string is accepted. Use
-    /// [`str::parse`] when numeric text should become an integer identifier.
+    /// Construct a `TaskId` from a string.
     #[must_use]
     pub fn from_string(id: impl Into<String>) -> Self {
         Self::String(id.into())
     }
 
-    /// Returns the integer only when this is an integer identifier.
-    ///
-    /// A string containing digits still returns `None`.
+    /// Construct a `TaskId` from a UUID.
+    #[cfg(feature = "uuid")]
     #[must_use]
+    pub fn from_uuid(id: uuid::Uuid) -> Self {
+        Self::Uuid(id)
+    }
+
+    /// Construct a `TaskId` from a ULID.
+    #[cfg(feature = "ulid")]
+    #[must_use]
+    pub fn from_ulid(id: ulid::Ulid) -> Self {
+        Self::Ulid(id)
+    }
+
+    /// Returns the inner value as an integer, if this is an `Int` variant.
+    #[must_use]
+    #[allow(clippy::match_wildcard_for_single_variants)]
     pub fn as_int(&self) -> Option<u64> {
         match self {
             Self::Int(id) => Some(*id),
-            Self::String(_) => None,
+            _ => None,
         }
     }
 
-    /// Borrows the string only when this is a string identifier.
-    ///
-    /// Integer identifiers are not formatted into strings by this accessor.
+    /// Returns the inner value as a string slice, if this is a `String` variant.
     #[must_use]
+    #[allow(clippy::match_wildcard_for_single_variants)]
     pub fn as_string(&self) -> Option<&str> {
         match self {
-            Self::String(id) => Some(id),
-            Self::Int(_) => None,
+            Self::String(id) => Some(id.as_str()),
+            _ => None,
+        }
+    }
+
+    /// Returns the inner value as a `Uuid`, if this is a `Uuid` variant.
+    #[cfg(feature = "uuid")]
+    #[must_use]
+    pub fn as_uuid(&self) -> Option<uuid::Uuid> {
+        match self {
+            Self::Uuid(id) => Some(*id),
+            _ => None,
+        }
+    }
+
+    /// Returns the inner value as a `Ulid`, if this is a `Ulid` variant.
+    #[cfg(feature = "ulid")]
+    #[must_use]
+    pub fn as_ulid(&self) -> Option<ulid::Ulid> {
+        match self {
+            Self::Ulid(id) => Some(*id),
+            _ => None,
         }
     }
 }
 
-/// An error returned when parsing an identifier from text.
-///
-/// Currently only empty input is rejected. Nonempty text that cannot be parsed
-/// as a `u64` is accepted as [`TaskId::String`].
-#[derive(Clone, Debug, PartialEq, Eq)]
+impl TaskId {
+    /// Generates a deterministic uuid based on the task id.
+    #[cfg(feature = "uuid")]
+    #[must_use]
+    pub fn to_uuid(&self) -> uuid::Uuid {
+        const NAMESPACE: uuid::Uuid = uuid::Uuid::from_u128(0x6ba7b8109dad11d180b400c04fd430c8);
+
+        match self {
+            Self::Int(id) => uuid::Uuid::new_v5(&NAMESPACE, &id.to_be_bytes()),
+            Self::String(id) => uuid::Uuid::new_v5(&NAMESPACE, id.as_bytes()),
+            #[cfg(feature = "uuid")]
+            Self::Uuid(id) => *id,
+            #[cfg(feature = "ulid")]
+            Self::Ulid(id) => (*id).into(),
+        }
+    }
+}
+
+/// Errors that can occur when parsing a `TaskId` from a string
+#[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum TaskIdError {
-    /// The rejected input.
+    /// The string did not match any known `TaskId` representation
+    #[error("could not decode task_id: `{0}`")]
     Decode(String),
 }
 
-impl fmt::Display for TaskIdError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Decode(value) => write!(f, "invalid task identifier: {value:?}"),
-        }
-    }
-}
-
-impl std::error::Error for TaskIdError {}
-
 impl FromStr for TaskId {
     type Err = TaskIdError;
-
-    /// Parses a nonempty identifier, preferring a `u64` when possible.
-    ///
-    /// Non-numeric input and integers outside the `u64` range become string
-    /// identifiers. String fallback preserves whitespace and other characters.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TaskIdError::Decode`] only when `value` is empty.
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        if value.is_empty() {
-            return Err(TaskIdError::Decode(value.to_owned()));
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        #[cfg(feature = "uuid")]
+        if let Ok(id) = uuid::Uuid::from_str(s) {
+            return Ok(Self::Uuid(id));
         }
-        Ok(value
-            .parse::<u64>()
-            .map_or_else(|_| Self::from_string(value), Self::Int))
+
+        #[cfg(feature = "ulid")]
+        if let Ok(id) = ulid::Ulid::from_str(s) {
+            return Ok(Self::Ulid(id));
+        }
+
+        if let Ok(id) = u64::from_str(s) {
+            return Ok(Self::Int(id));
+        }
+
+        if !s.is_empty() {
+            return Ok(Self::String(s.to_owned()));
+        }
+
+        Err(TaskIdError::Decode(s.to_owned()))
     }
 }
 
-impl TryFrom<&str> for TaskId {
+impl TryFrom<&'_ str> for TaskId {
     type Error = TaskIdError;
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
-        value.parse()
+
+    fn try_from(value: &'_ str) -> Result<Self, Self::Error> {
+        Self::from_str(value)
+    }
+}
+
+impl Display for TaskId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Int(id) => Display::fmt(id, f),
+            Self::String(id) => Display::fmt(id, f),
+            #[cfg(feature = "uuid")]
+            Self::Uuid(id) => Display::fmt(id, f),
+            #[cfg(feature = "ulid")]
+            Self::Ulid(id) => Display::fmt(id, f),
+        }
+    }
+}
+
+impl<Args: Sync> FromRequest<Task<Args>> for TaskId {
+    type Error = MissingDataError;
+    async fn from_request(req: &Task<Args>) -> Result<Self, Self::Error> {
+        req.task_id().cloned().ok_or(MissingDataError::NotFound(
+            std::any::type_name::<Self>().to_owned(),
+        ))
     }
 }
 
 impl From<u64> for TaskId {
-    fn from(value: u64) -> Self {
-        Self::Int(value)
+    fn from(id: u64) -> Self {
+        Self::Int(id)
     }
 }
 
 impl From<String> for TaskId {
-    fn from(value: String) -> Self {
-        Self::String(value)
+    fn from(id: String) -> Self {
+        Self::String(id)
     }
 }
 
-impl fmt::Display for TaskId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Int(id) => id.fmt(f),
-            Self::String(id) => f.write_str(id),
+#[cfg(feature = "uuid")]
+impl From<uuid::Uuid> for TaskId {
+    fn from(id: uuid::Uuid) -> Self {
+        Self::Uuid(id)
+    }
+}
+
+#[cfg(feature = "ulid")]
+impl From<ulid::Ulid> for TaskId {
+    fn from(id: ulid::Ulid) -> Self {
+        Self::Ulid(id)
+    }
+}
+
+/// Helper function to combine a list of ids into a single string
+///
+/// The output quotes each displayed ID without escaping its contents.
+pub fn coalesce_ids<T: Display>(task_ids: impl IntoIterator<Item = T> + Send) -> String {
+    use std::fmt::Write;
+    let mut ids = String::from("[");
+
+    for (i, id) in task_ids.into_iter().enumerate() {
+        if i != 0 {
+            ids.push(',');
         }
+        write!(&mut ids, "\"{id}\"").unwrap();
+    }
+
+    ids.push(']');
+    ids
+}
+/// Trait for generating unique IDs
+pub trait GenerateId {
+    /// Generate a new unique ID
+    fn generate() -> TaskId;
+}
+
+#[cfg(feature = "uuid")]
+impl GenerateId for uuid::Uuid {
+    fn generate() -> TaskId {
+        TaskId::Uuid(Self::new_v4())
+    }
+}
+
+#[cfg(feature = "ulid")]
+impl GenerateId for ulid::Ulid {
+    fn generate() -> TaskId {
+        TaskId::Ulid(Self::generate())
+    }
+}
+
+impl GenerateId for RandomId {
+    fn generate() -> TaskId {
+        TaskId::from_string(Self::default())
+    }
+}
+
+impl GenerateId for u64 {
+    fn generate() -> TaskId {
+        TaskId::Int(rand::random::<Self>())
+    }
+}
+
+mod random_id {
+    use super::*;
+    use std::convert::Infallible;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    const ALPHABET: &[u8] = b"abcdefghijkmnopqrstuvwxyz23456789-";
+    const BASE: u64 = 34;
+    const TIME_LEN: usize = 6;
+    const RANDOM_LEN: usize = 5;
+
+    /// A simple, time-based ID generated using randomness and an atomic counter.
+    ///
+    /// Consider using a ulid/uuid/nanoid in backend implementation
+    /// This is a placeholder and does not guarantee/tested as the other implementations
+    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+    #[derive(Debug, Clone, Eq, Hash, PartialEq, PartialOrd, Ord)]
+    pub struct RandomId(String);
+
+    impl From<RandomId> for String {
+        fn from(value: RandomId) -> Self {
+            value.0
+        }
+    }
+
+    impl FromStr for RandomId {
+        type Err = Infallible;
+        fn from_str(s: &str) -> Result<Self, Self::Err> {
+            Ok(Self(s.to_owned()))
+        }
+    }
+
+    #[allow(clippy::infallible_try_from)]
+    impl TryFrom<&'_ str> for RandomId {
+        type Error = Infallible;
+
+        fn try_from(value: &'_ str) -> Result<Self, Self::Error> {
+            Self::from_str(value)
+        }
+    }
+
+    impl Display for RandomId {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            Display::fmt(&self.0, f)
+        }
+    }
+
+    impl Default for RandomId {
+        fn default() -> Self {
+            Self(unique_id())
+        }
+    }
+
+    // Atomic counter to ensure uniqueness within same millisecond
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    /// Converts the low-order digits of a number to base 34 using the ID alphabet.
+    fn encode_base64(mut value: u64, length: usize) -> String {
+        let mut buf = vec![b'A'; length];
+        for i in (0..length).rev() {
+            buf[i] = ALPHABET[(value % BASE) as usize];
+            value /= BASE;
+        }
+        String::from_utf8(buf).unwrap()
+    }
+
+    /// Generates an ID from a truncated timestamp, randomness, and a counter.
+    pub(super) fn unique_id() -> String {
+        let timestamp = current_time_millis();
+        let time_str = encode_base64(timestamp, TIME_LEN);
+
+        // Counter ensures uniqueness across fast calls
+        let count = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let rand_part = encode_base64(rand::random::<u64>(), RANDOM_LEN);
+
+        format!("{time_str}{rand_part}{count}")
+    }
+
+    /// Returns current time in milliseconds since UNIX epoch.
+    fn current_time_millis() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64
     }
 }

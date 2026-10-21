@@ -1,85 +1,171 @@
-//! Shared tracking of task execution attempts.
+//! A thread-safe tracker for counting the number of attempts made by a task.
 //!
-//! [`Attempt`] holds a count that can be read and incremented through shared
-//! references. Clones refer to the same counter, allowing a task and its
-//! observers to see updates without replacing their execution contexts.
+//! The `Attempt` struct wraps an atomic counter, allowing concurrent increment and retrieval of the attempt count. It is designed to be used within the Miju job/task system, enabling tasks to keep track of how many times they have been retried or executed.
 //!
-//! The counter starts at zero unless restored from an existing value. It does
-//! not count executions automatically or enforce an attempt limit; the caller
-//! decides when an attempt begins and increments it accordingly.
-//!
-//! # Example
-//!
-//! ```
-//! use miju_core::task::attempt::Attempt;
-//!
-//! let attempts = Attempt::new();
-//! let observer = attempts.clone();
-//! let previous = attempts.increment();
-//!
-//! assert_eq!(previous, 0);
-//! assert_eq!(observer.current(), 1);
-//! ```
-
-use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
+//! Features:
+//! - Thread-safe increment and retrieval of attempt count.
+//! - Integration with miju `FromRequest` trait for extracting attempt information from a task context.
+//! - Optional (via the `serde` feature) serialization and deserialization support for persisting or transmitting attempt state.
+use std::{
+    convert::Infallible,
+    sync::{Arc, atomic::AtomicUsize},
 };
 
-/// An atomic attempt count shared by all of its clones.
-///
-/// Use [`current`](Self::current) to obtain a numeric snapshot and
-/// [`new_with_value`](Self::new_with_value) to create an independent counter
-/// from a recorded count. Cloning preserves shared observation instead.
-#[derive(Clone, Debug, Default)]
-pub struct Attempt {
-    count: Arc<AtomicUsize>,
+use crate::{task::Task, task::from_request::FromRequest};
+
+/// A wrapper to keep count of the attempts tried by a task
+#[derive(Debug, Clone)]
+pub struct Attempt(Arc<AtomicUsize>);
+
+impl Default for Attempt {
+    fn default() -> Self {
+        Self(Arc::new(AtomicUsize::new(0)))
+    }
 }
 
 impl Attempt {
-    /// Starts a counter at zero.
+    /// Build a new tracker
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Restores a counter from a recorded value.
-    ///
-    /// The new counter is independent of any counter that supplied `value`.
+    /// Build a tracker from an existing value
     #[must_use]
     pub fn new_with_value(value: usize) -> Self {
-        Self {
-            count: Arc::new(AtomicUsize::new(value)),
+        Self(Arc::new(AtomicUsize::from(value)))
+    }
+
+    /// Get the current value
+    #[must_use]
+    pub fn current(&self) -> usize {
+        self.0.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Increase the current value and return the previous value
+    #[must_use]
+    pub(crate) fn increment(&self) -> usize {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl<Args> FromRequest<Task<Args>> for Attempt
+where
+    Args: Sync,
+{
+    type Error = Infallible;
+    async fn from_request(task: &Task<Args>) -> Result<Self, Self::Error> {
+        Ok(task.raw_attempt().clone())
+    }
+}
+
+#[cfg(feature = "serde")]
+mod serde_impl {
+    use std::sync::atomic::Ordering;
+
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    use super::*;
+
+    // Custom serialization function
+    fn serialize<S>(attempt: &Attempt, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let value = attempt.0.load(Ordering::SeqCst);
+        serializer.serialize_u64(value as u64)
+    }
+
+    // Custom deserialization function
+    fn deserialize<'de, D>(deserializer: D) -> Result<Attempt, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = u64::deserialize(deserializer)?;
+        Ok(Attempt(Arc::new(AtomicUsize::new(value as usize))))
+    }
+
+    impl Serialize for Attempt {
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            serialize(self, serializer)
         }
     }
 
-    /// Reads the current number of attempts.
-    ///
-    /// Another observer may increment the counter after this read.
-    #[must_use]
-    pub fn current(&self) -> usize {
-        self.count.load(Ordering::SeqCst)
+    impl<'de> Deserialize<'de> for Attempt {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            deserialize(deserializer)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Attempt;
+
+    #[test]
+    fn extracted_attempts_share_the_task_counter() {
+        use std::{
+            future::Future,
+            pin::pin,
+            task::{Context, Poll, Waker},
+        };
+
+        let task = crate::task::Task::new(());
+        let mut extraction = pin!(task.extract::<Attempt>());
+        let Poll::Ready(Ok(attempt)) = extraction
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+        else {
+            panic!("attempt extraction should be ready and infallible");
+        };
+        assert_eq!(attempt.increment(), 0);
+        assert_eq!(task.attempt(), 1);
+        assert_eq!(task.raw_attempt().increment(), 1);
+        assert_eq!(attempt.current(), 2);
     }
 
-    /// Increments the counter and returns its previous value.
-    ///
-    /// The returned value is the count before this increment, even when other
-    /// observers are updating the counter. Adding one to [`usize::MAX`] wraps
-    /// the stored count to zero.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # use miju_core::task::attempt::Attempt;
-    /// let attempts = Attempt::new_with_value(2);
-    /// assert_eq!(attempts.increment(), 2);
-    /// assert_eq!(attempts.current(), 3);
-    /// ```
-    #[allow(
-        clippy::must_use_candidate,
-        reason = "incrementing is useful without the previous value"
-    )]
-    pub fn increment(&self) -> usize {
-        self.count.fetch_add(1, Ordering::SeqCst)
+    #[test]
+    fn concurrent_attempts_return_each_previous_value_once() {
+        let attempts = Attempt::new_with_value(7);
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let counter = attempts.clone();
+                std::thread::spawn(move || {
+                    (0..500).map(|_| counter.increment()).collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        let mut observed: Vec<_> = handles
+            .into_iter()
+            .flat_map(|handle| handle.join().unwrap())
+            .collect();
+        observed.sort_unstable();
+        assert_eq!(observed, (7..4_007).collect::<Vec<_>>());
+        assert_eq!(attempts.current(), 4_007);
+        assert_eq!(Attempt::new().current(), 0);
+    }
+
+    #[test]
+    fn attempt_overflow_matches_atomic_wrapping_semantics() {
+        let attempts = Attempt::new_with_value(usize::MAX);
+        assert_eq!(attempts.increment(), usize::MAX);
+        assert_eq!(attempts.current(), 0);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn deserializing_an_attempt_creates_an_independent_counter() {
+        let original = Attempt::new_with_value(7);
+        let snapshot: Attempt =
+            serde_json::from_value(serde_json::to_value(&original).unwrap()).unwrap();
+        assert_eq!(original.increment(), 7);
+        assert_eq!(original.current(), 8);
+        assert_eq!(snapshot.current(), 7);
     }
 }

@@ -2,8 +2,8 @@
 //!
 //! Use this crate to describe work with typed arguments, attach application data,
 //! and configure the execution information that a storage integration will use.
-//! It exposes [`Task`] directly and groups the remaining APIs under [`task`] and
-//! [`backend`].
+//! It exposes [`Task`] directly and groups the remaining APIs under [`task`],
+//! [`backend`], and [`error`].
 //!
 //! # Usage
 //!
@@ -21,7 +21,7 @@
 //! let task: Task<RefreshIndex> = TaskBuilder::new(RefreshIndex {
 //!     collection: "catalog".to_owned(),
 //! })
-//!     .queue("maintenance")
+//!     .queue("maintenance".into())
 //!     .max_attempts(3)
 //!     .build();
 //!
@@ -66,7 +66,7 @@
 //! [`Metadata`]: task::metadata::Metadata
 //! [`Codec`]: backend::codec::Codec
 //! [`Queue`]: backend::queue::Queue
-//! [`TaskResult`]: backend::results::TaskResult
+//! [`TaskResult`]: backend::TaskResult
 
 pub use miju_core::task::Task;
-pub use miju_core::{backend, task};
+pub use miju_core::{backend, error, task};
