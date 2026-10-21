@@ -47,9 +47,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - name: install-cargo-vet
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-vet
+        run: cargo install cargo-vet --version 0.10.2 --locked
       - run: cargo vet --locked
 
   cargo-deny:

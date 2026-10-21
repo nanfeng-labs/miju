@@ -33,7 +33,7 @@
 //!         tokio::time::sleep(Duration::from_secs(1)).await;
 //!         if task == ITEMS - 1 {
 //!             worker.stop().unwrap();
-//!             return Err("Worker stopped!")?;
+//!             Err("Worker stopped!")?;
 //!         }
 //!         if task % 3 == 0 {
 //!             return Ok(());
@@ -143,7 +143,7 @@ mod tests {
         async fn task(task: u32, worker: WorkerContext) -> Result<(), BoxDynError> {
             tokio::time::sleep(Duration::from_secs(1)).await;
             if task == ITEMS - 1 {
-                return Err("Worker stopped!")?;
+                Err("Worker stopped!")?;
             }
             if task == 8 {
                 worker.stop().unwrap();

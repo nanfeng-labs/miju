@@ -464,7 +464,7 @@ mod tests {
             count.fetch_add(1, Ordering::Relaxed);
             if task == ITEMS - 1 {
                 worker.stop().unwrap();
-                return Err("Worker stopped!")?;
+                Err("Worker stopped!")?;
             }
 
             #[cfg(feature = "task-context")]

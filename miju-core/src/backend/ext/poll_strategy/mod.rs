@@ -276,7 +276,7 @@ mod tests {
             if task == ITEMS - 1 {
                 tokio::time::sleep(Duration::from_secs(5)).await;
                 worker.stop().unwrap();
-                return Err("Worker stopped!")?;
+                Err("Worker stopped!")?;
             }
             Ok(())
         }
@@ -368,7 +368,7 @@ mod tests {
             if task == ITEMS - 1 {
                 tokio::time::sleep(Duration::from_secs(10)).await;
                 worker.stop().unwrap();
-                return Err("Worker stopped!")?;
+                Err("Worker stopped!")?;
             }
             Ok(())
         }
