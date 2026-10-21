@@ -66,10 +66,20 @@ version = "6.2.1"
 criteria = "safe-to-deploy"
 notes = "Unaudited initial baseline; replace with a matching audit when available."
 
+[[exemptions.equivalent]]
+version = "1.0.3"
+criteria = "safe-to-deploy"
+notes = "Unaudited miju-workflow dependency baseline; replace with a matching audit when available."
+
 [[exemptions.fastrand]]
 version = "2.5.0"
 criteria = "safe-to-deploy"
 notes = "Unaudited miju-file-storage dependency baseline; replace with a matching audit when available."
+
+[[exemptions.fixedbitset]]
+version = "0.5.7"
+criteria = "safe-to-deploy"
+notes = "Unaudited miju-workflow dependency baseline; replace with a matching audit when available."
 
 [[exemptions.futures-channel]]
 version = "0.3.34"
@@ -110,6 +120,11 @@ notes = "Unaudited initial baseline; replace with a matching audit when availabl
 version = "0.14.5"
 criteria = "safe-to-deploy"
 notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.indexmap]]
+version = "2.14.2"
+criteria = "safe-to-deploy"
+notes = "Unaudited miju-workflow dependency baseline; replace with a matching audit when available."
 
 [[exemptions.itoa]]
 version = "1.0.18"
@@ -160,6 +175,11 @@ notes = "Unaudited initial baseline; replace with a matching audit when availabl
 version = "0.9.12"
 criteria = "safe-to-deploy"
 notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.petgraph]]
+version = "0.8.3"
+criteria = "safe-to-deploy"
+notes = "Unaudited miju-workflow dependency baseline; replace with a matching audit when available."
 
 [[exemptions.pin-project]]
 version = "1.1.13"

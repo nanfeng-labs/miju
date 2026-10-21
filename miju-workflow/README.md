@@ -283,6 +283,54 @@ The backend delivers queued tasks without enforcing scheduling timestamps.
 For temporary-file integration, `miju-file-storage::JsonStorage` remains available
 and is exercised by the sequential integration tests.
 
+## Graph data types
+
+The `graph` module provides progress metadata, response records and error types.
+`GraphFlowContext` tracks the current and previous nodes, completed nodes,
+dependency task IDs, topological position and root task ID. It can be stored in
+task metadata or serialized with Serde:
+
+```rust
+use miju_core::task::{metadata::{Metadata, MetadataStore}, task_id::TaskId};
+use miju_workflow::graph::GraphFlowContext;
+use petgraph::graph::NodeIndex;
+
+let mut context = GraphFlowContext::new(Some(TaskId::from_string("root")));
+context.current_node = NodeIndex::new(2);
+context.current_position = 1;
+context.prev_node = Some(NodeIndex::new(0));
+context.completed_nodes.insert(NodeIndex::new(0));
+context.node_task_ids.insert(NodeIndex::new(0), TaskId::from_string("entry"));
+context.is_initial = false;
+
+let mut metadata = MetadataStore::new();
+context.inject(&mut metadata)?;
+let restored = GraphFlowContext::extract(&metadata)?;
+let dependencies = restored.get_dependency_task_ids(&[NodeIndex::new(0), NodeIndex::new(1)]);
+assert_eq!(restored.current_node, NodeIndex::new(2));
+assert_eq!(dependencies.len(), 1);
+# Ok::<(), miju_workflow::graph::context::GraphFlowContextError>(())
+```
+
+Metadata keys use the `miju_workflow.graph.` prefix. Extraction requires
+`current_node` and `current_position`; missing optional fields use empty/default
+values. Dependency lookup omits nodes without a recorded task ID and does not
+check completion. `new` starts at node zero with `is_initial = true`, while
+derived `Default` sets that flag to false. Neither validates node indices or
+selects a graph's actual entry node.
+
+Missing or malformed `is_initial` metadata becomes true. Injection can partially
+write before returning an error, and a duplicate `is_initial` key currently
+panics. Inject into a fresh metadata store. Node/task mappings are comma-separated
+without escaping, so task IDs containing commas cannot round-trip reliably.
+
+`graph::response::GraphNodeResponse` represents entry fan-out, node fan-out,
+next-step enqueueing, waiting dependencies and completion. Its values carry JSON
+results and node/task mappings. `graph::error` supplies `GraphFlowError` and
+`GraphServiceError`, including wrapped source errors. These data types do not
+construct a graph, schedule tasks or execute nodes; those APIs are not yet
+available.
+
 ## Features
 
 The default `tracing` feature enables result-storage diagnostics and core worker

@@ -7,7 +7,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Sequential task execution and in-memory workflow results for miju"
+description = "Sequential workflows, in-memory results and graph state types for miju"
 
 [features]
 default = ["tracing"]
@@ -17,6 +17,7 @@ tracing = ["dep:tracing", "miju-core/tracing"]
 [dependencies]
 miju-core = { version = "0.1.0", default-features = false, features = ["serde", "shared"] }
 miju-codec = { version = "0.1.0" }
+petgraph = { version = "0.8.3", features = ["serde-1"] }
 dashmap = "6.2.1"
 tracing = { version = "0.1.44", default-features = false, optional = true }
 serde = { version = "1.0", features = ["derive"] }
