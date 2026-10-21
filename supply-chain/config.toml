@@ -66,6 +66,11 @@ version = "6.2.1"
 criteria = "safe-to-deploy"
 notes = "Unaudited initial baseline; replace with a matching audit when available."
 
+[[exemptions.fastrand]]
+version = "2.5.0"
+criteria = "safe-to-deploy"
+notes = "Unaudited miju-file-storage dependency baseline; replace with a matching audit when available."
+
 [[exemptions.futures-channel]]
 version = "0.3.34"
 criteria = "safe-to-deploy"
@@ -120,6 +125,11 @@ notes = "Unaudited initial baseline; replace with a matching audit when availabl
 version = "0.2.191"
 criteria = "safe-to-deploy"
 notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.linux-raw-sys]]
+version = "0.12.1"
+criteria = "safe-to-deploy"
+notes = "Unaudited miju-file-storage dependency baseline; replace with a matching audit when available."
 
 [[exemptions.litrs]]
 version = "1.0.1"
@@ -191,6 +201,11 @@ version = "0.5.18"
 criteria = "safe-to-deploy"
 notes = "Unaudited initial baseline; replace with a matching audit when available."
 
+[[exemptions.rustix]]
+version = "1.1.5"
+criteria = "safe-to-deploy"
+notes = "Unaudited miju-file-storage dependency baseline; replace with a matching audit when available."
+
 [[exemptions.rustversion]]
 version = "1.0.23"
 criteria = "safe-to-deploy"
@@ -245,6 +260,11 @@ notes = "Unaudited initial baseline; replace with a matching audit when availabl
 version = "1.0.2"
 criteria = "safe-to-run"
 notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.tempfile]]
+version = "3.27.0"
+criteria = "safe-to-deploy"
+notes = "Unaudited miju-file-storage dependency baseline; replace with a matching audit when available."
 
 [[exemptions.thiserror]]
 version = "2.0.21"
@@ -347,9 +367,59 @@ criteria = "safe-to-deploy"
 notes = "Unaudited initial baseline; replace with a matching audit when available."
 
 [[exemptions.windows-sys]]
+version = "0.59.0"
+criteria = "safe-to-deploy"
+notes = "Unaudited miju-file-storage dependency baseline; replace with a matching audit when available."
+
+[[exemptions.windows-sys]]
 version = "0.61.2"
-criteria = "safe-to-run"
-notes = "Unaudited initial baseline; replace with a matching audit when available."
+criteria = "safe-to-deploy"
+notes = "Unaudited runtime dependency baseline for miju-file-storage; replace with a matching audit when available."
+
+[[exemptions.windows-targets]]
+version = "0.52.6"
+criteria = "safe-to-deploy"
+notes = "Unaudited miju-file-storage dependency baseline; replace with a matching audit when available."
+
+[[exemptions.windows_aarch64_gnullvm]]
+version = "0.52.6"
+criteria = "safe-to-deploy"
+notes = "Unaudited miju-file-storage dependency baseline; replace with a matching audit when available."
+
+[[exemptions.windows_aarch64_msvc]]
+version = "0.52.6"
+criteria = "safe-to-deploy"
+notes = "Unaudited miju-file-storage dependency baseline; replace with a matching audit when available."
+
+[[exemptions.windows_i686_gnu]]
+version = "0.52.6"
+criteria = "safe-to-deploy"
+notes = "Unaudited miju-file-storage dependency baseline; replace with a matching audit when available."
+
+[[exemptions.windows_i686_gnullvm]]
+version = "0.52.6"
+criteria = "safe-to-deploy"
+notes = "Unaudited miju-file-storage dependency baseline; replace with a matching audit when available."
+
+[[exemptions.windows_i686_msvc]]
+version = "0.52.6"
+criteria = "safe-to-deploy"
+notes = "Unaudited miju-file-storage dependency baseline; replace with a matching audit when available."
+
+[[exemptions.windows_x86_64_gnu]]
+version = "0.52.6"
+criteria = "safe-to-deploy"
+notes = "Unaudited miju-file-storage dependency baseline; replace with a matching audit when available."
+
+[[exemptions.windows_x86_64_gnullvm]]
+version = "0.52.6"
+criteria = "safe-to-deploy"
+notes = "Unaudited miju-file-storage dependency baseline; replace with a matching audit when available."
+
+[[exemptions.windows_x86_64_msvc]]
+version = "0.52.6"
+criteria = "safe-to-deploy"
+notes = "Unaudited miju-file-storage dependency baseline; replace with a matching audit when available."
 
 [[exemptions.zmij]]
 version = "1.0.23"
