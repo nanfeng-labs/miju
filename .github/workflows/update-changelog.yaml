@@ -1,13 +1,15 @@
 name: changelog-update
 
 on:
-  pull_request:
-    branches: [main]
-    types: [opened, edited]
+  workflow_call:
+    outputs:
+      head:
+        description: PR head after preparing the changelog
+        value: ${{ jobs.update.outputs.head }}
 
 permissions:
   contents: write
-  pull-requests: read
+  pull-requests: write
 
 concurrency:
   group: changelog-update-${{ github.event.pull_request.number }}
@@ -21,6 +23,8 @@ jobs:
       github.event.pull_request.head.ref != 'main' &&
       github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
+    outputs:
+      head: ${{ steps.commit.outputs.head }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -62,9 +66,20 @@ jobs:
           check(title)
           if "\n" in title or "\r" in title:
               sys.exit("The PR title must be a single line")
-          title = re.sub(rf"(?<!\w)#{number}(?![0-9A-Za-z_.])", "", title).strip()
-          if not title:
+          if "#" not in title:
+              title = f"{title.strip()} #{number}"
+          matches = list(re.finditer(r"(?<!\w)#([1-9][0-9]*)(?![0-9A-Za-z_.])", title))
+          if title.count("#") != 1 or len(matches) != 1 or matches[0].group(1) != number:
+              sys.exit("Title must contain exactly one reference matching the PR number")
+          match = matches[0]
+          description = (title[:match.start()] + title[match.end():]).strip()
+          if not description:
               sys.exit("The PR title must include a description")
+          if title != pr["title"]:
+              subprocess.run(["gh", "api", "--method", "PATCH",
+                              f"repos/{repository}/pulls/{number}", "-f", f"title={title}"],
+                             check=True, stdout=subprocess.DEVNULL)
+          title = description
           title = re.sub(r"([\\`*_\[\]<>])", r"\\\1", title)
           link = f"[#{number}](https://github.com/{repository}/pull/{number})"
           entry = f"- {title} ({link})"
@@ -96,11 +111,13 @@ jobs:
           PY
 
       - name: changelog-commit
+        id: commit
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_BRANCH: ${{ github.event.pull_request.head.ref }}
         run: |
           if git diff --quiet -- CHANGELOG.md; then
+            echo "head=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           git config user.name "github-actions[bot]"
@@ -108,3 +125,4 @@ jobs:
           git add -- CHANGELOG.md
           git commit -m "docs(changelog): update PR #${PR_NUMBER}"
           git push origin "HEAD:refs/heads/${PR_BRANCH}"
+          echo "head=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
