@@ -8,9 +8,16 @@
 //! it to be passed around in various contexts. It uses an `Arc<str>` internally
 //! to store the queue name, ensuring efficient memory usage and thread safety.
 //!
+//! The module also includes an implementation of the `FromRequest` trait, allowing
+//! extraction of the queue information from a task context. This is useful for
+//! workers that need to know which queue they are processing tasks from.
 use std::{str::FromStr, sync::Arc};
 
-use crate::task::metadata::{Metadata, MetadataStore};
+use crate::task::{
+    Task,
+    from_request::FromRequest,
+    metadata::{Metadata, MetadataStore},
+};
 
 /// Represents a queue in the backend
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -65,6 +72,18 @@ impl<'de> serde::Deserialize<'de> for Queue {
     {
         let s = String::deserialize(deserializer)?;
         Ok(Self(Arc::from(s)))
+    }
+}
+
+impl<Args> FromRequest<Task<Args>> for Queue
+where
+    Args: Sync,
+{
+    type Error = QueueError;
+
+    async fn from_request(req: &Task<Args>) -> Result<Self, Self::Error> {
+        let queue = req.queue().cloned().ok_or(QueueError::NotFound)?;
+        Ok(queue)
     }
 }
 

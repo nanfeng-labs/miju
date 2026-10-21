@@ -41,6 +41,7 @@
 //!
 //! - [`attempt`]: Tracks the number of attempts a task has been executed.
 //! - [`builder`]: Utilities for constructing tasks.
+//! - [`data`]: Shared data and middleware for task contexts.
 //! - [`extensions`]: Extension storage for tasks.
 //! - [`metadata`]: Metadata types for tasks.
 //! - [`status`]: Status tracking for tasks.
@@ -120,9 +121,11 @@
 //! - [`Status`]: Enum representing the lifecycle state of a task.
 //! - [`Attempt`]: Tracks the number of execution attempts for a task.
 //! - [`TaskId`]: Unique identifier type for tasks.
+//! - [`FromRequest`]: Trait for extracting data from task contexts.
 //! - [`TaskBuilder`]: Fluent builder for constructing tasks with optional configuration.
 //!
 //! [`TaskBuilder`]: crate::task::builder::TaskBuilder
+//! [`FromRequest`]: crate::task::from_request::FromRequest
 
 use std::{fmt::Debug, ops::Deref, sync::Arc};
 
@@ -132,6 +135,7 @@ use crate::{
         attempt::Attempt,
         builder::TaskBuilder,
         extensions::Extensions,
+        from_request::FromRequest,
         metadata::{Metadata, MetadataStore},
         runs::Run,
         status::{AtomicStatus, Status},
@@ -143,6 +147,7 @@ pub mod attempt;
 pub mod builder;
 pub mod data;
 pub mod extensions;
+pub mod from_request;
 pub mod metadata;
 pub mod runs;
 pub mod status;
@@ -407,6 +412,14 @@ impl<Args> Task<Args> {
     #[must_use]
     pub fn take(self) -> (Args, Arc<ExecutionContext>) {
         (self.args, self.ctx)
+    }
+
+    /// Extract a value of type `T` from the task's context
+    ///
+    /// Uses [FromRequest] trait to extract the value.
+    #[must_use = "An extracted value should be used or handled to avoid unused value warnings."]
+    pub async fn extract<T: FromRequest<Self>>(&self) -> Result<T, T::Error> {
+        T::from_request(self).await
     }
 
     /// Maps the `args` field using the provided function, consuming the task.

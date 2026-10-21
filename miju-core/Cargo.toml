@@ -16,6 +16,8 @@ serde = ["dep:serde"]
 [dependencies]
 serde = { version = "1.0", features = ["derive"], optional = true }
 thiserror = "2.0.21"
+tower-layer = "0.3.3"
+tower-service = "0.3.3"
 
 [dev-dependencies]
 serde_json = "1.0"

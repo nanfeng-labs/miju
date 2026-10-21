@@ -4,8 +4,14 @@
 //!
 //! Features:
 //! - Thread-safe increment and retrieval of attempt count.
+//! - Integration with miju `FromRequest` trait for extracting attempt information from a task context.
 //! - Optional (via the `serde` feature) serialization and deserialization support for persisting or transmitting attempt state.
-use std::sync::{Arc, atomic::AtomicUsize};
+use std::{
+    convert::Infallible,
+    sync::{Arc, atomic::AtomicUsize},
+};
+
+use crate::{task::Task, task::from_request::FromRequest};
 
 /// A wrapper to keep count of the attempts tried by a task
 #[derive(Debug, Clone)]
@@ -47,6 +53,16 @@ impl Attempt {
     )]
     pub(crate) fn increment(&self) -> usize {
         self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl<Args> FromRequest<Task<Args>> for Attempt
+where
+    Args: Sync,
+{
+    type Error = Infallible;
+    async fn from_request(task: &Task<Args>) -> Result<Self, Self::Error> {
+        Ok(task.raw_attempt().clone())
     }
 }
 
@@ -98,6 +114,28 @@ mod serde_impl {
 #[cfg(test)]
 mod tests {
     use super::Attempt;
+
+    #[test]
+    fn extracted_attempts_share_the_task_counter() {
+        use std::{
+            future::Future,
+            pin::pin,
+            task::{Context, Poll, Waker},
+        };
+
+        let task = crate::task::Task::new(());
+        let mut extraction = pin!(task.extract::<Attempt>());
+        let Poll::Ready(Ok(attempt)) = extraction
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+        else {
+            panic!("attempt extraction should be ready and infallible");
+        };
+        assert_eq!(attempt.increment(), 0);
+        assert_eq!(task.attempt(), 1);
+        assert_eq!(task.raw_attempt().increment(), 1);
+        assert_eq!(attempt.current(), 2);
+    }
 
     #[test]
     fn concurrent_attempts_return_each_previous_value_once() {

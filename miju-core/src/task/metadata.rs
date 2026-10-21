@@ -2,10 +2,22 @@
 //!
 //! ## Overview
 //! - `Metadata`: A trait for extracting and injecting metadata.
-use std::{
-    collections::HashMap,
-    ops::{Index, IndexMut},
-};
+use crate::task::Task;
+use crate::task::from_request::FromRequest;
+use std::convert::Infallible;
+use std::ops::{Deref, Index};
+use std::{collections::HashMap, ops::IndexMut};
+
+/// Metadata wrapper for task contexts.
+#[derive(Debug, Clone)]
+pub struct Meta<T>(pub T);
+
+impl<T> Deref for Meta<T> {
+    type Target = T;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
 
 /// A lightweight key-value metadata store backed by a `HashMap`.
 ///
@@ -443,4 +455,22 @@ pub trait Metadata: Sized {
 
     /// Inject [`Self`] into the store
     fn inject(&self, map: &mut MetadataStore) -> Result<(), Self::Error>;
+}
+
+impl<T: Metadata, Args: Send + Sync> FromRequest<Task<Args>> for Meta<T> {
+    type Error = T::Error;
+
+    async fn from_request(task: &Task<Args>) -> Result<Self, Self::Error> {
+        let metadata = task.metadata();
+        let value = T::extract(metadata)?;
+        Ok(Self(value))
+    }
+}
+
+impl<Args: Send + Sync> FromRequest<Task<Args>> for MetadataStore {
+    type Error = Infallible;
+
+    async fn from_request(task: &Task<Args>) -> Result<Self, Self::Error> {
+        Ok(task.metadata().clone())
+    }
 }

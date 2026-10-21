@@ -7,6 +7,11 @@ use std::{
     str::FromStr,
 };
 
+use crate::{
+    task::from_request::FromRequest,
+    task::{Task, data::MissingDataError},
+};
+
 /// A wrapper type that defines a task id.
 ///
 /// Supports a fixed set of common identifier representations.
@@ -93,6 +98,15 @@ impl Display for TaskId {
             Self::Int(id) => Display::fmt(id, f),
             Self::String(id) => Display::fmt(id, f),
         }
+    }
+}
+
+impl<Args: Sync> FromRequest<Task<Args>> for TaskId {
+    type Error = MissingDataError;
+    async fn from_request(req: &Task<Args>) -> Result<Self, Self::Error> {
+        req.task_id().cloned().ok_or(MissingDataError::NotFound(
+            std::any::type_name::<Self>().to_owned(),
+        ))
     }
 }
 
