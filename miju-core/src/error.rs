@@ -68,6 +68,48 @@ impl DeferredError {
     }
 }
 
+/// Possible errors that can occur when running a worker.
+#[non_exhaustive]
+#[derive(Error, Debug)]
+pub enum WorkerError {
+    /// An error occurred while polling.
+    #[error("Failed to poll backend: {0}")]
+    BackendError(BoxDynError),
+    /// An error occurred while trying to change the state of the worker.
+    #[error("Failed to handle the new state: {0}")]
+    StateError(#[from] WorkerStateError),
+    /// A worker panicked and the panic was caught.
+    #[error("Worker panicked: {0}")]
+    PanicError(String),
+    /// An error occurred while handling io
+    #[error("IO error: {0}")]
+    IoError(#[from] std::io::Error),
+}
+
+/// Errors related to worker state transitions
+#[derive(Error, Debug)]
+#[non_exhaustive]
+pub enum WorkerStateError {
+    /// Worker not started
+    #[error("Worker not started, did you forget to call worker.start()")]
+    NotStarted,
+    /// Worker already started
+    #[error("Worker already started")]
+    AlreadyStarted,
+    /// Worker is not running
+    #[error("Worker is not running")]
+    NotRunning,
+    /// Worker is not paused
+    #[error("Worker is not paused")]
+    NotPaused,
+    /// Worker is shutting down
+    #[error("Worker is shutting down")]
+    ShuttingDown,
+    /// Invalid state provided
+    #[error("Worker provided with invalid state {0}")]
+    InvalidState(String),
+}
+
 /// A Tower layer for handling and converting service errors into a `BoxDynError`.
 ///
 /// The service's error type must implement `std::error::Error`, allowing for flexible

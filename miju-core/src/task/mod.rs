@@ -147,6 +147,8 @@ use crate::{
 
 pub mod attempt;
 pub mod builder;
+#[cfg(feature = "task-context")]
+pub mod context;
 pub mod data;
 pub mod extensions;
 pub mod from_request;

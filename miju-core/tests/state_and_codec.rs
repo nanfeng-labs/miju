@@ -344,3 +344,195 @@ fn queue_names_and_recorded_results_preserve_storage_data() {
     assert_eq!(run.result.as_ref().unwrap().result(), &Ok(vec![1, 2]));
     assert_eq!(outcome.take(), Err("temporary failure".to_owned()));
 }
+
+#[tokio::test]
+async fn memory_submission_keeps_ids_and_remembers_idempotency_keys_after_fetch() {
+    use futures_util::{FutureExt, StreamExt};
+    use miju_core::{
+        backend::{TaskSink, memory::MemoryStorage},
+        task::builder::TaskBuilder,
+    };
+    let mut backend = MemoryStorage::new();
+    let task = TaskBuilder::new(7u32)
+        .task_id("explicit".to_owned().into())
+        .idempotency_key("once")
+        .build();
+    backend.push_task(task.clone()).await.unwrap();
+    backend.push_task(task.clone()).await.unwrap();
+    let fetched = backend.next().await.unwrap();
+    assert_eq!(fetched.task_id(), task.task_id());
+    assert_eq!(fetched.args, 7);
+    backend.push_task(task).await.unwrap();
+    assert!(backend.next().now_or_never().is_none());
+    backend.push(9).await.unwrap();
+    let generated = backend.next().await.unwrap();
+    assert!(generated.task_id().is_some());
+    assert_eq!(generated.args, 9);
+}
+
+#[tokio::test]
+async fn dequeue_idempotency_only_covers_queued_tasks_and_push_wakes_receiver() {
+    use miju_core::{
+        backend::{Backend, TaskSink, dequeue::VecDequeBackend},
+        task::builder::TaskBuilder,
+        worker::context::WorkerContext,
+    };
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        task::{Context, Poll, Wake, Waker},
+    };
+    struct WakeCount(AtomicUsize);
+    impl Wake for WakeCount {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    let wakes = Arc::new(WakeCount(AtomicUsize::new(0)));
+    let waker = Waker::from(wakes.clone());
+    let mut cx = Context::from_waker(&waker);
+    let worker = WorkerContext::new("dequeue");
+    let mut backend = VecDequeBackend::new();
+    assert!(Backend::poll_ready(&mut backend, &mut cx, &worker).is_pending());
+    let task = TaskBuilder::new(3u32).idempotency_key("queued").build();
+    backend.push_task(task.clone()).await.unwrap();
+    backend.push_task(task.clone()).await.unwrap();
+    assert_eq!(wakes.0.load(Ordering::SeqCst), 1);
+    let Poll::Ready(Some(Ok(fetched))) = backend.poll_next(&mut cx, &worker) else {
+        panic!("queued task missing")
+    };
+    assert!(fetched.task_id().is_some());
+    assert_eq!(fetched.args, 3);
+    assert!(matches!(
+        backend.poll_next(&mut cx, &worker),
+        Poll::Ready(None)
+    ));
+    backend.push_task(task).await.unwrap();
+    assert!(matches!(
+        backend.poll_next(&mut cx, &worker),
+        Poll::Ready(Some(Ok(_)))
+    ));
+}
+
+mod durable_submission {
+    use super::*;
+    use futures_sink::Sink;
+    use futures_util::SinkExt;
+    use miju_core::{
+        backend::{
+            Backend, BackendConfig, TaskSink, TaskSinkError, WireFormatBackend,
+            dequeue::VecDequeBackend,
+            finalize::{Durable, DurableError, FinalizeBackend},
+        },
+        task::builder::TaskBuilder,
+        worker::context::WorkerContext,
+    };
+    use std::{
+        pin::Pin,
+        task::{Context, Poll, Waker},
+    };
+    use tower_layer::Identity;
+
+    #[derive(Clone)]
+    struct NumberCodec;
+    impl Codec<u32> for NumberCodec {
+        type Compact = String;
+        type Error = std::io::Error;
+        fn encode(&self, value: &u32) -> Result<String, Self::Error> {
+            if *value == u32::MAX {
+                return Err(std::io::Error::other("encode"));
+            }
+            Ok(value.to_string())
+        }
+        fn decode(&self, value: &String) -> Result<u32, Self::Error> {
+            value.parse().map_err(std::io::Error::other)
+        }
+    }
+
+    struct Encoded<B> {
+        backend: B,
+    }
+    miju_core::delegate_sink!(Encoded<B>, backend);
+
+    impl<B: Backend> Backend for Encoded<B> {
+        type Task = B::Task;
+        type Error = B::Error;
+        fn poll_ready(
+            &mut self,
+            cx: &mut Context<'_>,
+            worker: &WorkerContext,
+        ) -> Poll<Result<(), Self::Error>> {
+            self.backend.poll_ready(cx, worker)
+        }
+        fn poll_next(
+            &mut self,
+            cx: &mut Context<'_>,
+            worker: &WorkerContext,
+        ) -> Poll<Option<Result<Self::Task, Self::Error>>> {
+            self.backend.poll_next(cx, worker)
+        }
+        fn poll_close(
+            &mut self,
+            cx: &mut Context<'_>,
+            worker: &WorkerContext,
+        ) -> Poll<Result<(), Self::Error>> {
+            self.backend.poll_close(cx, worker)
+        }
+    }
+    impl<B> BackendConfig for Encoded<B> {
+        type Args = u32;
+        type Kind = Durable;
+        type Id = String;
+        type Config = ();
+        type Layer = Identity;
+        fn config(&self) -> &() {
+            &()
+        }
+        fn middleware(&mut self, _: &mut WorkerContext) -> Identity {
+            Identity::new()
+        }
+    }
+    impl<B> WireFormatBackend for Encoded<B> {
+        type Compact = String;
+        type Codec = NumberCodec;
+        fn codec(&self) -> &NumberCodec {
+            &NumberCodec
+        }
+    }
+
+    #[tokio::test]
+    async fn durable_submission_encodes_preserves_context_and_reports_codec_errors() {
+        let mut backend = Encoded {
+            backend: VecDequeBackend::<String>::new(),
+        };
+        let task = TaskBuilder::new(42u32)
+            .task_id("durable".to_owned().into())
+            .priority(9)
+            .build();
+        backend.push_task(task.clone()).await.unwrap();
+        assert!(matches!(
+            backend.push(u32::MAX).await,
+            Err(TaskSinkError::CodecError(_))
+        ));
+        backend.backend.push("invalid".to_owned()).await.unwrap();
+        let mut finalized = <Durable as FinalizeBackend<_, u32>>::finalize(backend);
+        let worker = WorkerContext::new("decode");
+        let mut cx = Context::from_waker(Waker::noop());
+        let Poll::Ready(Some(Ok(decoded))) = finalized.poll_next(&mut cx, &worker) else {
+            panic!("decoded task missing")
+        };
+        assert_eq!(decoded.args, 42);
+        assert!(std::sync::Arc::ptr_eq(decoded.ctx(), task.ctx()));
+        assert_eq!(decoded.priority(), Some(9));
+        assert!(matches!(
+            finalized.poll_next(&mut cx, &worker),
+            Poll::Ready(Some(Err(DurableError::CodecError(_))))
+        ));
+        assert!(matches!(
+            finalized.poll_next(&mut cx, &worker),
+            Poll::Ready(None)
+        ));
+    }
+}

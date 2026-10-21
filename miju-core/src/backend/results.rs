@@ -1,4 +1,9 @@
-use crate::task::{status::Status, task_id::TaskId};
+use futures_core::Stream;
+
+use crate::{
+    backend::Backend,
+    task::{status::Status, task_id::TaskId},
+};
 
 /// Represents the result of a task execution
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -34,4 +39,24 @@ impl<T> TaskResult<T> {
     pub fn take(self) -> Result<T, String> {
         self.result
     }
+}
+
+/// Allows waiting for tasks to complete and checking their status
+pub trait WaitForCompletion<Output>: Backend {
+    /// The result stream type yielding task results
+    type ResultStream: Stream<Item = Result<TaskResult<Output>, Self::Error>> + Send + 'static;
+
+    /// Wait for multiple tasks to complete, yielding results as they become available
+    fn wait_for(&mut self, task_ids: impl IntoIterator<Item = TaskId>) -> Self::ResultStream;
+
+    /// Wait for a single task to complete, yielding its result
+    fn wait_for_single(&mut self, task_id: TaskId) -> Self::ResultStream {
+        self.wait_for(std::iter::once(task_id))
+    }
+
+    /// Check current status of tasks without waiting
+    fn check_status(
+        &mut self,
+        task_ids: impl IntoIterator<Item = TaskId> + Send,
+    ) -> impl Future<Output = Result<Vec<TaskResult<Output>>, Self::Error>> + Send;
 }

@@ -44,13 +44,6 @@ impl Attempt {
 
     /// Increase the current value and return the previous value
     #[must_use]
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "Attempt updates are reserved for internal execution drivers"
-        )
-    )]
     pub(crate) fn increment(&self) -> usize {
         self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
     }

@@ -1,0 +1,118 @@
+//! Worker extension for emitting events.
+//!
+//! The [`EventListenerExt`] trait allows you to register callbacks for worker events.
+//! It also provides the [`EventListenerLayer`] middleware for emitting events and the [`EventListenerService`] service.
+//!
+//! # Example
+//!
+//! ```rust,no_run
+//! # use miju_core::worker::ext::event_listener::EventListenerExt;
+//! # use miju_core::worker::{builder::WorkerBuilder, event::Event, context::WorkerContext};
+//! # use miju_core::backend::memory::MemoryStorage;
+//! # let in_memory: MemoryStorage<()> = MemoryStorage::new();
+//!
+//! let builder = WorkerBuilder::new("my-worker")
+//! #   .backend(in_memory)
+//!     .on_event(|wrk: &WorkerContext, event: &Event| {
+//!         println!("Received event: {:?}", event);
+//!     });
+//! ```
+//!
+//! This will print every event emitted by the worker.
+//!
+use tower_layer::{Layer, Stack};
+use tower_service::Service;
+
+use crate::{
+    backend::Backend,
+    worker::{Event, WorkerContext, builder::WorkerBuilder, event::RawEventListener},
+};
+
+/// Worker extension for emitting events
+pub trait EventListenerExt<Args, Source, Middleware>: Sized {
+    /// Register a callback for worker events
+    fn on_event<F: Fn(&WorkerContext, &Event) + Send + Sync + 'static>(
+        self,
+        f: F,
+    ) -> WorkerBuilder<Args, Source, Stack<EventListenerLayer, Middleware>>;
+}
+
+/// Middleware for emitting events
+#[derive(Debug, Clone, Default)]
+pub struct EventListenerLayer(());
+
+impl EventListenerLayer {
+    /// Create a new event listener layer
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl<S> Layer<S> for EventListenerLayer {
+    type Service = EventListenerService<S>;
+
+    fn layer(&self, service: S) -> Self::Service {
+        EventListenerService { service }
+    }
+}
+
+/// Service for emitting events
+#[derive(Debug, Clone)]
+pub struct EventListenerService<S> {
+    service: S,
+}
+
+impl<S, Req> Service<Req> for EventListenerService<S>
+where
+    S: Service<Req>,
+{
+    type Response = S::Response;
+    type Error = S::Error;
+    type Future = S::Future;
+
+    fn poll_ready(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        self.service.poll_ready(cx)
+    }
+
+    fn call(&mut self, request: Req) -> Self::Future {
+        self.service.call(request)
+    }
+}
+
+impl<Args, P, M> EventListenerExt<Args, P, M> for WorkerBuilder<Args, P, M>
+where
+    P: Backend,
+{
+    fn on_event<F: Fn(&WorkerContext, &Event) + Send + Sync + 'static>(
+        self,
+        f: F,
+    ) -> WorkerBuilder<Args, P, Stack<EventListenerLayer, M>> {
+        let new_fn = self
+            .event_handler
+            .write()
+            .map(|mut res| {
+                let current = res.take();
+                if let Some(c) = current {
+                    let new: RawEventListener = Box::new(move |ctx, ev| {
+                        c(ctx, ev);
+                        f(ctx, ev);
+                    });
+                    new
+                } else {
+                    let new: RawEventListener = Box::new(move |ctx, ev| {
+                        f(ctx, ev);
+                    });
+                    new
+                }
+            })
+            .unwrap();
+        let _ = self.event_handler.write().map(|mut res| {
+            let _ = res.insert(new_fn);
+        });
+        self.layer(EventListenerLayer::new())
+    }
+}

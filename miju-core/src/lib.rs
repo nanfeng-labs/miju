@@ -1,13 +1,15 @@
-//! Task models and storage contracts for background processing in Rust.
+//! Task backends and worker execution for background processing in Rust.
 //!
-//! `miju-core` provides the task data structures and storage types used by miju.
-//! Applications can construct tasks and carry execution state and metadata with them;
-//! execution and persistence are supplied by integrations.
+//! `miju-core` provides task data structures, backend protocols, workers, and
+//! monitoring. Workers execute handlers with middleware and lifecycle tracking;
+//! backends supply tasks and define their storage capabilities.
 //!
 //! # Core Concepts
 //!
 //! - **[`Tasks`](#tasks)**: Type-safe task data structures with processing metadata
-//! - **[`Backends`](#backends)**: Payload conversion, queue names, and recorded results
+//! - **[`Backends`](#backends)**: Task sources, submission, and storage contracts
+//! - **[`Workers`](#workers)**: Handler execution and lifecycle control
+//! - **[`Monitors`](#monitors)**: Coordinated workers, shutdown, and restart policies
 //!
 //! ## Tasks
 //!
@@ -38,9 +40,53 @@
 //!
 //! ## Backends
 //!
-//! The [`backend`] module provides [`Codec`](backend::codec::Codec),
-//! [`Queue`](backend::queue::Queue), and [`TaskResult`](backend::TaskResult)
-//! for representing task payloads, destinations, and execution results.
+//! The [`backend`] module defines [`Backend`](backend::Backend) for polling tasks,
+//! [`TaskSink`](backend::TaskSink) for submission, and management capabilities.
+//! [`MemoryStorage`](backend::memory::MemoryStorage),
+//! [`VecDequeBackend`](backend::dequeue::VecDequeBackend), and
+//! [`CustomBackend`](backend::custom::CustomBackend) provide task sources.
+//! [`Codec`](backend::codec::Codec) and [`FinalizeBackend`](backend::finalize::FinalizeBackend)
+//! connect encoded payloads with typed handlers.
+//!
+//! ## Workers
+//!
+//! Workers are the execution engines that process tasks from backends. They are
+//! configured with a backend, middleware, and a task handler using
+//! [`WorkerBuilder`](worker::builder::WorkerBuilder).
+//!
+//! ```rust
+//! # use miju_core::backend::{memory::MemoryStorage, TaskSink};
+//! # use miju_core::worker::{builder::WorkerBuilder, context::WorkerContext};
+//! # #[tokio::main]
+//! # async fn main() {
+//! let mut backend = MemoryStorage::new();
+//! backend.push(42u32).await.unwrap();
+//! let worker = WorkerBuilder::new("example")
+//!     .backend(backend)
+//!     .build(|value: u32, worker: WorkerContext| async move {
+//!         assert_eq!(value, 42);
+//!         worker.stop().unwrap();
+//!     });
+//! worker.run().await.unwrap();
+//! # }
+//! ```
+//!
+//! [`WorkerContext`](worker::context::WorkerContext) controls pause, resume, and
+//! shutdown. Lifecycle tracking records attempts and task status. Handler errors
+//! become worker events; retry-classified errors update status without automatically
+//! requeuing tasks. Backend exhaustion alone does not stop the worker context.
+//!
+//! ## Monitors
+//!
+//! [`Monitor`](monitor::Monitor) manages multiple workers, coordinates shutdown,
+//! and optionally restarts failed workers according to a supplied policy.
+//! Normal shutdown drains tracked work. A configured terminator can end the wait
+//! early; see [`Monitor::run_with_signal`](monitor::Monitor::run_with_signal).
+//!
+//! Enable `task-context` for individual task tracking and cancellation, `sleep`
+//! for timer-based task and shutdown limits, and `tracing` for lifecycle logs.
+//! Enable `test-utils` for task function signature validation helpers.
+//! Default features remain empty.
 //!
 //! # Serialization
 //!
@@ -65,7 +111,29 @@
 //! The default and `serde` configurations support Rust 1.85. Enabling `uuid` or
 //! `ulid` requires Rust 1.89 because of the UUID dependency.
 
+#[macro_use]
+pub(crate) mod macros;
+
 pub mod backend;
 /// Includes internal error types.
 pub mod error;
 pub mod task;
+
+/// Actively manage and observe workers.
+pub mod monitor;
+pub mod worker;
+
+/// Layers for building middleware stacks
+pub mod layers {
+    pub use tower_layer::*;
+    pub use tower_service::Service;
+}
+/// Timing and delaying utilities
+#[cfg(feature = "sleep")]
+pub mod timer {
+    pub use futures_timer::Delay;
+    /// Runtime agnostic sleep function based on [Delay]
+    pub async fn sleep(duration: std::time::Duration) {
+        futures_timer::Delay::new(duration).await;
+    }
+}

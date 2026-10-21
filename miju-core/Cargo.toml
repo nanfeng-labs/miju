@@ -5,12 +5,20 @@ publish = false
 authors.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "Core task types, execution context, and storage contracts for miju"
+description = "Task backends, worker execution, and lifecycle management for miju"
 license.workspace = true
 repository.workspace = true
 
 [features]
 default = []
+## Enable task function signature validation helpers
+test-utils = []
+## Enable runtime-independent timers and task timeouts
+sleep = ["dep:futures-timer"]
+## Emit worker lifecycle logs through tracing
+tracing = ["dep:tracing"]
+## Track and cancel individual running tasks
+task-context = ["dep:dashmap"]
 serde = ["dep:serde", "ulid?/serde", "uuid?/serde"]
 ## Enable ulid support for task ids
 ulid = ["dep:ulid"]
@@ -18,7 +26,14 @@ ulid = ["dep:ulid"]
 uuid = ["dep:uuid"]
 
 [dependencies]
-futures-util = { version = "0.3.34", default-features = false, features = ["std"] }
+futures-util = { version = "0.3.34", default-features = false, features = ["sink", "async-await", "async-await-macro", "std"] }
+futures-core = { version = "0.3.34", default-features = false }
+futures-channel = { version = "0.3.34", default-features = false, features = ["sink", "std"] }
+futures-sink = { version = "0.3.34", default-features = false }
+futures-timer = { version = "3.0.4", optional = true }
+dashmap = { version = "6.2.1", default-features = false, optional = true }
+pin-project = "1"
+tracing = { version = "0.1.44", default-features = false, optional = true }
 rand = { version = "0.10", features = ["std"] }
 serde = { version = "1.0", features = ["derive"], optional = true }
 thiserror = "2.0.21"
@@ -28,6 +43,8 @@ ulid = { version = "3", optional = true, features = ["uuid"] }
 uuid = { version = "1.28.0", features = ["v4", "v5"], optional = true }
 
 [dev-dependencies]
+tokio = { version = "1.53.2", features = ["macros", "rt", "sync", "rt-multi-thread", "signal", "time"] }
+tower = { version = "0.5", features = ["limit", "util"] }
 serde_json = "1.0"
 
 [lints]

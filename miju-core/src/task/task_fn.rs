@@ -84,6 +84,8 @@
 //! ## Dependency Injection
 //!
 //! `miju-core` supports default injection for common types in your handler arguments, such as:
+//! - [`WorkerContext`](crate::worker::context::WorkerContext): Worker control and state
+//! - `TaskContext`: Per-task execution tracking when `task-context` is enabled
 //! - [`Attempt`]: Information about the current attempt
 //! - [`Data<T>`]: Injected data/state
 //! - [`TaskId`]: The unique ID of the task
@@ -155,8 +157,11 @@
 //! [`Data<T>`]: crate::task::data::Data
 //! [`TaskId`]: crate::task::task_id::TaskId
 
+use crate::backend::finalize::FinalizeBackend;
+use crate::backend::{Backend, BackendConfig};
 use crate::error::BoxDynError;
 use crate::task::Task;
+use crate::worker::service::{IntoWorkerService, WorkerService};
 use futures_util::FutureExt;
 use futures_util::future::Map;
 use std::fmt;
@@ -273,6 +278,35 @@ macro_rules! impl_service_fn {
             }
         }
 
+        #[allow(unused_parens)]
+        impl<T, Args,  F, R, B, O, $($K),+>
+            IntoWorkerService<B, TaskFn<T, Args,  ($($K),+)>> for T
+        where
+            B: Backend + BackendConfig<Args = Args>,
+            B::Kind: FinalizeBackend<B, Args, Backend = O>,
+            O: Backend<Task = Task<Args>>,
+            T: FnMut(Args, $($K),+) -> F + Send + Clone + 'static,
+            F: Future + Send,
+            Args: Send + 'static,
+            F::Output: IntoResponse<Output = R>,
+            TaskFn<T, Args,  ($($K),+)>: Service<O::Task>,
+
+            $(
+                $K: FromRequest<Task<Args>> + Send,
+                < $K as FromRequest<Task<Args>> >::Error: std::error::Error + 'static + Send + Sync,
+            )+
+        {
+            type Backend = O;
+            type Task = Task<Args>;
+
+            fn into_service(self, backend: B) -> WorkerService<O, TaskFn<T, Args,  ($($K),+)>> {
+                let backend = B::Kind::finalize(backend);
+                WorkerService {
+                    backend,
+                    service: task_fn(self)
+                }
+            }
+        }
     };
 }
 
@@ -294,6 +328,47 @@ where
         let fut = (self.f)(task.args);
 
         fut.map(F::Output::into_response)
+    }
+}
+
+impl<T, Args, F, R, B, O> IntoWorkerService<B, TaskFn<T, Args, ()>> for T
+where
+    T: FnMut(Args) -> F,
+    F: Future,
+    F::Output: IntoResponse<Output = R>,
+    B: Backend + BackendConfig<Args = Args>,
+    B::Kind: FinalizeBackend<B, Args, Backend = O>,
+    O: Backend<Task = Task<Args>>,
+    Args: Send,
+    TaskFn<T, Args, ()>: Service<O::Task>,
+{
+    type Backend = O;
+    type Task = Task<Args>;
+
+    fn into_service(self, backend: B) -> WorkerService<O, TaskFn<T, Args, ()>> {
+        let backend = B::Kind::finalize(backend);
+        WorkerService {
+            backend,
+            service: task_fn(self),
+        }
+    }
+}
+
+impl<Args, S, B, O> IntoWorkerService<B, S> for S
+where
+    B: Backend + BackendConfig<Args = Args>,
+    B::Kind: FinalizeBackend<B, Args, Backend = O>,
+    O: Backend<Task = Task<Args>>,
+    S: Service<O::Task>,
+{
+    type Backend = O;
+    type Task = Task<Args>;
+    fn into_service(self, backend: B) -> WorkerService<O, S> {
+        let backend = B::Kind::finalize(backend);
+        WorkerService {
+            backend,
+            service: self,
+        }
     }
 }
 
