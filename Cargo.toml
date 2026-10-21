@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["miju", "miju-core"]
+members = ["miju", "miju-core", "utils/miju-codec"]
 
 [workspace.package]
 authors = ["RivTian <tianjun.rio@gmail.com>"]
@@ -61,3 +61,4 @@ verbose_file_reads = "warn"
 [patch.crates-io]
 miju = { path = "miju" }
 miju-core = { path = "miju-core" }
+miju-codec = { path = "utils/miju-codec" }
