@@ -199,6 +199,59 @@ when processing its first collection task. Validate that input is nonempty;
 when composed after `filter_map`, an all-filtered result stops before reaching
 the fold. Missing or unrecognized fold-state metadata starts initialization.
 
+## Repeat until a result is ready
+
+Use `repeat_until` when a step should run again with the same input until its
+handler returns `Some(output)`. Returning `None` creates a new task at the same
+step with the original encoded arguments. Read `Meta<RepeaterState>` to inspect
+the number of prior repetitions and the previous task ID:
+
+```rust
+use miju_core::{
+    backend::TaskSink,
+    task::metadata::Meta,
+    worker::{builder::WorkerBuilder, context::WorkerContext},
+};
+use miju_workflow::{
+    SteppedFlow, in_memory::InMemoryWorkflow, sequential::repeat_until::RepeaterState,
+};
+
+# #[tokio::main]
+# async fn main() {
+let backend = InMemoryWorkflow::create();
+let mut producer = backend.clone();
+producer.push(7u32).await.unwrap();
+
+let flow = SteppedFlow::new("repeat")
+    .repeat_until(async |value: u32, Meta(state): Meta<RepeaterState>| {
+        (state.iterations() >= 2).then_some(value)
+    })
+    .and_then(async |value: u32, worker: WorkerContext| {
+        assert_eq!(value, 7);
+        worker.stop().unwrap();
+    });
+let worker = WorkerBuilder::new("repeat").backend(backend).build(flow);
+# tokio::time::timeout(std::time::Duration::from_secs(5), async {
+worker.run().await.unwrap();
+# }).await.unwrap();
+# }
+```
+
+The example calls the handler three times, with iteration counts zero, one and
+two. There is no built-in delay or maximum count; the handler controls when to
+exit. `None` preserves the original payload, without carrying changes to the
+decoded input into the next task. Arbitrary task metadata and application data
+are not automatically copied into that new task.
+
+A repeated task returns `GoTo::Break` with a null result and the next iteration's
+ID. `Some(output)` returns `GoTo::Next` when another step follows, or a terminal
+`GoTo::Break` retaining the output. Inspect `next_task_id` to distinguish another
+iteration from completion. Current registration bounds require matching input
+and output types when chaining a typed next step; a terminal repeater may change
+types. Missing repetition metadata defaults to the initial state. Malformed
+metadata also resets the service's state, although a handler requesting
+`Meta<RepeaterState>` receives an extraction error instead.
+
 ## In-memory results
 
 `InMemoryWorkflow::create()` returns a cloneable `Shared` handle. Arguments are
@@ -210,9 +263,9 @@ to the layer must already have an ID.
 `wait_for` yields results for the requested IDs and finishes after every unique
 requested ID has been observed. Supply distinct IDs: duplicate IDs currently
 prevent termination. Waiting for an entry task does not wait for all subsequent
-steps; inspect `StepResponse.next_task_id` for continuations, including the final
-`GoTo::Break` result of a fold. `check_status` returns only results currently
-stored and omits missing IDs.
+steps; inspect `StepResponse.next_task_id` for continuations, including a fold's
+final `GoTo::Break` and a repeater's `GoTo::Break` between iterations.
+`check_status` returns only results currently stored and omits missing IDs.
 
 Handler errors are returned as stream errors; `check_status` fails if a requested
 stored task failed. A successful value that cannot be decoded into the requested
@@ -251,5 +304,5 @@ inherited readiness limitations, so custom steps must not assume every inner
 service is polled for readiness before its first call.
 
 The low-level `GoTo::DelayFor` transition also attaches scheduling metadata;
-actual delay enforcement depends on the backend. Repetition and graph execution
-are not yet available in this package.
+actual delay enforcement depends on the backend. Graph execution is not yet
+available in this package.

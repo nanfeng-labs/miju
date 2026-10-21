@@ -8,6 +8,8 @@ pub mod delay;
 pub mod filter_map;
 /// Reduce collections by carrying an accumulator through queued tasks.
 pub mod fold;
+/// Repeat a step with its original input until it produces an output.
+pub mod repeat_until;
 /// Utilities for workflow routing.
 pub mod router;
 /// Utilities for workflow service orchestration.
