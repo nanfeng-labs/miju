@@ -7,15 +7,20 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Step context and task metadata for sequential miju workflows"
+description = "Typed sequential task composition and execution for miju workflows"
 
 [dependencies]
-miju-core = { version = "0.1.0", default-features = false }
+miju-core = { version = "0.1.0", default-features = false, features = ["serde"] }
 serde = { version = "1.0", features = ["derive"] }
 thiserror = "2.0.21"
+serde_json = "1"
+tower = { version = "0.5.3", features = ["util"], default-features = false }
+futures-util = { version = "0.3.34", features = ["sink", "std"], default-features = false }
+futures-sink = { version = "0.3.34", default-features = false }
 
 [dev-dependencies]
-serde_json = "1"
+miju-file-storage = { version = "0.1.0" }
+tokio = { version = "1.53.2", features = ["macros", "rt", "time"] }
 
 [lints]
 workspace = true
