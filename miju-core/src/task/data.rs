@@ -10,15 +10,15 @@
 //!
 //! # Usage
 //!
-//! Use [`Data`] to share application state (such as database connections, configuration, etc.) across tasks and layers. Apply this middleware using [`tower_layer::Layer::layer`].
+//! Use [`Data`] to share application state (such as database connections, configuration, etc.) across tasks and layers. Apply this middleware using [`WorkerBuilder::data`](crate::worker::builder::WorkerBuilder::data).
 //!
 //! ## Example
 //!
-//! ```no_run
+//! ```rust
 //! # use std::sync::Arc;
 //! # use miju_core::task::data::Data;
-//! # use miju_core::task::{builder::TaskBuilder, data::MissingDataError};
-//! # async fn example() -> Result<(), MissingDataError> {
+//! # use miju_core::worker::builder::WorkerBuilder;
+//! # use miju_core::backend::memory::MemoryStorage;
 //!
 //! struct State { /* ... */ }
 //!
@@ -27,11 +27,10 @@
 //! }
 //!
 //! let state = Arc::new(State { /* ... */ });
-//! let task = TaskBuilder::new("email".to_owned()).data(state).build();
-//! let state = task.extract().await?;
-//! email_service(task.args, state).await;
-//! # Ok(())
-//! # }
+//! let worker = WorkerBuilder::new("tasty-avocado")
+//!     .backend(MemoryStorage::new())
+//!     .data(state)
+//!     .build(email_service);
 //! ```
 //!
 //! # Features
@@ -56,11 +55,11 @@ use crate::{task::Task, task::from_request::FromRequest};
 /// Extension data for tasks.
 /// This is commonly used to share state across tasks. or across layers within the same tasks
 ///
-/// ```no_run
+/// ```rust
 /// # use std::sync::Arc;
 /// # use miju_core::task::data::Data;
-/// # use miju_core::task::{builder::TaskBuilder, data::MissingDataError};
-/// # async fn example() -> Result<(), MissingDataError> {
+/// # use miju_core::worker::builder::WorkerBuilder;
+/// # use miju_core::backend::memory::MemoryStorage;
 /// // Some shared state used throughout our application
 /// struct State {
 ///     // ...
@@ -71,11 +70,12 @@ use crate::{task::Task, task::from_request::FromRequest};
 /// }
 ///
 /// let state = Arc::new(State { /* ... */ });
-/// let task = TaskBuilder::new("email".to_owned()).data(state).build();
-/// let state = task.extract().await?;
-/// send_email(task.args, state).await;
-/// # Ok(())
-/// # }
+/// let backend = MemoryStorage::new();
+///
+/// let worker = WorkerBuilder::new("tasty-avocado")
+///     .backend(backend)
+///     .data(state)
+///     .build(send_email);
 /// ```
 
 #[derive(Debug, Clone, Copy)]

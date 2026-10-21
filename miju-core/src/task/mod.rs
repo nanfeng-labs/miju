@@ -464,6 +464,8 @@ impl<Args> Task<Args> {
     }
 
     /// Modifies the id type of the task, consuming the task
+    ///
+    /// See [`crate::backend::ext::pipe`]
     #[must_use]
     #[doc(hidden)]
     pub fn map_id_type(self) -> Self {

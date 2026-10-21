@@ -3,6 +3,7 @@
 //! This allows for more ergonomic access to common types within the task context.
 //! Items have this already implemented:
 //! - [`Attempt`]
+//! - [`WorkerContext`]
 //! - [`Data<T>`] where T is injected via `TaskBuilder::data(...)`
 //! - [`TaskId`]
 //!
@@ -68,6 +69,7 @@
 //! [`FromRequest`]: crate::task::from_request::FromRequest
 //! [`Attempt`]: crate::task::attempt::Attempt
 //! [`Data<T>`]: crate::task::data::Data
+//! [`WorkerContext`]: crate::worker::context::WorkerContext
 //! [`TaskId`]: crate::task::task_id::TaskId
 
 use std::future::Future;

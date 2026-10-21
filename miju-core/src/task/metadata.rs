@@ -5,7 +5,11 @@
 use crate::task::Task;
 use crate::task::from_request::FromRequest;
 use std::convert::Infallible;
+#[cfg(feature = "tracing")]
+use std::fmt;
 use std::ops::{Deref, Index};
+#[cfg(feature = "tracing")]
+use std::str::FromStr;
 use std::{collections::HashMap, ops::IndexMut};
 
 /// Metadata wrapper for task contexts.
@@ -472,5 +476,427 @@ impl<Args: Send + Sync> FromRequest<Task<Args>> for MetadataStore {
 
     async fn from_request(task: &Task<Args>) -> Result<Self, Self::Error> {
         Ok(task.metadata().clone())
+    }
+}
+
+/// Metadata used specifically for storing tracing context.
+///
+/// Enable `tracing` to store explicit trace fields with a task. This type does
+/// not capture the current span or configure a tracing subscriber.
+///
+/// The string format is `trace_id;span_id;trace_flags;trace_state`, with `-`
+/// for absent fields and decimal flags. It is not a W3C `traceparent` header:
+/// IDs are not validated and fields are not escaped. The final field may contain
+/// semicolons; IDs containing semicolons or the literal `-` do not round-trip.
+#[cfg(feature = "tracing")]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Default, Clone)]
+pub struct TracingContext {
+    trace_id: Option<String>,
+    span_id: Option<String>,
+    trace_flags: Option<u8>,
+    trace_state: Option<String>,
+}
+
+#[cfg(feature = "tracing")]
+#[allow(clippy::ref_option)]
+impl TracingContext {
+    /// Create a new empty `TracingContext`.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the trace ID.
+    #[must_use]
+    pub fn with_trace_id(mut self, trace_id: impl Into<String>) -> Self {
+        self.trace_id = Some(trace_id.into());
+        self
+    }
+
+    /// Set the span ID.
+    #[must_use]
+    pub fn with_span_id(mut self, span_id: impl Into<String>) -> Self {
+        self.span_id = Some(span_id.into());
+        self
+    }
+
+    /// Set the trace flags.
+    #[must_use]
+    pub fn with_trace_flags(mut self, trace_flags: u8) -> Self {
+        self.trace_flags = Some(trace_flags);
+        self
+    }
+
+    /// Set the trace state.
+    #[must_use]
+    pub fn with_trace_state(mut self, trace_state: impl Into<String>) -> Self {
+        self.trace_state = Some(trace_state.into());
+        self
+    }
+
+    /// Get the trace ID.
+    #[must_use]
+    pub fn trace_id(&self) -> &Option<String> {
+        &self.trace_id
+    }
+
+    /// Get the span ID.
+    #[must_use]
+    pub fn span_id(&self) -> &Option<String> {
+        &self.span_id
+    }
+
+    /// Get the trace flags.
+    #[must_use]
+    pub fn trace_flags(&self) -> &Option<u8> {
+        &self.trace_flags
+    }
+
+    /// Get the trace state.
+    #[must_use]
+    pub fn trace_state(&self) -> &Option<String> {
+        &self.trace_state
+    }
+}
+
+#[cfg(feature = "tracing")]
+/// Error provided by parsing TracingContext
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum TracingContextParseError {
+    /// Missing Field
+    #[error("Missing Field: {0}")]
+    MissingField(&'static str),
+    /// Invalid flags
+    #[error("Invalid flags: {0}")]
+    InvalidTraceFlags(std::num::ParseIntError),
+    /// Invalid format, also returned when the metadata key is absent.
+    #[error("Invalid Format")]
+    InvalidFormat,
+    /// Missing metadata key; extraction currently returns [`Self::InvalidFormat`].
+    #[error("Key {{miju_core.tracing.context}} not found in Metadata")]
+    MissingKey,
+    /// Duplicate entry
+    #[error("Duplicate entry: {0}")]
+    DuplicateEntry(#[from] MetadataError),
+}
+
+// Serialization format: a single semicolon-separated string.
+//
+//   <trace_id>;<span_id>;<trace_flags>;<trace_state>
+//
+// Each field is either its value or `-` if None.
+//
+// Example:
+//   "4bf92f3577b34da6a3ce929d0e0e4736;00f067aa0ba902b7;1;congo=t61rcWkgMzE"
+//   "4bf92f3577b34da6a3ce929d0e0e4736;00f067aa0ba902b7;-;-"
+#[cfg(feature = "tracing")]
+impl fmt::Display for TracingContext {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{};{};{};{}",
+            self.trace_id.as_deref().unwrap_or("-"),
+            self.span_id.as_deref().unwrap_or("-"),
+            self.trace_flags
+                .map(|v| v.to_string())
+                .as_deref()
+                .unwrap_or("-"),
+            self.trace_state.as_deref().unwrap_or("-"),
+        )
+    }
+}
+
+#[cfg(feature = "tracing")]
+impl FromStr for TracingContext {
+    type Err = TracingContextParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut parts = s.splitn(4, ';');
+
+        let mut next = |field| {
+            parts
+                .next()
+                .ok_or(TracingContextParseError::MissingField(field))
+        };
+
+        let trace_id = match next("trace_id")? {
+            "-" => None,
+            v => Some(v.to_owned()),
+        };
+
+        let span_id = match next("span_id")? {
+            "-" => None,
+            v => Some(v.to_owned()),
+        };
+
+        let trace_flags = match next("trace_flags")? {
+            "-" => None,
+            v => Some(
+                v.parse::<u8>()
+                    .map_err(TracingContextParseError::InvalidTraceFlags)?,
+            ),
+        };
+
+        let trace_state = match next("trace_state")? {
+            "-" => None,
+            v => Some(v.to_owned()),
+        };
+
+        Ok(Self {
+            trace_id,
+            span_id,
+            trace_flags,
+            trace_state,
+        })
+    }
+}
+
+#[cfg(feature = "tracing")]
+const TRACING_CONTENT_KEY: &str = "miju_core.tracing.context";
+
+#[cfg(feature = "tracing")]
+impl Metadata for TracingContext {
+    type Error = TracingContextParseError;
+    fn extract(store: &MetadataStore) -> Result<Self, Self::Error> {
+        store
+            .get(TRACING_CONTENT_KEY)
+            .ok_or(TracingContextParseError::InvalidFormat)?
+            .parse()
+    }
+
+    fn inject(&self, map: &mut MetadataStore) -> Result<(), Self::Error> {
+        Ok(map.insert(TRACING_CONTENT_KEY, self.to_string())?)
+    }
+}
+
+#[cfg(test)]
+#[allow(unused)]
+mod tests {
+    use std::{convert::Infallible, fmt::Debug, num::ParseIntError, task::Poll, time::Duration};
+
+    use crate::{
+        error::BoxDynError,
+        task::from_request::FromRequest,
+        task::{
+            Task,
+            metadata::{Meta, Metadata, MetadataStore},
+        },
+    };
+    use futures_core::future::BoxFuture;
+    use tower::Service;
+
+    #[derive(Debug, Clone)]
+    struct ExampleService<S> {
+        service: S,
+    }
+    #[derive(Debug, Clone, Default)]
+    struct ExampleConfig {
+        timeout: Duration,
+    }
+
+    const EXAMPLE_CONFIG: &str = "miju_core.example.config";
+
+    impl Metadata for ExampleConfig {
+        type Error = ParseIntError;
+        fn extract(store: &MetadataStore) -> Result<Self, Self::Error> {
+            let timeout = store
+                .get(EXAMPLE_CONFIG)
+                .unwrap()
+                .parse::<u64>()
+                .map(Duration::from_secs)?;
+            Ok(Self { timeout })
+        }
+
+        fn inject(&self, map: &mut MetadataStore) -> Result<(), ParseIntError> {
+            let value = self.timeout.as_secs().to_string();
+            map.insert(EXAMPLE_CONFIG, value).unwrap();
+            Ok(())
+        }
+    }
+
+    impl<S, Args: Send + Sync + 'static> Service<Task<Args>> for ExampleService<S>
+    where
+        S: Service<Task<Args>> + Clone + Send + 'static,
+        S::Future: Send + 'static,
+    {
+        type Response = S::Response;
+        type Error = S::Error;
+        type Future = BoxFuture<'static, Result<Self::Response, Self::Error>>;
+
+        fn poll_ready(&mut self, cx: &mut std::task::Context<'_>) -> Poll<Result<(), Self::Error>> {
+            self.service.poll_ready(cx)
+        }
+
+        fn call(&mut self, request: Task<Args>) -> Self::Future {
+            let mut svc = self.service.clone();
+
+            // Do something with config
+            Box::pin(async move {
+                let _config: Meta<ExampleConfig> = request.extract().await.unwrap();
+                svc.call(request).await
+            })
+        }
+    }
+
+    #[cfg(feature = "tracing")]
+    #[test]
+    fn tracing_context_keeps_explicit_fields() {
+        let context = crate::task::metadata::TracingContext::new()
+            .with_trace_id("4bf92f3577b34da6a3ce929d0e0e4736")
+            .with_span_id("00f067aa0ba902b7")
+            .with_trace_flags(1)
+            .with_trace_state("vendor=acme");
+
+        assert_eq!(
+            context.trace_id(),
+            &Some("4bf92f3577b34da6a3ce929d0e0e4736".to_owned())
+        );
+        assert_eq!(context.span_id(), &Some("00f067aa0ba902b7".to_owned()));
+        assert_eq!(context.trace_flags(), &Some(1));
+        assert_eq!(context.trace_state(), &Some("vendor=acme".to_owned()));
+    }
+
+    #[cfg(feature = "tracing")]
+    #[test]
+    fn tracing_context_string_round_trip() {
+        use super::TracingContext;
+
+        assert_eq!(TracingContext::new().to_string(), "-;-;-;-");
+        for text in ["-;-;-;-", "trace;span;255;vendor=one;other=two", ";;0;"] {
+            let context: TracingContext = text.parse().unwrap();
+            assert_eq!(context.to_string(), text);
+        }
+        let empty: TracingContext = "-;-;-;-".parse().unwrap();
+        assert_eq!(empty.trace_id(), &None);
+        assert_eq!(empty.span_id(), &None);
+        assert_eq!(empty.trace_flags(), &None);
+        assert_eq!(empty.trace_state(), &None);
+
+        let context: TracingContext = "trace;span;01;vendor=one;other=two".parse().unwrap();
+        assert_eq!(context.trace_flags(), &Some(1));
+        assert_eq!(
+            context.trace_state().as_deref(),
+            Some("vendor=one;other=two")
+        );
+        assert_eq!(context.to_string(), "trace;span;1;vendor=one;other=two");
+    }
+
+    #[cfg(feature = "tracing")]
+    #[test]
+    fn tracing_context_reports_missing_fields_and_invalid_flags() {
+        use super::{TracingContext, TracingContextParseError};
+
+        for (text, field) in [
+            ("", "span_id"),
+            ("trace", "span_id"),
+            ("trace;span", "trace_flags"),
+            ("trace;span;1", "trace_state"),
+        ] {
+            assert!(matches!(
+                text.parse::<TracingContext>(),
+                Err(TracingContextParseError::MissingField(actual)) if actual == field
+            ));
+        }
+        for flags in ["", "256", "-1", "ff"] {
+            assert!(matches!(
+                format!("trace;span;{flags};-").parse::<TracingContext>(),
+                Err(TracingContextParseError::InvalidTraceFlags(_))
+            ));
+        }
+    }
+
+    #[cfg(feature = "tracing")]
+    #[test]
+    fn tracing_metadata_rejects_duplicates_and_preserves_the_first_value() {
+        use super::{MetadataError, TracingContext, TracingContextParseError};
+
+        let mut store = MetadataStore::new();
+        assert!(matches!(
+            TracingContext::extract(&store),
+            Err(TracingContextParseError::InvalidFormat)
+        ));
+        TracingContext::new()
+            .with_trace_id("first")
+            .inject(&mut store)
+            .unwrap();
+        assert_eq!(store.get("miju_core.tracing.context"), Some("first;-;-;-"));
+        let err = TracingContext::new()
+            .with_trace_id("second")
+            .inject(&mut store)
+            .unwrap_err();
+        assert!(matches!(err,
+            TracingContextParseError::DuplicateEntry(MetadataError::DuplicateKey(key))
+                if key == "miju_core.tracing.context"
+        ));
+        assert_eq!(store.len(), 1);
+        assert_eq!(
+            store
+                .extract_as::<TracingContext>()
+                .unwrap()
+                .trace_id()
+                .as_deref(),
+            Some("first")
+        );
+
+        store.replace("miju_core.tracing.context", "trace;span;invalid;-");
+        assert!(matches!(
+            store.extract_as::<TracingContext>(),
+            Err(TracingContextParseError::InvalidTraceFlags(_))
+        ));
+    }
+
+    #[cfg(feature = "tracing")]
+    #[tokio::test]
+    async fn tracing_metadata_is_available_to_task_extractors() {
+        use super::TracingContext;
+        use crate::task::builder::TaskBuilder;
+
+        let context = TracingContext::new()
+            .with_trace_id("trace")
+            .with_trace_flags(1);
+        let task = TaskBuilder::new(42u32).metadata(&context).build();
+        let extracted: Meta<TracingContext> = task.extract().await.unwrap();
+        assert_eq!(extracted.to_string(), "trace;-;1;-");
+        let mut copy: MetadataStore = task.extract().await.unwrap();
+        copy.clear();
+        assert_eq!(task.metadata().len(), 1);
+    }
+
+    #[cfg(all(feature = "tracing", feature = "serde"))]
+    #[test]
+    fn tracing_context_and_metadata_serde_round_trip() {
+        use super::TracingContext;
+
+        let context = TracingContext::new()
+            .with_trace_id("trace")
+            .with_span_id("span")
+            .with_trace_flags(255)
+            .with_trace_state("vendor=one");
+        let value = serde_json::to_value(&context).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "trace_id": "trace", "span_id": "span", "trace_flags": 255, "trace_state": "vendor=one"
+            })
+        );
+        let decoded: TracingContext = serde_json::from_value(value).unwrap();
+        assert_eq!(decoded.to_string(), context.to_string());
+        let mut store = MetadataStore::new();
+        context.inject(&mut store).unwrap();
+        let encoded = serde_json::to_string(&store).unwrap();
+        let decoded: MetadataStore = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(
+            decoded.extract_as::<TracingContext>().unwrap().to_string(),
+            context.to_string()
+        );
+        let empty = serde_json::to_value(TracingContext::new()).unwrap();
+        assert_eq!(
+            empty,
+            serde_json::json!({
+                "trace_id": null, "span_id": null, "trace_flags": null, "trace_state": null
+            })
+        );
     }
 }

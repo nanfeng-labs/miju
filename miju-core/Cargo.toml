@@ -11,23 +11,27 @@ repository.workspace = true
 
 [features]
 default = []
+## Generate the feature flag reference when building documentation
+docsrs = ["dep:document-features"]
 ## Enable task function signature validation helpers
 test-utils = []
 ## Enable runtime-independent timers and task timeouts
 sleep = ["dep:futures-timer"]
-## Emit worker lifecycle logs through tracing
+## Emit worker lifecycle logs and store explicit tracing metadata
 tracing = ["dep:tracing"]
 ## Track and cancel individual running tasks
 task-context = ["dep:dashmap"]
 ## Share a backend through cloneable handles
 shared = ["dep:dashmap"]
+## Enable serialization for task contexts, metadata, and enabled ID types
 serde = ["dep:serde", "ulid?/serde", "uuid?/serde"]
-## Enable ulid support for task ids
+## Enable ulid support for task ids (requires Rust 1.89)
 ulid = ["dep:ulid"]
-## Enable uuid support for task ids
+## Enable uuid support for task ids (requires Rust 1.89)
 uuid = ["dep:uuid"]
 
 [dependencies]
+document-features = { version = "0.2", optional = true }
 futures-util = { version = "0.3.34", default-features = false, features = ["sink", "async-await", "async-await-macro", "std"] }
 futures-core = { version = "0.3.34", default-features = false }
 futures-channel = { version = "0.3.34", default-features = false, features = ["sink", "std"] }
@@ -51,3 +55,8 @@ serde_json = "1.0"
 
 [lints]
 workspace = true
+
+[package.metadata.docs.rs]
+# defines the configuration attribute `docsrs`
+rustdoc-args = ["--cfg", "docsrs"]
+all-features = true

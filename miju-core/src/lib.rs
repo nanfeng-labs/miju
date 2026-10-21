@@ -1,3 +1,4 @@
+#![cfg_attr(docsrs, feature(doc_cfg))]
 //! Task backends and worker execution for background processing in Rust.
 //!
 //! `miju-core` provides task data structures, backend protocols, workers, and
@@ -101,6 +102,120 @@
 //! Enable `test-utils` for task function signature validation helpers.
 //! Default features remain empty.
 //!
+//! ### Example: Using `Monitor` with a Worker
+//!
+//! ```rust
+//! # use miju_core::monitor::Monitor;
+//! # use miju_core::worker::builder::WorkerBuilder;
+//! # use miju_core::task::Task;
+//! # use miju_core::backend::{TaskSink, dequeue::VecDequeBackend};
+//! # use tower::service_fn;
+//! # use std::time::Duration;
+//! # use miju_core::worker::context::WorkerContext;
+//! #[tokio::main]
+//! async fn main() {
+//!     let mut storage = VecDequeBackend::new();
+//!     storage.push(1u32).await.unwrap();
+//!
+//!     let monitor = Monitor::new()
+//!         .on_event(|worker, event| println!("{}: {:?}", worker.name(), event))
+//!         .register(move |_| {
+//!             WorkerBuilder::new("demo-worker")
+//!                 .backend(storage.clone())
+//!                 .build(|req: u32, worker: WorkerContext| async move {
+//!                     println!("Processing task: {:?}", req);
+//! #                   worker.stop().unwrap();
+//!                     Ok::<_, std::io::Error>(req)
+//!                 })
+//!         });
+//!
+//!     // Start monitor and run all registered workers
+//!     monitor.run().await.unwrap();
+//! }
+//! ```
+//!
+//! ## Middleware
+//!
+//! Built on the `tower` ecosystem, `miju-core` supports middleware for error handling, timeouts, rate limiting, and observability.
+//!
+//! ### Core Middleware
+//!
+//! The following middleware layers are included with their worker extensions:
+//! - [`AcknowledgeLayer`](crate::worker::ext::ack::AcknowledgeLayer) - Task acknowledgment after processing
+//! - [`EventListenerLayer`](crate::worker::ext::event_listener) - Worker event emission and handling
+//! - [`CircuitBreakerLayer`](crate::worker::ext::circuit_breaker) - Circuit breaker pattern for failure handling
+//! - [`LongRunningLayer`](crate::worker::ext::long_running) - Support for tracking long-running tasks
+//!
+//! ### Extending with middleware
+//!
+//! You can write your own middleware to run code before or after a task is processed.
+//!
+//! <details>
+//! <summary>Creating Custom Middleware</summary>
+//!
+//! Here's a simple example of a logging middleware layer:
+//!
+//! ```rust
+//! use miju_core::task::Task;
+//! use tower::{Layer, Service};
+//! use std::task::{Context, Poll};
+//!
+//! // Define a logging service that wraps another service
+//! pub struct LoggingService<S> {
+//!     inner: S,
+//! }
+//!
+//! impl<S, Args, Res, Err> Service<Task<Args>> for LoggingService<S>
+//! where
+//!     S: Service<Task<Args>, Response = Res, Error = Err>,
+//!     Args: std::fmt::Debug,
+//! {
+//!     type Response = Res;
+//!     type Error = Err;
+//!     type Future = S::Future;
+//!
+//!     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+//!         self.inner.poll_ready(cx)
+//!     }
+//!
+//!     fn call(&mut self, req: Task<Args>) -> Self::Future {
+//!         println!("Processing task: {:?}", req.args);
+//!         self.inner.call(req)
+//!     }
+//! }
+//!
+//! // Define a layer that wraps services with LoggingService
+//! pub struct LoggingLayer;
+//!
+//! impl<S> Layer<S> for LoggingLayer {
+//!     type Service = LoggingService<S>;
+//!
+//!     fn layer(&self, service: S) -> Self::Service {
+//!         LoggingService { inner: service }
+//!     }
+//! }
+//! ```
+//! </details>
+//!
+//! If you want your middleware to do more than just intercept requests and responses, you can use extension traits. See the [`worker::ext`] module for examples.
+//!
+//! ## Error Handling
+//!
+//! Errors classify the result of a handler for lifecycle tracking:
+//! - [`AbortError`](error::AbortError) marks a task as killed.
+//! - [`RetryAfterError`](error::RetryAfterError) marks a task as pending and carries a retry delay.
+//! - [`DeferredError`](error::DeferredError) marks a task as pending.
+//!
+//! Backends and middleware implement the corresponding rescheduling policy.
+//! These error types do not themselves requeue tasks.
+//!
+//! ## Graceful Shutdown
+//!
+//! Workers track in-flight tasks and drain tracked work during shutdown.
+//! A shared [`Shutdown`](monitor::shutdown::Shutdown) token coordinates workers.
+//! A configured [`Monitor::with_terminator`](monitor::Monitor::with_terminator)
+//! can end the drain early; provider integrations determine task recovery.
+//!
 //! # Serialization
 //!
 //! Enable `serde` to serialize a [`TaskBuilder`](task::builder::TaskBuilder),
@@ -123,6 +238,45 @@
 //!
 //! The default and `serde` configurations support Rust 1.85. Enabling `uuid` or
 //! `ulid` requires Rust 1.89 because of the UUID dependency.
+//!
+//! # Tracing metadata
+//!
+//! With `tracing`, `task::metadata::TracingContext` stores explicit trace fields
+//! under `miju_core.tracing.context`. The value is a semicolon-separated string
+//! with decimal flags and `-` for absent fields. It does not capture the current
+//! span or validate W3C trace IDs. Supply a subscriber separately for runtime logs.
+//!
+//! ```rust
+//! # #[cfg(feature = "tracing")]
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! use miju_core::task::{builder::TaskBuilder, metadata::TracingContext};
+//!
+//! let trace = TracingContext::new()
+//!     .with_trace_id("4bf92f3577b34da6a3ce929d0e0e4736")
+//!     .with_span_id("00f067aa0ba902b7")
+//!     .with_trace_flags(1);
+//! let task = TaskBuilder::new("send-email").metadata(&trace).build();
+//! let restored = task.metadata().extract_as::<TracingContext>()?;
+//! assert_eq!(restored.to_string(), trace.to_string());
+//! # Ok(())
+//! # }
+//! # #[cfg(not(feature = "tracing"))]
+//! # fn main() {}
+//! ```
+//!
+//! # Feature flags
+//!
+//! All features are opt-in. Enable `docsrs` when building documentation to
+//! generate the feature reference from the package manifest.
+#![cfg_attr(
+    feature = "docsrs",
+    cfg_attr(doc, doc = ::document_features::document_features!())
+)]
+//!
+//! # Development
+//!
+//! - [**Using CustomBackend**](crate::backend::custom) - using custom backend to integrate with already existing systems
+//! - [**Extending Workers using extension traits**](crate::worker::ext#creating-a-custom-worker-extension-trait) - implementing custom worker functionality via extension traits
 
 #[macro_use]
 pub(crate) mod macros;
