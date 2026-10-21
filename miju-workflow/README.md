@@ -3,6 +3,8 @@
 Build typed sequences of tasks and execute them with miju workers. Ordinary
 nonterminal steps encode their outputs and enqueue tasks for the next step;
 collection steps filter and map elements or reduce them into an accumulator.
+Graph APIs also construct and validate typed dependency graphs; graph execution
+is not yet available.
 
 ## Context
 
@@ -283,6 +285,56 @@ The backend delivers queued tasks without enforcing scheduling timestamps.
 For temporary-file integration, `miju-file-storage::JsonStorage` remains available
 and is exercised by the sequential integration tests.
 
+## Graph construction
+
+`GraphFlow` registers task functions or Tower services and connects their outputs
+to dependent inputs. `add_task` uses a function's Rust type name as its label;
+`add_node` accepts an explicit name. `depends_on` adds incoming edges and returns
+a handle exposing the node and edge indices:
+
+```rust
+use miju_core::task::task_fn::task_fn;
+use miju_workflow::{GraphFlow, in_memory::InMemoryWorkflow};
+
+let graph = GraphFlow::<InMemoryWorkflow<u32>>::new("counts");
+let first = graph.add_node("first", task_fn(|value: u32| async move { value + 1 }));
+let second = graph.add_node("second", task_fn(|value: u32| async move { value + 2 }));
+let total = graph.add_task(|(left, right): (u32, u32)| async move { left + right })
+    .depends_on((&first, &second));
+let values = graph.add_task(|values: Vec<u32>| async move { values.len() })
+    .depends_on(vec![&first, &second]);
+
+graph.validate()?;
+assert_eq!(total.edges().len(), 2);
+assert_eq!(values.edges().len(), 2);
+assert!(graph.to_dot().contains("first"));
+# Ok::<(), miju_workflow::graph::error::GraphFlowError>(())
+```
+
+Dependency output types must match the receiving node's input. Single builders
+and handles supply one output, borrowed tuples support up to eight outputs, and
+vectors supply a homogeneous collection. Vector dependencies currently require
+at least two entries; shorter vectors panic. Custom `DepsCheck` implementations
+can supply indices directly.
+
+Connecting nodes does not execute handlers or check for cycles. `validate`
+detects directed cycles, including self-loops, while accepting empty graphs and
+disconnected acyclic components. It does not check graph ownership, names or wire
+compatibility. `new_typed` currently behaves the same as `new`. `route` registers
+a function with an additional output-to-node-index bound; registration itself
+does not select routes.
+
+Builders and handles must refer to the same graph. Their indices do not retain
+graph identity: a foreign in-range index can connect an unintended node, while
+an out-of-range index panics and can poison the graph lock. Repeated dependencies
+create parallel edges. Cloned builders append to the same node, and each returned
+handle lists only the edges added by its own `depends_on` call.
+
+DOT export inserts labels without escaping. Repeated names retain all nodes but
+only label the newest one. Use distinct names without quotes, backslashes or
+newlines when relying on DOT output. Complete graph execution and worker
+integration remain future work.
+
 ## Graph data types
 
 The `graph` module provides progress metadata, response records and error types.
@@ -328,7 +380,7 @@ without escaping, so task IDs containing commas cannot round-trip reliably.
 next-step enqueueing, waiting dependencies and completion. Its values carry JSON
 results and node/task mappings. `graph::error` supplies `GraphFlowError` and
 `GraphServiceError`, including wrapped source errors. These records describe
-state; graph construction and task scheduling are not yet available.
+state; task scheduling is not yet available.
 
 ## Graph node adapters
 
@@ -378,7 +430,7 @@ uses ordinary codec encoding, which can differ from the graph tuple layout.
 Fan-in inputs bypass `GraphCodec::decode`: their JSON values are deserialized as
 an array into the handler input. This preserves the supplied order but does not
 fetch results, check readiness or infer which dependency belongs in each position.
-Graph building, task scheduling and complete graph execution remain future work.
+Task scheduling and complete graph execution remain future work.
 
 ## Features
 
