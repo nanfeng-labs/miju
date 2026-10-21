@@ -49,6 +49,21 @@
 //! and recorded results. Process-local extensions are skipped. Deserialization
 //! creates independent status and attempt cells; it does not reconnect observers
 //! of an existing task. A [`Task`](task::Task) itself is not serializable.
+//!
+//! # Task identifiers
+//!
+//! [`GenerateId`](task::task_id::GenerateId) provides ID generation with
+//! [`RandomId`](task::task_id::RandomId) or `u64`. Enable `uuid` or `ulid` for
+//! the corresponding [`TaskId`](task::task_id::TaskId) variants and generators.
+//! Constructing a task does not automatically assign an ID.
+//!
+//! `serde` adds serialization support for the enabled ID types without enabling
+//! either ID feature. `TaskId` uses an untagged representation: UUID and ULID
+//! strings deserialize as its `String` variant, while string parsing recognizes
+//! the enabled ID formats.
+//!
+//! The default and `serde` configurations support Rust 1.85. Enabling `uuid` or
+//! `ulid` requires Rust 1.89 because of the UUID dependency.
 
 pub mod backend;
 /// Includes internal error types.

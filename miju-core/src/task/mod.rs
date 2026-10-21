@@ -461,6 +461,36 @@ impl<Args> Task<Args> {
         }
     }
 
+    /// Modifies the id type of the task, consuming the task
+    #[must_use]
+    #[doc(hidden)]
+    pub fn map_id_type(self) -> Self {
+        let mut ctx = Arc::unwrap_or_clone(self.ctx);
+        let _ = ctx.metadata.insert(
+            "miju_core.transform.old_id",
+            ctx.task_id.map(|id| id.to_string()).unwrap_or_default(),
+        );
+        Self {
+            args: self.args,
+            ctx: Arc::new(ExecutionContext {
+                task_id: None,
+                data: ctx.data,
+                attempt: ctx.attempt,
+                status: ctx.status,
+                run_at: ctx.run_at,
+                done_at: ctx.done_at,
+                lock_at: ctx.lock_at,
+                lock_by: ctx.lock_by,
+                idempotency_key: ctx.idempotency_key,
+                metadata: ctx.metadata,
+                max_attempts: ctx.max_attempts,
+                priority: ctx.priority,
+                queue: ctx.queue,
+                runs: ctx.runs,
+            }),
+        }
+    }
+
     /// Converts the task into a [`TaskBuilder`]
     #[must_use = "Converting a task into a builder allows for further modifications before rebuilding the task."]
     pub fn into_builder(self) -> TaskBuilder<Args> {

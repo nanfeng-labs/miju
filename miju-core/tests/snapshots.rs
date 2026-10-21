@@ -135,3 +135,48 @@ fn scalar_and_history_wire_formats_match_the_data_contracts() {
         Err("failure".to_owned())
     );
 }
+
+#[test]
+fn random_id_snapshots_preserve_arbitrary_text() {
+    use miju_core::task::task_id::RandomId;
+
+    for value in ["", "arbitrary-id", "任务"] {
+        let id = value.parse::<RandomId>().unwrap();
+        assert_eq!(to_value(&id).unwrap(), json!(value));
+        assert_eq!(from_value::<RandomId>(json!(value)).unwrap(), id);
+    }
+}
+
+#[cfg(feature = "uuid")]
+#[test]
+fn uuid_task_id_snapshots_deserialize_as_the_string_variant() {
+    let value = uuid::Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+    let id = TaskId::from_uuid(value);
+    let encoded = to_value(&id).unwrap();
+    assert_eq!(encoded, json!(value.to_string()));
+    assert_eq!(
+        from_value::<TaskId>(encoded).unwrap(),
+        TaskId::from_string(value.to_string())
+    );
+    assert_eq!(
+        from_value::<uuid::Uuid>(to_value(value).unwrap()).unwrap(),
+        value
+    );
+}
+
+#[cfg(feature = "ulid")]
+#[test]
+fn ulid_task_id_snapshots_deserialize_as_the_string_variant() {
+    let value = "01ARZ3NDEKTSV4RRFFQ69G5FAV".parse::<ulid::Ulid>().unwrap();
+    let id = TaskId::from_ulid(value);
+    let encoded = to_value(&id).unwrap();
+    assert_eq!(encoded, json!(value.to_string()));
+    assert_eq!(
+        from_value::<TaskId>(encoded).unwrap(),
+        TaskId::from_string(value.to_string())
+    );
+    assert_eq!(
+        from_value::<ulid::Ulid>(to_value(value).unwrap()).unwrap(),
+        value
+    );
+}

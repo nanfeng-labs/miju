@@ -11,14 +11,21 @@ repository.workspace = true
 
 [features]
 default = []
-serde = ["dep:serde"]
+serde = ["dep:serde", "ulid?/serde", "uuid?/serde"]
+## Enable ulid support for task ids
+ulid = ["dep:ulid"]
+## Enable uuid support for task ids
+uuid = ["dep:uuid"]
 
 [dependencies]
 futures-util = { version = "0.3.34", default-features = false, features = ["std"] }
+rand = { version = "0.10", features = ["std"] }
 serde = { version = "1.0", features = ["derive"], optional = true }
 thiserror = "2.0.21"
 tower-layer = "0.3.3"
 tower-service = "0.3.3"
+ulid = { version = "3", optional = true, features = ["uuid"] }
+uuid = { version = "1.28.0", features = ["v4", "v5"], optional = true }
 
 [dev-dependencies]
 serde_json = "1.0"
