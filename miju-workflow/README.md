@@ -2,7 +2,7 @@
 
 Build typed sequences of tasks and execute them with miju workers. Ordinary
 nonterminal steps encode their outputs and enqueue tasks for the next step;
-collection steps split inputs into element tasks and gather their results.
+collection steps filter and map elements or reduce them into an accumulator.
 
 ## Context
 
@@ -147,6 +147,58 @@ created element tasks without a collector. Invalid element payloads can panic
 during decoding. Result-stream errors propagate, while malformed collected
 values or unexpected transitions are skipped.
 
+## Fold collections
+
+Use `fold` to reduce a nonempty iterable into a single value. The handler receives
+`(accumulator, item)` and returns an accumulator of the same type. Its initial
+value comes from `Default`; each item is processed in iterator order by a
+separate queued task. When `fold` is the first step, worker construction currently
+needs an explicit collection type in `WorkflowService`. The accumulator may have
+a different type from the items:
+
+```rust
+use miju_core::{
+    backend::TaskSink,
+    worker::{builder::WorkerBuilder, context::WorkerContext},
+};
+use miju_workflow::{
+    SteppedFlow, in_memory::InMemoryWorkflow, sequential::service::WorkflowService,
+};
+
+# #[tokio::main]
+# async fn main() {
+let backend = InMemoryWorkflow::create();
+let mut producer = backend.clone();
+producer.push(vec![2u32, 4, 6]).await.unwrap();
+
+let flow = SteppedFlow::new("sum")
+    .fold(async |(sum, value): (u64, u32)| sum + u64::from(value))
+    .and_then(async |total: u64, worker: WorkerContext| {
+        assert_eq!(total, 12);
+        worker.stop().unwrap();
+    });
+let worker = WorkerBuilder::new("sum")
+    .backend(backend)
+    .build::<_, WorkflowService<_, Vec<u32>, Vec<u32>>, _>(flow);
+# tokio::time::timeout(std::time::Duration::from_secs(5), async {
+worker.run().await.unwrap();
+# }).await.unwrap();
+# }
+```
+
+The initializer and intermediate tasks return `GoTo::Next` with a continuation
+ID. The last item returns `GoTo::Break` containing the final value. If a later
+workflow step exists, it is already enqueued and its ID is included in that
+`Break` response; the variant alone does not mean that execution has stopped.
+A terminal fold retains its final value and has no next task ID.
+
+Fold requires a codec and task sink, without requiring `WaitForCompletion`.
+Every continuation serializes the accumulator and all remaining items, so large
+collections incur repeated copying and encoding. Empty input currently panics
+when processing its first collection task. Validate that input is nonempty;
+when composed after `filter_map`, an all-filtered result stops before reaching
+the fold. Missing or unrecognized fold-state metadata starts initialization.
+
 ## In-memory results
 
 `InMemoryWorkflow::create()` returns a cloneable `Shared` handle. Arguments are
@@ -158,8 +210,9 @@ to the layer must already have an ID.
 `wait_for` yields results for the requested IDs and finishes after every unique
 requested ID has been observed. Supply distinct IDs: duplicate IDs currently
 prevent termination. Waiting for an entry task does not wait for all subsequent
-steps; a `GoTo::Next` result provides the next task ID. `check_status` returns
-only results currently stored and omits missing IDs.
+steps; inspect `StepResponse.next_task_id` for continuations, including the final
+`GoTo::Break` result of a fold. `check_status` returns only results currently
+stored and omits missing IDs.
 
 Handler errors are returned as stream errors; `check_status` fails if a requested
 stored task failed. A successful value that cannot be decoded into the requested
@@ -198,5 +251,5 @@ inherited readiness limitations, so custom steps must not assume every inner
 service is polled for readiness before its first call.
 
 The low-level `GoTo::DelayFor` transition also attaches scheduling metadata;
-actual delay enforcement depends on the backend. Folding, repetition, and graph
-execution are not yet available in this package.
+actual delay enforcement depends on the backend. Repetition and graph execution
+are not yet available in this package.
