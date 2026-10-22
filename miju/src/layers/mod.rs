@@ -34,6 +34,11 @@ pub mod retry;
 #[cfg_attr(docsrs, doc(cfg(feature = "tracing")))]
 pub mod tracing;
 
+/// Prometheus middleware for task counts and processing durations.
+#[cfg(feature = "prometheus")]
+#[cfg_attr(docsrs, doc(cfg(feature = "prometheus")))]
+pub mod prometheus;
+
 /// An extension trait that extends `WorkerBuilder` with additional middleware methods.
 ///
 /// Layers added earlier wrap those added later. Requests pass through them in

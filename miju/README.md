@@ -261,6 +261,21 @@ the module includes runnable examples. `TracingContext` re-exports the core
 metadata type for storing explicit trace fields. These factories currently use
 the active span as their parent and do not restore a remote parent from metadata.
 
+## Prometheus metrics
+
+Enable `prometheus` and add
+`miju::layers::prometheus::PrometheusLayer::default()` with the worker builder's
+`.layer(...)` method to record completed tasks and their durations. The layer
+emits `tasks_total` and `task_duration_seconds`, labeled by worker name, Rust
+argument type (`queue`), and result (`status`).
+
+The application installs the metrics recorder and exposes its output. The
+`miju::layers::prometheus` module contains a runnable example
+using `metrics-exporter-prometheus`, including histogram buckets and recorder
+upkeep. Enable the `prometheus` feature to access that module. Exporter transport
+features are disabled by default, so enabling this middleware does not start an
+HTTP listener or push gateway.
+
 ## Worker configuration
 
 Enable `config` to construct a worker from `WorkerConfig` using

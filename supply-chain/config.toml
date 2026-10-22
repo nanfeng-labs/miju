@@ -16,6 +16,11 @@ url = "https://raw.githubusercontent.com/mozilla/supply-chain/main/audits.toml"
 [imports.zcash]
 url = "https://raw.githubusercontent.com/zcash/rust-ecosystem/main/supply-chain/audits.toml"
 
+[[exemptions.aho-corasick]]
+version = "1.1.5"
+criteria = "safe-to-deploy"
+notes = "Unaudited Prometheus dependency baseline for miju; replace with a matching audit when available."
+
 [[exemptions.autocfg]]
 version = "1.5.1"
 criteria = "safe-to-deploy"
@@ -41,6 +46,11 @@ version = "1.12.1"
 criteria = "safe-to-deploy"
 notes = "Unaudited runtime baseline for miju-workflow; replace with a matching audit when available."
 
+[[exemptions.cc]]
+version = "1.8.0"
+criteria = "safe-to-deploy"
+notes = "Unaudited Prometheus dependency baseline for miju; replace with a matching audit when available."
+
 [[exemptions.cfg-if]]
 version = "1.0.5"
 criteria = "safe-to-deploy"
@@ -55,6 +65,11 @@ notes = "Unaudited initial baseline; replace with a matching audit when availabl
 version = "0.3.1"
 criteria = "safe-to-deploy"
 notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.crossbeam-epoch]]
+version = "0.9.21"
+criteria = "safe-to-deploy"
+notes = "Unaudited Prometheus dependency baseline for miju; replace with a matching audit when available."
 
 [[exemptions.crossbeam-utils]]
 version = "0.8.23"
@@ -71,10 +86,20 @@ version = "1.0.3"
 criteria = "safe-to-deploy"
 notes = "Unaudited miju-workflow dependency baseline; replace with a matching audit when available."
 
+[[exemptions.evmap]]
+version = "11.0.0"
+criteria = "safe-to-deploy"
+notes = "Unaudited Prometheus dependency baseline for miju; replace with a matching audit when available."
+
 [[exemptions.fastrand]]
 version = "2.5.0"
 criteria = "safe-to-deploy"
 notes = "Unaudited miju-file-storage dependency baseline; replace with a matching audit when available."
+
+[[exemptions.find-msvc-tools]]
+version = "0.1.14"
+criteria = "safe-to-deploy"
+notes = "Unaudited Prometheus dependency baseline for miju; replace with a matching audit when available."
 
 [[exemptions.fixedbitset]]
 version = "0.5.7"
@@ -111,10 +136,25 @@ version = "0.3.34"
 criteria = "safe-to-deploy"
 notes = "Unaudited initial baseline; replace with a matching audit when available."
 
+[[exemptions.generator]]
+version = "0.8.11"
+criteria = "safe-to-deploy"
+notes = "Unaudited Prometheus dependency baseline for miju; replace with a matching audit when available."
+
+[[exemptions.getrandom]]
+version = "0.3.4"
+criteria = "safe-to-deploy"
+notes = "Unaudited Prometheus dependency baseline for miju; replace with a matching audit when available."
+
 [[exemptions.getrandom]]
 version = "0.4.3"
 criteria = "safe-to-deploy"
 notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.hashbag]]
+version = "0.1.13"
+criteria = "safe-to-deploy"
+notes = "Unaudited Prometheus dependency baseline for miju; replace with a matching audit when available."
 
 [[exemptions.hashbrown]]
 version = "0.14.5"
@@ -136,6 +176,16 @@ version = "0.3.106"
 criteria = "safe-to-deploy"
 notes = "Unaudited initial baseline; replace with a matching audit when available."
 
+[[exemptions.lazy_static]]
+version = "1.5.1"
+criteria = "safe-to-deploy"
+notes = "Unaudited Prometheus dependency baseline for miju; replace with a matching audit when available."
+
+[[exemptions.left-right]]
+version = "0.11.8"
+criteria = "safe-to-deploy"
+notes = "Unaudited Prometheus dependency baseline for miju; replace with a matching audit when available."
+
 [[exemptions.libc]]
 version = "0.2.191"
 criteria = "safe-to-deploy"
@@ -156,10 +206,35 @@ version = "0.4.14"
 criteria = "safe-to-deploy"
 notes = "Unaudited initial baseline; replace with a matching audit when available."
 
+[[exemptions.log]]
+version = "0.4.34"
+criteria = "safe-to-deploy"
+notes = "Unaudited Prometheus dependency baseline for miju; replace with a matching audit when available."
+
+[[exemptions.loom]]
+version = "0.7.2"
+criteria = "safe-to-deploy"
+notes = "Unaudited Prometheus dependency baseline for miju; replace with a matching audit when available."
+
 [[exemptions.memchr]]
 version = "2.8.3"
 criteria = "safe-to-deploy"
 notes = "Unaudited runtime dependency baseline for miju-codec; replace with a matching audit when available."
+
+[[exemptions.metrics]]
+version = "0.24.6"
+criteria = "safe-to-deploy"
+notes = "Unaudited Prometheus dependency baseline for miju; replace with a matching audit when available."
+
+[[exemptions.metrics-exporter-prometheus]]
+version = "0.18.3"
+criteria = "safe-to-deploy"
+notes = "Unaudited Prometheus dependency baseline for miju; replace with a matching audit when available."
+
+[[exemptions.metrics-util]]
+version = "0.20.4"
+criteria = "safe-to-deploy"
+notes = "Unaudited Prometheus dependency baseline for miju; replace with a matching audit when available."
 
 [[exemptions.mio]]
 version = "1.2.4"
@@ -196,10 +271,30 @@ version = "0.2.17"
 criteria = "safe-to-deploy"
 notes = "Unaudited initial baseline; replace with a matching audit when available."
 
+[[exemptions.portable-atomic]]
+version = "1.15.0"
+criteria = "safe-to-deploy"
+notes = "Unaudited Prometheus dependency baseline for miju; replace with a matching audit when available."
+
+[[exemptions.ppv-lite86]]
+version = "0.2.21"
+criteria = "safe-to-deploy"
+notes = "Unaudited Prometheus dependency baseline for miju; replace with a matching audit when available."
+
 [[exemptions.proc-macro2]]
 version = "1.0.107"
 criteria = "safe-to-deploy"
 notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.quanta]]
+version = "0.12.6"
+criteria = "safe-to-deploy"
+notes = "Unaudited Prometheus dependency baseline for miju; replace with a matching audit when available."
+
+[[exemptions.r-efi]]
+version = "5.3.0"
+criteria = "safe-to-deploy"
+notes = "Unaudited Prometheus dependency baseline for miju; replace with a matching audit when available."
 
 [[exemptions.r-efi]]
 version = "6.0.0"
@@ -207,19 +302,59 @@ criteria = "safe-to-deploy"
 notes = "Unaudited initial baseline; replace with a matching audit when available."
 
 [[exemptions.rand]]
+version = "0.9.5"
+criteria = "safe-to-deploy"
+notes = "Unaudited Prometheus dependency baseline for miju; replace with a matching audit when available."
+
+[[exemptions.rand]]
 version = "0.10.3"
 criteria = "safe-to-deploy"
 notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.rand_chacha]]
+version = "0.9.0"
+criteria = "safe-to-deploy"
+notes = "Unaudited Prometheus dependency baseline for miju; replace with a matching audit when available."
+
+[[exemptions.rand_core]]
+version = "0.9.5"
+criteria = "safe-to-deploy"
+notes = "Unaudited Prometheus dependency baseline for miju; replace with a matching audit when available."
 
 [[exemptions.rand_core]]
 version = "0.10.1"
 criteria = "safe-to-deploy"
 notes = "Unaudited initial baseline; replace with a matching audit when available."
 
+[[exemptions.rand_xoshiro]]
+version = "0.7.0"
+criteria = "safe-to-deploy"
+notes = "Unaudited Prometheus dependency baseline for miju; replace with a matching audit when available."
+
+[[exemptions.rapidhash]]
+version = "4.5.1"
+criteria = "safe-to-deploy"
+notes = "Unaudited Prometheus dependency baseline for miju; replace with a matching audit when available."
+
+[[exemptions.raw-cpuid]]
+version = "11.6.0"
+criteria = "safe-to-deploy"
+notes = "Unaudited Prometheus dependency baseline for miju; replace with a matching audit when available."
+
 [[exemptions.redox_syscall]]
 version = "0.5.18"
 criteria = "safe-to-deploy"
 notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.regex-automata]]
+version = "0.4.18"
+criteria = "safe-to-deploy"
+notes = "Unaudited Prometheus dependency baseline for miju; replace with a matching audit when available."
+
+[[exemptions.regex-syntax]]
+version = "0.8.11"
+criteria = "safe-to-deploy"
+notes = "Unaudited Prometheus dependency baseline for miju; replace with a matching audit when available."
 
 [[exemptions.rustix]]
 version = "1.1.5"
@@ -230,6 +365,11 @@ notes = "Unaudited miju-file-storage dependency baseline; replace with a matchin
 version = "1.0.23"
 criteria = "safe-to-deploy"
 notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.scoped-tls]]
+version = "1.0.1"
+criteria = "safe-to-deploy"
+notes = "Unaudited Prometheus dependency baseline for miju; replace with a matching audit when available."
 
 [[exemptions.scopeguard]]
 version = "1.2.0"
@@ -260,6 +400,11 @@ notes = "Unaudited runtime dependency baseline for miju-codec; replace with a ma
 version = "1.4.8"
 criteria = "safe-to-deploy"
 notes = "Unaudited miju-workflow dependency baseline; replace with a matching audit when available."
+
+[[exemptions.sketches-ddsketch]]
+version = "0.3.1"
+criteria = "safe-to-deploy"
+notes = "Unaudited Prometheus dependency baseline for miju; replace with a matching audit when available."
 
 [[exemptions.slab]]
 version = "0.4.12"
@@ -301,6 +446,11 @@ version = "2.0.21"
 criteria = "safe-to-deploy"
 notes = "Unaudited initial baseline; replace with a matching audit when available."
 
+[[exemptions.thread_local]]
+version = "1.1.10"
+criteria = "safe-to-deploy"
+notes = "Unaudited Prometheus dependency baseline for miju; replace with a matching audit when available."
+
 [[exemptions.tokio]]
 version = "1.54.1"
 criteria = "safe-to-deploy"
@@ -336,6 +486,11 @@ version = "0.1.44"
 criteria = "safe-to-deploy"
 notes = "Unaudited initial baseline; replace with a matching audit when available."
 
+[[exemptions.tracing-subscriber]]
+version = "0.3.23"
+criteria = "safe-to-deploy"
+notes = "Unaudited Prometheus dependency baseline for miju; replace with a matching audit when available."
+
 [[exemptions.ulid]]
 version = "3.0.0"
 criteria = "safe-to-deploy"
@@ -355,6 +510,11 @@ notes = "Unaudited miju-codec dependency baseline; replace with a matching audit
 version = "1.28.0"
 criteria = "safe-to-deploy"
 notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.valuable]]
+version = "0.1.1"
+criteria = "safe-to-deploy"
+notes = "Unaudited Prometheus dependency baseline for miju; replace with a matching audit when available."
 
 [[exemptions.virtue]]
 version = "0.0.18"
@@ -386,10 +546,35 @@ version = "0.2.129"
 criteria = "safe-to-deploy"
 notes = "Unaudited initial baseline; replace with a matching audit when available."
 
+[[exemptions.web-sys]]
+version = "0.3.106"
+criteria = "safe-to-deploy"
+notes = "Unaudited Prometheus dependency baseline for miju; replace with a matching audit when available."
+
 [[exemptions.web-time]]
 version = "1.1.0"
 criteria = "safe-to-deploy"
 notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.winapi]]
+version = "0.3.9"
+criteria = "safe-to-deploy"
+notes = "Unaudited Prometheus dependency baseline for miju; replace with a matching audit when available."
+
+[[exemptions.winapi-i686-pc-windows-gnu]]
+version = "0.4.0"
+criteria = "safe-to-deploy"
+notes = "Unaudited Prometheus dependency baseline for miju; replace with a matching audit when available."
+
+[[exemptions.winapi-x86_64-pc-windows-gnu]]
+version = "0.4.0"
+criteria = "safe-to-deploy"
+notes = "Unaudited Prometheus dependency baseline for miju; replace with a matching audit when available."
+
+[[exemptions.windows-result]]
+version = "0.4.1"
+criteria = "safe-to-deploy"
+notes = "Unaudited Prometheus dependency baseline for miju; replace with a matching audit when available."
 
 [[exemptions.windows-sys]]
 version = "0.59.0"
@@ -445,6 +630,16 @@ notes = "Unaudited miju-file-storage dependency baseline; replace with a matchin
 version = "0.52.6"
 criteria = "safe-to-deploy"
 notes = "Unaudited miju-file-storage dependency baseline; replace with a matching audit when available."
+
+[[exemptions.zerocopy]]
+version = "0.8.63"
+criteria = "safe-to-deploy"
+notes = "Unaudited Prometheus dependency baseline for miju; replace with a matching audit when available."
+
+[[exemptions.zerocopy-derive]]
+version = "0.8.63"
+criteria = "safe-to-deploy"
+notes = "Unaudited Prometheus dependency baseline for miju; replace with a matching audit when available."
 
 [[exemptions.zmij]]
 version = "1.0.23"
