@@ -1,0 +1,19 @@
+[package]
+name = "deps-injection"
+version = "0.1.0"
+publish = false
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Demonstrates task argument extraction and shared application data"
+
+[dependencies]
+miju = { version = "0.1.0", default-features = false, features = ["task-context", "tracing"] }
+tokio = { version = "1.53.2", default-features = false, features = ["macros", "rt-multi-thread"] }
+tracing = { version = "0.1.44", default-features = false, features = ["std"] }
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["env-filter", "fmt"] }
+
+[lints]
+workspace = true
