@@ -1868,6 +1868,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "workflow-graph"
+version = "0.1.0"
+dependencies = [
+ "miju",
+ "miju-workflow",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "workflow-stepped"
 version = "0.1.0"
 dependencies = [

@@ -39,6 +39,7 @@ Replace `basic` with any example name below. Some examples exit automatically; o
 | Example | Scenario |
 | --- | --- |
 | [`workflow-stepped`](workflow-stepped) | Pass typed results through three steps, configure a continuation delay, and inject a shared backend into each handler. |
+| [`workflow-graph`](workflow-graph) | Distribute entry inputs to three graph nodes, collect a typed dependency tuple, and print the graph as DOT. |
 
 ## Shared example support
 
@@ -57,3 +58,4 @@ Replace `basic` with any example name below. Some examples exit automatically; o
 - **`unique-jobs`** accepts two submissions for one recipient but processes only the first subject. The in-memory backend remembers the key for its lifetime, including after completion; this is not durable deduplication across application restarts. Press Ctrl+C to exit.
 - **`unmonitored-worker`** processes 100 five-second tasks with a concurrency limit of 20, then stops its worker. Its `run_until` call still waits for Ctrl+C before the process exits. Pressing Ctrl+C earlier drains active tasks and leaves any unstarted tasks unprocessed.
 - **`workflow-stepped`** runs welcome, campaign, and completion steps with IDs 1, 2, and 3, then stops automatically. `delay_for(1s)` records a scheduled time, but the in-memory backend does not enforce it: the next step runs immediately. Actual waiting requires a backend that honors scheduling. The worker spawns task futures with a concurrency limit of two; step dependencies still determine execution order.
+- **`workflow-graph`** sends 42, 43, and 44 to the name, age, and address-code entry nodes respectively. These are three inputs to one graph run. The collector receives `("42", 63, 144)`, prints a total of 249, and stops the worker. Its DOT output can be rendered with Graphviz.
