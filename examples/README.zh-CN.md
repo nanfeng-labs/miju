@@ -31,6 +31,7 @@ cargo run -p basic --locked
 | [`graceful-shutdown`](graceful-shutdown) | 响应 Ctrl+C，完成当前批次，并在关闭前模拟保存任务状态。 |
 | [`long-running`](long-running) | 通过 `TaskRunner` 并发执行数据导出、收集结果，并在关闭时等待执行中的任务完成。 |
 | [`retries`](retries) | 对普通错误应用指数退避并最多重试三次，同时排除 `AbortError`。 |
+| [`unique-jobs`](unique-jobs) | 使用相同幂等键提交两个不同载荷，仅执行第一个任务。 |
 | [`unmonitored-worker`](unmonitored-worker) | 以 20 个任务的并发上限独立运行 worker，待有限批次全部完成后自动停止。 |
 
 ## 共享示例支持
@@ -47,4 +48,5 @@ cargo run -p basic --locked
 - **`graceful-shutdown`** 持续运行，直到按下 Ctrl+C。它在每个五秒批次结束后检查关闭状态，再用五秒模拟检查点保存，不会实际写入数据。
 - **`long-running`** 并发模拟三个耗时八至十二秒的导出操作。Worker 持续运行，直到按下 Ctrl+C，此时会等待执行中的导出完成并收集结果。
 - **`retries`** 处理三个地址：一个成功执行一次，一个失败并累计执行四次，一个在首次执行时中止。错误均为预期结果。退避使用一秒下限、五秒上限及随机抖动；所有尝试完成后，按 Ctrl+C 停止 worker。
+- **`unique-jobs`** 为同一收件人提交两次任务，但只处理第一个主题。内存后端在整个生命周期内保留幂等键，任务完成后也不会释放；这不提供跨应用重启的持久去重。按 Ctrl+C 退出。
 - **`unmonitored-worker`** 以 20 个任务的并发上限处理 100 个耗时五秒的任务，全部完成后停止 worker；此时 `run_until` 仍会等待 Ctrl+C，收到信号后进程才退出。提前按 Ctrl+C 会等待活动任务完成，尚未开始的任务不会继续执行。
