@@ -1,0 +1,18 @@
+[package]
+name = "basic"
+version = "0.1.0"
+publish = false
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Demonstrates miju worker execution and middleware"
+
+[dependencies]
+miju = { version = "0.1.0", default-features = false, features = ["limit", "retry", "catch-panic", "tracing"] }
+tokio = { version = "1.53.2", default-features = false, features = ["macros", "rt-multi-thread", "time"] }
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["env-filter", "fmt"] }
+
+[lints]
+workspace = true
