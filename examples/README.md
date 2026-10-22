@@ -20,6 +20,7 @@ Replace `basic` with any example name below. Some examples exit automatically; o
 | --- | --- |
 | [`basic`](basic) | Process an in-memory task with rate limiting, concurrency, retries, panic capture, task spawning, and tracing. |
 | [`deps-injection`](deps-injection) | Extract task metadata, share a counter through `Data`, and provide a custom `FromRequest` argument. |
+| [`task-context`](task-context) | Cancel a task through a cloned `TaskContext`, await execution notification, and observe its `Killed` status. |
 | [`worker-context`](worker-context) | Look up a running task and observe its worker through a shared `WorkerContext`. |
 
 ## Execution and shutdown
@@ -35,6 +36,7 @@ Replace `basic` with any example name below. Some examples exit automatically; o
 
 - **`basic`** exits after processing its task.
 - **`deps-injection`** exits after ten tasks.
+- **`task-context`** requests cancellation after three seconds, waits for the worker to record `Killed`, then stops automatically. The cancellation produces an expected task error event; the rest of the cancelled handler never runs.
 - **`worker-context`** observes one task for five seconds, then stops and waits for the external observer to finish.
 - **`catch-panic`** runs until Ctrl+C. It deliberately prints panic-hook messages before reporting captured errors; it does not send email.
 - **`graceful-shutdown`** runs until Ctrl+C. It checks for shutdown between five-second batches, then spends five seconds simulating a checkpoint without writing data.

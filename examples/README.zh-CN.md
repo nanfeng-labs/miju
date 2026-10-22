@@ -20,6 +20,7 @@ cargo run -p basic --locked
 | --- | --- |
 | [`basic`](basic) | 使用速率限制、并发、重试、panic 捕获、任务 spawn 和 tracing 处理内存任务。 |
 | [`deps-injection`](deps-injection) | 提取任务元数据，通过 `Data` 共享计数器，并通过 `FromRequest` 提供自定义参数。 |
+| [`task-context`](task-context) | 通过克隆的 `TaskContext` 取消任务，等待执行结束通知，并观察 `Killed` 状态。 |
 | [`worker-context`](worker-context) | 查询正在执行的任务，并通过共享的 `WorkerContext` 从外部观测 worker。 |
 
 ## 执行与关闭
@@ -35,6 +36,7 @@ cargo run -p basic --locked
 
 - **`basic`** 处理完任务后自动退出。
 - **`deps-injection`** 处理十个任务后退出。
+- **`task-context`** 在三秒后请求取消任务，等待 worker 将状态更新为 `Killed` 后自动停止。取消会产生预期的任务错误事件，被取消 handler 的后续代码不会执行。
 - **`worker-context`** 观测一个任务五秒后停止，并等待外部观察任务结束。
 - **`catch-panic`** 持续运行，直到按下 Ctrl+C。它会先打印 panic hook 信息，再上报捕获到的错误，不会发送邮件。
 - **`graceful-shutdown`** 持续运行，直到按下 Ctrl+C。它在每个五秒批次结束后检查关闭状态，再用五秒模拟检查点保存，不会实际写入数据。
