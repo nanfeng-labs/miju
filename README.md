@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/miju-header.svg" alt="miju" width="800" />
+  <img src="assets/miju-header.svg" alt="miju" width="480" />
 </p>
 
 <h1 align="center">miju</h1>
