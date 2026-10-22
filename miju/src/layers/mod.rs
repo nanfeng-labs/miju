@@ -44,6 +44,11 @@ pub mod prometheus;
 #[cfg_attr(docsrs, doc(cfg(feature = "opentelemetry")))]
 pub mod opentelemetry;
 
+/// Sentry error reporting and performance transactions for tasks.
+#[cfg(feature = "sentry")]
+#[cfg_attr(docsrs, doc(cfg(feature = "sentry")))]
+pub mod sentry;
+
 /// An extension trait that extends `WorkerBuilder` with additional middleware methods.
 ///
 /// Layers added earlier wrap those added later. Requests pass through them in

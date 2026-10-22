@@ -81,6 +81,16 @@ version = "6.2.1"
 criteria = "safe-to-deploy"
 notes = "Unaudited initial baseline; replace with a matching audit when available."
 
+[[exemptions.deranged]]
+version = "0.5.9"
+criteria = "safe-to-deploy"
+notes = "Unaudited Sentry dependency baseline for miju; replace with a matching audit when available."
+
+[[exemptions.displaydoc]]
+version = "0.2.7"
+criteria = "safe-to-deploy"
+notes = "Unaudited Sentry dependency baseline for miju; replace with a matching audit when available."
+
 [[exemptions.equivalent]]
 version = "1.0.3"
 criteria = "safe-to-deploy"
@@ -166,6 +176,51 @@ version = "0.14.5"
 criteria = "safe-to-deploy"
 notes = "Unaudited initial baseline; replace with a matching audit when available."
 
+[[exemptions.icu_collections]]
+version = "2.3.0"
+criteria = "safe-to-deploy"
+notes = "Unaudited Sentry dependency baseline for miju; replace with a matching audit when available."
+
+[[exemptions.icu_locale_core]]
+version = "2.3.0"
+criteria = "safe-to-deploy"
+notes = "Unaudited Sentry dependency baseline for miju; replace with a matching audit when available."
+
+[[exemptions.icu_normalizer]]
+version = "2.3.0"
+criteria = "safe-to-deploy"
+notes = "Unaudited Sentry dependency baseline for miju; replace with a matching audit when available."
+
+[[exemptions.icu_normalizer_data]]
+version = "2.3.0"
+criteria = "safe-to-deploy"
+notes = "Unaudited Sentry dependency baseline for miju; replace with a matching audit when available."
+
+[[exemptions.icu_properties]]
+version = "2.3.0"
+criteria = "safe-to-deploy"
+notes = "Unaudited Sentry dependency baseline for miju; replace with a matching audit when available."
+
+[[exemptions.icu_properties_data]]
+version = "2.3.0"
+criteria = "safe-to-deploy"
+notes = "Unaudited Sentry dependency baseline for miju; replace with a matching audit when available."
+
+[[exemptions.icu_provider]]
+version = "2.3.1"
+criteria = "safe-to-deploy"
+notes = "Unaudited Sentry dependency baseline for miju; replace with a matching audit when available."
+
+[[exemptions.idna]]
+version = "1.1.0"
+criteria = "safe-to-deploy"
+notes = "Unaudited Sentry dependency baseline for miju; replace with a matching audit when available."
+
+[[exemptions.idna_adapter]]
+version = "1.2.2"
+criteria = "safe-to-deploy"
+notes = "Unaudited Sentry dependency baseline for miju; replace with a matching audit when available."
+
 [[exemptions.indexmap]]
 version = "2.14.2"
 criteria = "safe-to-deploy"
@@ -200,6 +255,11 @@ notes = "Unaudited initial baseline; replace with a matching audit when availabl
 version = "0.12.1"
 criteria = "safe-to-deploy"
 notes = "Unaudited miju-file-storage dependency baseline; replace with a matching audit when available."
+
+[[exemptions.litemap]]
+version = "0.8.3"
+criteria = "safe-to-deploy"
+notes = "Unaudited Sentry dependency baseline for miju; replace with a matching audit when available."
 
 [[exemptions.litrs]]
 version = "1.0.1"
@@ -290,6 +350,16 @@ notes = "Unaudited initial baseline; replace with a matching audit when availabl
 version = "1.15.0"
 criteria = "safe-to-deploy"
 notes = "Unaudited Prometheus dependency baseline for miju; replace with a matching audit when available."
+
+[[exemptions.potential_utf]]
+version = "0.1.6"
+criteria = "safe-to-deploy"
+notes = "Unaudited Sentry dependency baseline for miju; replace with a matching audit when available."
+
+[[exemptions.powerfmt]]
+version = "0.2.1"
+criteria = "safe-to-deploy"
+notes = "Unaudited Sentry dependency baseline for miju; replace with a matching audit when available."
 
 [[exemptions.ppv-lite86]]
 version = "0.2.21"
@@ -391,6 +461,16 @@ version = "1.2.0"
 criteria = "safe-to-deploy"
 notes = "Unaudited initial baseline; replace with a matching audit when available."
 
+[[exemptions.sentry-core]]
+version = "0.49.3"
+criteria = "safe-to-deploy"
+notes = "Unaudited Sentry dependency baseline for miju; replace with a matching audit when available."
+
+[[exemptions.sentry-types]]
+version = "0.49.3"
+criteria = "safe-to-deploy"
+notes = "Unaudited Sentry dependency baseline for miju; replace with a matching audit when available."
+
 [[exemptions.serde]]
 version = "1.0.229"
 criteria = "safe-to-deploy"
@@ -431,6 +511,11 @@ version = "1.16.3"
 criteria = "safe-to-deploy"
 notes = "Unaudited initial baseline; replace with a matching audit when available."
 
+[[exemptions.stable_deref_trait]]
+version = "1.2.1"
+criteria = "safe-to-deploy"
+notes = "Unaudited Sentry dependency baseline for miju; replace with a matching audit when available."
+
 [[exemptions.syn]]
 version = "2.0.119"
 criteria = "safe-to-deploy"
@@ -445,6 +530,11 @@ notes = "Unaudited initial baseline; replace with a matching audit when availabl
 version = "1.0.2"
 criteria = "safe-to-deploy"
 notes = "Unaudited runtime baseline for miju-workflow; replace with a matching audit when available."
+
+[[exemptions.synstructure]]
+version = "0.14.0"
+criteria = "safe-to-deploy"
+notes = "Unaudited Sentry dependency baseline for miju; replace with a matching audit when available."
 
 [[exemptions.tempfile]]
 version = "3.27.0"
@@ -465,6 +555,21 @@ notes = "Unaudited initial baseline; replace with a matching audit when availabl
 version = "1.1.10"
 criteria = "safe-to-deploy"
 notes = "Unaudited Prometheus dependency baseline for miju; replace with a matching audit when available."
+
+[[exemptions.time]]
+version = "0.3.55"
+criteria = "safe-to-deploy"
+notes = "Unaudited Sentry dependency baseline for miju; replace with a matching audit when available."
+
+[[exemptions.time-macros]]
+version = "0.2.32"
+criteria = "safe-to-deploy"
+notes = "Unaudited Sentry dependency baseline for miju; replace with a matching audit when available."
+
+[[exemptions.tinystr]]
+version = "0.8.4"
+criteria = "safe-to-deploy"
+notes = "Unaudited Sentry dependency baseline for miju; replace with a matching audit when available."
 
 [[exemptions.tokio]]
 version = "1.54.1"
@@ -525,6 +630,11 @@ notes = "Unaudited initial baseline; replace with a matching audit when availabl
 version = "0.0.4"
 criteria = "safe-to-deploy"
 notes = "Unaudited miju-codec dependency baseline; replace with a matching audit when available."
+
+[[exemptions.url]]
+version = "2.5.8"
+criteria = "safe-to-deploy"
+notes = "Unaudited Sentry dependency baseline for miju; replace with a matching audit when available."
 
 [[exemptions.uuid]]
 version = "1.28.0"
@@ -651,6 +761,21 @@ version = "0.52.6"
 criteria = "safe-to-deploy"
 notes = "Unaudited miju-file-storage dependency baseline; replace with a matching audit when available."
 
+[[exemptions.writeable]]
+version = "0.6.4"
+criteria = "safe-to-deploy"
+notes = "Unaudited Sentry dependency baseline for miju; replace with a matching audit when available."
+
+[[exemptions.yoke]]
+version = "0.8.3"
+criteria = "safe-to-deploy"
+notes = "Unaudited Sentry dependency baseline for miju; replace with a matching audit when available."
+
+[[exemptions.yoke-derive]]
+version = "0.8.4"
+criteria = "safe-to-deploy"
+notes = "Unaudited Sentry dependency baseline for miju; replace with a matching audit when available."
+
 [[exemptions.zerocopy]]
 version = "0.8.63"
 criteria = "safe-to-deploy"
@@ -660,6 +785,31 @@ notes = "Unaudited Prometheus dependency baseline for miju; replace with a match
 version = "0.8.63"
 criteria = "safe-to-deploy"
 notes = "Unaudited Prometheus dependency baseline for miju; replace with a matching audit when available."
+
+[[exemptions.zerofrom]]
+version = "0.1.8"
+criteria = "safe-to-deploy"
+notes = "Unaudited Sentry dependency baseline for miju; replace with a matching audit when available."
+
+[[exemptions.zerofrom-derive]]
+version = "0.1.8"
+criteria = "safe-to-deploy"
+notes = "Unaudited Sentry dependency baseline for miju; replace with a matching audit when available."
+
+[[exemptions.zerotrie]]
+version = "0.2.5"
+criteria = "safe-to-deploy"
+notes = "Unaudited Sentry dependency baseline for miju; replace with a matching audit when available."
+
+[[exemptions.zerovec]]
+version = "0.11.8"
+criteria = "safe-to-deploy"
+notes = "Unaudited Sentry dependency baseline for miju; replace with a matching audit when available."
+
+[[exemptions.zerovec-derive]]
+version = "0.11.6"
+criteria = "safe-to-deploy"
+notes = "Unaudited Sentry dependency baseline for miju; replace with a matching audit when available."
 
 [[exemptions.zmij]]
 version = "1.0.23"

@@ -295,6 +295,20 @@ use `TraceLayer::new().make_span_with(ContextualTaskSpan::new())`. The
 Enabling `opentelemetry` alone does not enable the tracing module or switch the
 default span factory.
 
+## Sentry
+
+Enable `sentry` and add `miju::layers::sentry::SentryLayer::new()` with
+`.layer(...)` to report task errors and transactions. This feature requires
+Rust 1.89 because it enables UUID task-ID conversion. The application configures
+its Sentry SDK client, transport, sampling, and shutdown; the feature alone does
+not enable a client.
+
+Transactions start on the first poll and finish when the task Future completes.
+The layer uses the current hub, so provide a separate hub for each task to
+isolate scope changes. Cancellation and custom transaction statuses affect
+reporting. The `miju::layers::sentry` module documents these boundaries and the
+boxed-error requirement for direct Tower services.
+
 ## Worker configuration
 
 Enable `config` to construct a worker from `WorkerConfig` using
