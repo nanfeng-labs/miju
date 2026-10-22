@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["miju", "miju-core", "utils/*"]
+members = ["miju", "miju-*", "utils/*"]
 
 [workspace.package]
 authors = ["RivTian <tianjun.rio@gmail.com>"]
@@ -63,3 +63,4 @@ miju = { path = "miju" }
 miju-core = { path = "miju-core" }
 miju-codec = { path = "utils/miju-codec" }
 miju-file-storage = { path = "utils/miju-file-storage" }
+miju-workflow = { path = "miju-workflow" }
