@@ -28,7 +28,7 @@ cargo run -p basic --locked
 
 | 示例 | 场景 |
 | --- | --- |
-| [`catch-panic`](catch-panic) | 捕获邮件任务中主动触发的 panic，排除中止错误的重试，并观测 worker 错误事件。 |
+| [`catch-panic`](catch-panic) | 捕获邮件任务中主动触发的 panic，每项任务重试一次，并观测 worker 错误事件。 |
 | [`graceful-shutdown`](graceful-shutdown) | 响应 Ctrl+C，完成当前批次，并在关闭前模拟保存任务状态。 |
 | [`long-running`](long-running) | 通过 `TaskRunner` 并发执行数据导出、收集结果，并在关闭时等待执行中的任务完成。 |
 | [`retries`](retries) | 对普通错误应用指数退避并最多重试三次，同时排除 `AbortError`。 |
@@ -56,7 +56,7 @@ cargo run -p basic --locked
 - **`deps-injection`** 处理十个任务后退出。
 - **`task-context`** 在三秒后请求取消任务，等待 worker 将状态更新为 `Killed` 后自动停止。取消会产生预期的任务错误事件，被取消 handler 的后续代码不会执行。
 - **`worker-context`** 观测一个任务五秒后停止，并等待外部观察任务结束。
-- **`catch-panic`** 持续运行，直到按下 Ctrl+C。它会先打印 panic hook 信息，再上报捕获到的错误，不会发送邮件。
+- **`catch-panic`** 持续运行，直到按下 Ctrl+C。两个任务各 panic 两次：panic 捕获层装箱错误，此处重试策略不会解包，因此会重试一次。输出共包含四条 panic hook 信息和两个 worker 最终错误；不会发送邮件。
 - **`graceful-shutdown`** 持续运行，直到按下 Ctrl+C。它在每个五秒批次结束后检查关闭状态，再用五秒模拟检查点保存，不会实际写入数据。
 - **`long-running`** 并发模拟三个耗时八至十二秒的导出操作。Worker 持续运行，直到按下 Ctrl+C，此时会等待执行中的导出完成并收集结果。
 - **`retries`** 处理三个地址：一个成功执行一次，一个失败并累计执行四次，一个在首次执行时中止。错误均为预期结果。退避使用一秒下限、五秒上限及随机抖动；所有尝试完成后，按 Ctrl+C 停止 worker。
