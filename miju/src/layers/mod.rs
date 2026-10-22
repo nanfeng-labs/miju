@@ -1,5 +1,19 @@
+/// RateLimiting middleware for managing request rates
+#[cfg(feature = "limit")]
+#[cfg_attr(docsrs, doc(cfg(feature = "limit")))]
+pub mod limit {
+    pub use tower::limit::ConcurrencyLimitLayer;
+    pub use tower::limit::GlobalConcurrencyLimitLayer;
+    pub use tower::limit::RateLimitLayer;
+}
+
 use miju_core::{backend::Backend, worker::builder::WorkerBuilder};
 use tower::layer::util::{Identity, Stack};
+
+/// Timeout middleware for managing request timeouts
+#[cfg(feature = "timeout")]
+#[cfg_attr(docsrs, doc(cfg(feature = "timeout")))]
+pub use tower::timeout::TimeoutLayer;
 
 /// An extension trait that extends `WorkerBuilder` with additional middleware methods.
 ///
@@ -19,6 +33,42 @@ pub trait WorkerBuilderExt<Args, Source, Middleware> {
         self,
         f: F,
     ) -> WorkerBuilder<Args, Source, Stack<tower::layer::LayerFn<F>, Middleware>>;
+
+    /// Limits the max number of in-flight requests.
+    #[cfg(feature = "limit")]
+    fn concurrency(
+        self,
+        max: usize,
+    ) -> WorkerBuilder<Args, Source, Stack<tower::limit::ConcurrencyLimitLayer, Middleware>>;
+
+    /// Limits requests to at most `num` per the given duration.
+    #[cfg(feature = "limit")]
+    fn rate_limit(
+        self,
+        num: u64,
+        per: std::time::Duration,
+    ) -> WorkerBuilder<Args, Source, Stack<tower::limit::RateLimitLayer, Middleware>>;
+
+    /// Fails requests that take longer than `timeout`.
+    #[cfg(feature = "timeout")]
+    fn timeout(
+        self,
+        timeout: std::time::Duration,
+    ) -> WorkerBuilder<Args, Source, Stack<tower::timeout::TimeoutLayer, Middleware>>;
+
+    /// Conditionally rejects requests based on `predicate`.
+    #[cfg(feature = "filter")]
+    fn filter<P>(
+        self,
+        predicate: P,
+    ) -> WorkerBuilder<Args, Source, Stack<tower::filter::FilterLayer<P>, Middleware>>;
+
+    /// Conditionally rejects requests based on an asynchronous `predicate`.
+    #[cfg(feature = "filter")]
+    fn filter_async<P>(
+        self,
+        predicate: P,
+    ) -> WorkerBuilder<Args, Source, Stack<tower::filter::AsyncFilterLayer<P>, Middleware>>;
 
     /// Maps one request type to another.
     fn map_request<F, R1, R2>(
@@ -82,6 +132,47 @@ where
         f: F,
     ) -> WorkerBuilder<Args, Source, Stack<tower::layer::LayerFn<F>, Middleware>> {
         self.layer(tower::layer::layer_fn(f))
+    }
+
+    #[cfg(feature = "limit")]
+    fn concurrency(
+        self,
+        max: usize,
+    ) -> WorkerBuilder<Args, Source, Stack<tower::limit::ConcurrencyLimitLayer, Middleware>> {
+        self.layer(tower::limit::ConcurrencyLimitLayer::new(max))
+    }
+
+    #[cfg(feature = "limit")]
+    fn rate_limit(
+        self,
+        num: u64,
+        per: std::time::Duration,
+    ) -> WorkerBuilder<Args, Source, Stack<tower::limit::RateLimitLayer, Middleware>> {
+        self.layer(tower::limit::RateLimitLayer::new(num, per))
+    }
+
+    #[cfg(feature = "timeout")]
+    fn timeout(
+        self,
+        timeout: std::time::Duration,
+    ) -> WorkerBuilder<Args, Source, Stack<tower::timeout::TimeoutLayer, Middleware>> {
+        self.layer(tower::timeout::TimeoutLayer::new(timeout))
+    }
+
+    #[cfg(feature = "filter")]
+    fn filter<P>(
+        self,
+        predicate: P,
+    ) -> WorkerBuilder<Args, Source, Stack<tower::filter::FilterLayer<P>, Middleware>> {
+        self.layer(tower::filter::FilterLayer::new(predicate))
+    }
+
+    #[cfg(feature = "filter")]
+    fn filter_async<P>(
+        self,
+        predicate: P,
+    ) -> WorkerBuilder<Args, Source, Stack<tower::filter::AsyncFilterLayer<P>, Middleware>> {
+        self.layer(tower::filter::AsyncFilterLayer::new(predicate))
     }
 
     fn map_request<F, R1, R2>(

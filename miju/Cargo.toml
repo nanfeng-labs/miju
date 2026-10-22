@@ -16,6 +16,12 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = ["miju-core/default"]
+## Limit concurrent tasks and task processing rates
+limit = ["tower/limit"]
+## Apply timeouts to task execution
+timeout = ["tower/timeout"]
+## Filter tasks with synchronous or asynchronous predicates
+filter = ["tower/filter"]
 ## Track and cancel individual running tasks
 task-context = ["miju-core/task-context"]
 ## Share a backend through cloneable handles
@@ -29,7 +35,7 @@ tower = { version = "0.5.3", features = ["util"], default-features = false }
 document-features = { version = "0.2", optional = true }
 
 [dev-dependencies]
-tokio = { version = "1.53.2", features = ["macros", "rt", "time"] }
+tokio = { version = "1.53.2", features = ["macros", "rt", "time", "test-util"] }
 
 [lints]
 workspace = true

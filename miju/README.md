@@ -82,6 +82,71 @@ Use `miju::prelude::*` for application code. The [`task`], [`backend`], and
 [`error`] modules remain available for explicit imports. Libraries implementing
 backends or worker internals can depend on `miju-core` directly.
 
+## Execution controls
+
+Enable the middleware features your worker needs:
+
+| Feature | Builder methods | Purpose |
+| --- | --- | --- |
+| `limit` | `concurrency`, `rate_limit` | Bound in-flight calls and calls per time period |
+| `timeout` | `timeout` | Return an error when a call exceeds its time limit |
+| `filter` | `filter`, `filter_async` | Accept, modify, or reject a task before the handler runs |
+
+For example, enable all three with:
+
+```toml
+miju = { version = "0.1.0", features = ["limit", "timeout", "filter"] }
+```
+
+The following worker allows up to four in-flight calls, starts at most ten calls
+per second, and rejects zero-valued arguments. The timeout wraps the filter and
+handler because it is added before them.
+
+```rust
+# #[cfg(all(feature = "limit", feature = "timeout", feature = "filter"))]
+# {
+use miju::prelude::*;
+use std::time::Duration;
+
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> Result<(), BoxDynError> {
+    let mut storage = MemoryStorage::new();
+    storage.push(7usize).await?;
+
+    let worker = WorkerBuilder::new("controlled")
+        .backend(storage)
+        .concurrency(4)
+        .rate_limit(10, Duration::from_secs(1))
+        .timeout(Duration::from_secs(1))
+        .filter(|task: Task<usize>| {
+            if task.args == 0 {
+                Err::<_, BoxDynError>("amount must be nonzero".into())
+            } else {
+                Ok(task)
+            }
+        })
+        .build(|amount: usize, worker: WorkerContext| async move {
+            assert_eq!(amount, 7);
+            worker.stop().unwrap();
+        });
+
+    tokio::time::timeout(Duration::from_secs(5), worker.run()).await??;
+    Ok(())
+}
+# main().unwrap();
+# }
+```
+
+`rate_limit` and `timeout` use Tokio timers and require an enabled Tokio time
+driver. A rejected predicate returns an error without calling the handler.
+The timeout drops its inner future when the deadline expires; it cannot preempt
+blocking code or stop work that the handler has spawned independently.
+
+For explicit layer composition, `layers::limit` exposes
+`ConcurrencyLimitLayer`, `GlobalConcurrencyLimitLayer`, and `RateLimitLayer`;
+`layers::TimeoutLayer` provides the timeout layer. Clones of a
+`GlobalConcurrencyLimitLayer` share a concurrency budget across workers.
+
 ## Optional core capabilities
 
 `task-context` exposes `TaskContext` and its completion futures through the
