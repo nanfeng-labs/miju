@@ -29,6 +29,11 @@ pub mod catch_panic;
 #[cfg_attr(docsrs, doc(cfg(feature = "retry")))]
 pub mod retry;
 
+/// Task span factories and tracing context metadata.
+#[cfg(feature = "tracing")]
+#[cfg_attr(docsrs, doc(cfg(feature = "tracing")))]
+pub mod tracing;
+
 /// An extension trait that extends `WorkerBuilder` with additional middleware methods.
 ///
 /// Layers added earlier wrap those added later. Requests pass through them in

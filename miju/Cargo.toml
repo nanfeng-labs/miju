@@ -26,6 +26,8 @@ filter = ["tower/filter"]
 catch-panic = ["dep:futures-util"]
 ## Retry failed tasks immediately or with backoff
 retry = ["tower/retry"]
+## Create task spans and enable core lifecycle tracing
+tracing = ["dep:tracing", "miju-core/tracing"]
 ## Track and cancel individual running tasks
 task-context = ["miju-core/task-context"]
 ## Share a backend through cloneable handles
@@ -40,9 +42,12 @@ document-features = { version = "0.2", optional = true }
 futures-util = { version = "0.3.34", optional = true, default-features = false }
 pin-project = "1"
 thiserror = "2.0.21"
+tracing = { version = "0.1.44", default-features = false, optional = true }
 
 [dev-dependencies]
 tokio = { version = "1.53.2", features = ["macros", "rt", "time", "test-util"] }
+tracing = { version = "0.1.44", default-features = false, features = ["std"] }
+tracing-core = { version = "0.1.36", default-features = false, features = ["std"] }
 
 [lints]
 workspace = true

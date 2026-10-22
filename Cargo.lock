@@ -309,6 +309,8 @@ dependencies = [
  "thiserror",
  "tokio",
  "tower",
+ "tracing",
+ "tracing-core",
 ]
 
 [[package]]

@@ -216,6 +216,19 @@ Panics from readiness checks, the custom panic handler, or separately spawned
 tasks are outside this layer's capture boundary. Rust's panic hook still runs,
 and builds using `panic = "abort"` cannot recover through this middleware.
 
+## Tracing spans
+
+Enable `tracing` for the span factories in `layers::tracing` and core lifecycle
+logs. Configure a tracing subscriber in the application to collect them.
+`DefaultMakeSpan` and `ContextualTaskSpan` create spans under the current span,
+recording the task ID and its attempt count. Both require an assigned task ID.
+`MakeSpan` also accepts a fixed span or a closure for custom fields.
+
+Use `tracing::Instrument` to attach a generated span to an async operation;
+the module includes runnable examples. `TracingContext` re-exports the core
+metadata type for storing explicit trace fields. These factories currently use
+the active span as their parent and do not restore a remote parent from metadata.
+
 ## Optional core capabilities
 
 `task-context` exposes `TaskContext` and its completion futures through the
