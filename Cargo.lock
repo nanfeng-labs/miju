@@ -835,6 +835,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "monitor"
+version = "0.1.0"
+dependencies = [
+ "email-service",
+ "miju",
+ "miju-file-storage",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "nu-ansi-term"
 version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"

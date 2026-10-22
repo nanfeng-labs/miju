@@ -34,6 +34,7 @@ Replace `basic` with any example name below. Some examples exit automatically; o
 | [`retries`](retries) | Apply three retries with exponential backoff to ordinary errors while excluding `AbortError`. |
 | [`unique-jobs`](unique-jobs) | Submit two different payloads with the same idempotency key and process only the first. |
 | [`unmonitored-worker`](unmonitored-worker) | Run a standalone worker with 20 concurrent tasks and stop after its finite batch drains. |
+| [`monitor`](monitor) | Register one worker and five indexed workers, aggregate events, and configure bounded restart and shutdown policies. |
 
 ## Workflows
 
@@ -63,3 +64,5 @@ Replace `basic` with any example name below. Some examples exit automatically; o
 - **`workflow-stepped`** runs welcome, campaign, and completion steps with IDs 1, 2, and 3, then stops automatically. `delay_for(1s)` records a scheduled time, but the in-memory backend does not enforce it: the next step runs immediately. Actual waiting requires a backend that honors scheduling. The worker spawns task futures with a concurrency limit of two; step dependencies still determine execution order.
 - **`workflow-graph`** sends 42, 43, and 44 to the name, age, and address-code entry nodes respectively. These are three inputs to one graph run. The collector receives `("42", 63, 144)`, prints a total of 249, and stops the worker. Its DOT output can be rendered with Graphviz.
 - **`workflow-graph-dynamic`** starts with one source value of 1. Each of 1,000 generated branches adds one; the collector receives 1,000 results, prints their sum of 2,000, and stops automatically. Graph construction happens before execution; this does not demonstrate editing a running graph.
+
+- **`monitor`** submits one task to each of two temporary JSON backends. The five contextual workers use independent file cursors and can process the same entry; this is not a competing-consumer queue. Each handler stops its worker after one second and emits an intentional business error. All six workers normally exit automatically; Ctrl+C can also initiate shutdown with a five-second limit. Business errors do not trigger the worker restart predicate. Context metadata is wired without a provider here; the `tracing` example supplies full trace propagation.

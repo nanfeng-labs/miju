@@ -34,6 +34,7 @@ cargo run -p basic --locked
 | [`retries`](retries) | 对普通错误应用指数退避并最多重试三次，同时排除 `AbortError`。 |
 | [`unique-jobs`](unique-jobs) | 使用相同幂等键提交两个不同载荷，仅执行第一个任务。 |
 | [`unmonitored-worker`](unmonitored-worker) | 以 20 个任务的并发上限独立运行 worker，待有限批次全部完成后自动停止。 |
+| [`monitor`](monitor) | 注册单个及五个带索引的 worker，汇集事件，并配置有次数上限的重启策略与关闭期限。 |
 
 ## 工作流
 
@@ -63,3 +64,5 @@ cargo run -p basic --locked
 - **`workflow-stepped`** 依次执行欢迎、活动、完成三个步骤，对应 ID 为 1、2、3，随后自动停止。`delay_for(1s)` 会记录调度时间，但内存后端不会等待该时间，后续步骤仍立即执行；实际等待需要支持定时调度的后端。Worker 通过 spawn 执行任务，并发上限为二；步骤间的依赖仍决定执行顺序。
 - **`workflow-graph`** 将 42、43、44 分别交给名称、年龄、地址编码三个入口节点，构成一次图执行的三个输入。汇总节点收到 `("42", 63, 144)`，输出总和 249 后停止 worker。输出的 DOT 图可使用 Graphviz 渲染。
 - **`workflow-graph-dynamic`** 从源节点的值 1 开始，1,000 个动态生成的分支分别加一；汇总节点收到 1,000 个结果，输出总和 2,000 后自动停止。图结构在执行前生成，本示例不展示运行期间修改图。
+
+- **`monitor`** 向两个临时 JSON 后端各提交一个任务。五个上下文 worker 具有独立文件游标，可能读取同一条记录，不能据此实现竞争消费。每个 handler 在一秒后停止自身 worker 并返回预期的业务错误，六个 worker 通常会自动退出；也可按 Ctrl+C 发起关闭，最多等待五秒。业务错误不会触发 worker 重启策略。此处只演示元数据接线，完整 trace 传播由 `tracing` 示例展示。
