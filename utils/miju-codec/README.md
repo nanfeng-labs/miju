@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="../../assets/miju-codec-header.svg" alt="miju-codec" width="800" />
+  <img src="../../assets/miju-codec-header.svg" alt="miju-codec" width="480" />
 </p>
 
 <h1 align="center">miju-codec</h1>
