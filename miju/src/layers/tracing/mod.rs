@@ -42,11 +42,17 @@
 //!
 //! # Context and attempt fields
 //!
-//! [`TracingContext`] is the core metadata type. Storing it on a task does not
-//! configure a subscriber or restore a remote parent; the span factories use
-//! the currently active span. They read the attempt count when called and do
-//! not advance it. Both built-in factories require a task ID even when tracing
-//! is disabled by the subscriber.
+//! [`TracingContext`] is the core metadata type. With `opentelemetry` also
+//! enabled, `OtelTraceContext::current()` captures the current OpenTelemetry
+//! context for storage in task metadata, and [`ContextualTaskSpan`] restores a
+//! valid stored context as the new span's parent. This requires an application
+//! subscriber with an OpenTelemetry layer and a compatible text-map propagator.
+//! Missing or invalid metadata leaves the current parent unchanged.
+//!
+//! [`DefaultMakeSpan`] always uses the current span; enabling OpenTelemetry
+//! does not change the default factory used by [`TraceLayer`]. Both factories
+//! read the attempt count without advancing it and require a task ID even when
+//! tracing is disabled by the subscriber.
 
 //!
 //! # Callbacks
@@ -114,6 +120,8 @@ mod make_span;
 mod on_failure;
 mod on_request;
 mod on_response;
+#[cfg(feature = "opentelemetry")]
+mod otel_context;
 
 use miju_core::task::Task;
 use std::{
@@ -133,6 +141,9 @@ pub use self::{
     on_response::{DefaultOnResponse, OnResponse},
 };
 pub use miju_core::task::metadata::TracingContext;
+#[cfg(feature = "opentelemetry")]
+#[cfg_attr(docsrs, doc(cfg(feature = "opentelemetry")))]
+pub use otel_context::OtelTraceContext;
 use tower::Layer;
 
 pub use tracing::{debug, debug_span, error, error_span, info, info_span, trace, trace_span};

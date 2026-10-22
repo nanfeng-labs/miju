@@ -1,13 +1,17 @@
 use miju_core::task::Task;
 use tracing::{Level, Span};
 
+#[cfg(feature = "opentelemetry")]
+use crate::layers::tracing::OtelTraceContext;
 use crate::layers::tracing::{DEFAULT_MESSAGE_LEVEL, MakeSpan};
 
 /// Creates a task span under the currently active span.
 ///
 /// Records `task_id` and the task attempt count, clamped to at least one.
-/// [`TracingContext`] can be stored on a task, but this span factory does not
-/// currently restore a remote parent from that metadata.
+/// With `opentelemetry` enabled, restores a valid [`TracingContext`] from task
+/// metadata as the OpenTelemetry parent. Missing, malformed, or invalid context
+/// leaves the current parent unchanged. The application configures the tracing
+/// subscriber and text-map propagator; storing metadata alone is insufficient.
 ///
 /// # Panics
 ///
@@ -49,6 +53,9 @@ impl Default for ContextualTaskSpan {
 impl<Args> MakeSpan<Args> for ContextualTaskSpan {
     fn make_span(&mut self, req: &Task<Args>) -> Span {
         let task_id = req.task_id().expect("A task must have an ID").to_string();
+        #[cfg(feature = "opentelemetry")]
+        let tracing_ctx: miju_core::task::metadata::TracingContext =
+            miju_core::task::metadata::Metadata::extract(req.metadata()).unwrap_or_default();
         let attempt = req.attempt();
         let span = Span::current();
         // The current attempt cannot be 0 since we are in an attempt.
@@ -66,12 +73,17 @@ impl<Args> MakeSpan<Args> for ContextualTaskSpan {
             };
         }
 
-        match self.level {
+        let span = match self.level {
             Level::ERROR => make_span!(Level::ERROR),
             Level::WARN => make_span!(Level::WARN),
             Level::INFO => make_span!(Level::INFO),
             Level::DEBUG => make_span!(Level::DEBUG),
             Level::TRACE => make_span!(Level::TRACE),
-        }
+        };
+
+        #[cfg(feature = "opentelemetry")]
+        OtelTraceContext::from(tracing_ctx).restore(&span);
+
+        span
     }
 }

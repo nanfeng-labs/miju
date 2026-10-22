@@ -39,6 +39,11 @@ pub mod tracing;
 #[cfg_attr(docsrs, doc(cfg(feature = "prometheus")))]
 pub mod prometheus;
 
+/// OpenTelemetry middleware for completed task counts and processing durations.
+#[cfg(feature = "opentelemetry")]
+#[cfg_attr(docsrs, doc(cfg(feature = "opentelemetry")))]
+pub mod opentelemetry;
+
 /// An extension trait that extends `WorkerBuilder` with additional middleware methods.
 ///
 /// Layers added earlier wrap those added later. Requests pass through them in

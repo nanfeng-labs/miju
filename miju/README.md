@@ -258,8 +258,9 @@ recording the task ID and its attempt count. Both require an assigned task ID.
 
 Use `tracing::Instrument` to attach a generated span to an async operation;
 the module includes runnable examples. `TracingContext` re-exports the core
-metadata type for storing explicit trace fields. These factories currently use
-the active span as their parent and do not restore a remote parent from metadata.
+metadata type for storing explicit trace fields. With `opentelemetry` also
+enabled, `ContextualTaskSpan` can restore a stored remote parent. The default
+factory continues to use the active span.
 
 ## Prometheus metrics
 
@@ -275,6 +276,24 @@ using `metrics-exporter-prometheus`, including histogram buckets and recorder
 upkeep. Enable the `prometheus` feature to access that module. Exporter transport
 features are disabled by default, so enabling this middleware does not start an
 HTTP listener or push gateway.
+
+## OpenTelemetry
+
+Enable `opentelemetry` and add
+`miju::layers::opentelemetry::OpenTelemetryMetricsLayer::default()` with
+`.layer(...)` to record completed task counts and processing durations. Install
+the application's global meter provider before constructing the worker; the
+layer creates its instruments when it wraps the service. Exporters and their
+flush/shutdown lifecycle remain application-owned.
+
+For distributed traces, also enable `tracing`, configure a tracing subscriber
+with `tracing-opentelemetry`, and install a compatible text-map propagator.
+Capture `OtelTraceContext::current()` on the producer, convert it into
+`TracingContext`, and store it using `TaskBuilder::metadata`. On the consumer,
+use `TraceLayer::new().make_span_with(ContextualTaskSpan::new())`. The
+`OtelTraceContext` documentation contains a runnable propagation example.
+Enabling `opentelemetry` alone does not enable the tracing module or switch the
+default span factory.
 
 ## Worker configuration
 
