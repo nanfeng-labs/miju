@@ -1,4 +1,8 @@
-# miju-core
+<p align="center">
+  <img src="../assets/miju-core-header.svg" alt="miju-core" width="800" />
+</p>
+
+<h1 align="center">miju-core</h1>
 
 Task backends and worker execution for background processing in Rust.
 

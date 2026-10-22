@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- feat(examples): add usage examples and project documentation ([#10](https://github.com/nanfeng-labs/miju/pull/10))
 - feat(miju): complete facade implementation ([#9](https://github.com/nanfeng-labs/miju/pull/9))
 - feat(workflow): add sequential and graph execution ([#8](https://github.com/nanfeng-labs/miju/pull/8))
 - fix(ci): prepare PR metadata before required checks ([#7](https://github.com/nanfeng-labs/miju/pull/7))

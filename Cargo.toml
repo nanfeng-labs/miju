@@ -1,6 +1,8 @@
 [workspace]
 resolver = "2"
-members = ["miju", "miju-*", "utils/*"]
+members = ["miju", "miju-*", "utils/*", "examples/*"]
+# Only check / build main crates by default (check all with `--workspace`)
+default-members = ["miju", "miju-*"]
 
 [workspace.package]
 authors = ["RivTian <tianjun.rio@gmail.com>"]
