@@ -11,6 +11,11 @@
 /// Middleware built on Tower's [`Layer`](prelude::Layer) trait.
 pub mod layers;
 
+/// Worker configuration utilities allowing easier worker decoration.
+#[cfg(feature = "config")]
+#[cfg_attr(docsrs, doc(cfg(feature = "config")))]
+pub mod config;
+
 pub use miju_core::task::Task;
 pub use miju_core::{backend, error, task};
 

@@ -261,6 +261,39 @@ the module includes runnable examples. `TracingContext` re-exports the core
 metadata type for storing explicit trace fields. These factories currently use
 the active span as their parent and do not restore a remote parent from metadata.
 
+## Worker configuration
+
+Enable `config` to construct a worker from `WorkerConfig` using
+`WorkerFromConfig::try_config`. The configuration contains the worker name,
+the backend's own configuration, and a set of middleware descriptors. Parsing
+and backend construction are separate; applications choose a Serde-compatible
+format when loading configuration.
+
+```rust
+# #[cfg(feature = "config")]
+# fn main() -> Result<(), miju::error::BoxDynError> {
+use miju::{config::{WorkerConfig, WorkerFromConfig}, prelude::*};
+use std::collections::HashSet;
+
+let config = WorkerConfig::<MemoryStorage<usize>> {
+    name: "configured-worker".to_owned(),
+    backend: (),
+    middleware: HashSet::new(),
+};
+let _worker = WorkerBuilder::try_config(config)?
+    .build(|value: usize| async move { value * 2 });
+# Ok(())
+# }
+# #[cfg(not(feature = "config"))]
+# fn main() {}
+```
+
+This constructs a worker with a new, empty in-memory queue. Middleware variants
+require their corresponding `timeout`, `limit`, `catch-panic`, or `tracing`
+feature. `config` does not enable them automatically. `MiddlewareStack` can also
+decorate an existing backend; the `config` module documents its fixed ordering,
+serialized fields, and construction requirements.
+
 ## Optional core capabilities
 
 `task-context` exposes `TaskContext` and its completion futures through the

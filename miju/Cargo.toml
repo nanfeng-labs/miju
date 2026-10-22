@@ -28,6 +28,8 @@ catch-panic = ["dep:futures-util"]
 retry = ["tower/retry"]
 ## Trace task processing and emit core lifecycle logs
 tracing = ["dep:tracing", "miju-core/tracing"]
+## Construct workers and middleware from configuration
+config = ["dep:serde"]
 ## Track and cancel individual running tasks
 task-context = ["miju-core/task-context"]
 ## Share a backend through cloneable handles
@@ -43,11 +45,13 @@ futures-util = { version = "0.3.34", optional = true, default-features = false }
 pin-project = "1"
 thiserror = "2.0.21"
 tracing = { version = "0.1.44", default-features = false, optional = true }
+serde = { version = "1", optional = true, features = ["derive"] }
 
 [dev-dependencies]
 tokio = { version = "1.53.2", features = ["macros", "rt", "time", "test-util"] }
 tracing = { version = "0.1.44", default-features = false, features = ["std"] }
 tracing-core = { version = "0.1.36", default-features = false, features = ["std"] }
+serde_json = "1.0"
 
 [lints]
 workspace = true

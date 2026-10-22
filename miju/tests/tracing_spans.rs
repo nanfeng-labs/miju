@@ -772,3 +772,45 @@ async fn retry_layer_order_controls_per_attempt_or_combined_reporting() {
         .await;
     }
 }
+
+#[cfg(all(feature = "config", feature = "timeout"))]
+#[tokio::test(start_paused = true)]
+async fn configured_tracing_observes_timeout_failures_regardless_of_input_order() {
+    use miju::config::{Middleware, MiddlewareStack};
+    use std::{collections::HashSet, io, time::Duration};
+
+    let timeout = Middleware::Timeout {
+        duration: Duration::from_secs(1),
+    };
+    for descriptors in [
+        [timeout, Middleware::Tracing],
+        [Middleware::Tracing, timeout],
+    ] {
+        let recorder = Arc::new(Recorder::default());
+        async {
+            let service = MiddlewareStack::<MemoryStorage<()>>::new(HashSet::from(descriptors))
+                .layer(tower::service_fn(|_: Task<()>| {
+                    std::future::pending::<io::Result<()>>()
+                }));
+            let task = TaskBuilder::new(())
+                .task_id("configured-timeout".to_owned().into())
+                .build();
+            let error = tokio::time::timeout(Duration::from_secs(5), service.oneshot(task))
+                .await
+                .unwrap()
+                .unwrap_err();
+            assert!(
+                error
+                    .downcast_ref::<tower::timeout::error::Elapsed>()
+                    .is_some()
+            );
+            let events = recorder.events();
+            assert_eq!(events.len(), 2);
+            assert_eq!(events[0].fields.0["message"], "task.start");
+            assert_eq!(events[1].fields.0["message"], "task.failed");
+            assert_eq!(events[0].parent, events[1].parent);
+        }
+        .with_subscriber(recorder.clone())
+        .await;
+    }
+}
