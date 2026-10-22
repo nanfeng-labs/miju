@@ -40,6 +40,7 @@ Replace `basic` with any example name below. Some examples exit automatically; o
 | --- | --- |
 | [`workflow-stepped`](workflow-stepped) | Pass typed results through three steps, configure a continuation delay, and inject a shared backend into each handler. |
 | [`workflow-graph`](workflow-graph) | Distribute entry inputs to three graph nodes, collect a typed dependency tuple, and print the graph as DOT. |
+| [`workflow-graph-dynamic`](workflow-graph-dynamic) | Generate 1,000 dependent nodes, validate the DAG, and collect their results through a vector of node handles. |
 
 ## Shared example support
 
@@ -59,3 +60,4 @@ Replace `basic` with any example name below. Some examples exit automatically; o
 - **`unmonitored-worker`** processes 100 five-second tasks with a concurrency limit of 20, then stops its worker. Its `run_until` call still waits for Ctrl+C before the process exits. Pressing Ctrl+C earlier drains active tasks and leaves any unstarted tasks unprocessed.
 - **`workflow-stepped`** runs welcome, campaign, and completion steps with IDs 1, 2, and 3, then stops automatically. `delay_for(1s)` records a scheduled time, but the in-memory backend does not enforce it: the next step runs immediately. Actual waiting requires a backend that honors scheduling. The worker spawns task futures with a concurrency limit of two; step dependencies still determine execution order.
 - **`workflow-graph`** sends 42, 43, and 44 to the name, age, and address-code entry nodes respectively. These are three inputs to one graph run. The collector receives `("42", 63, 144)`, prints a total of 249, and stops the worker. Its DOT output can be rendered with Graphviz.
+- **`workflow-graph-dynamic`** starts with one source value of 1. Each of 1,000 generated branches adds one; the collector receives 1,000 results, prints their sum of 2,000, and stops automatically. Graph construction happens before execution; this does not demonstrate editing a running graph.

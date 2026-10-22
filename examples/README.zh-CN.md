@@ -40,6 +40,7 @@ cargo run -p basic --locked
 | --- | --- |
 | [`workflow-stepped`](workflow-stepped) | 在三个步骤间传递不同类型的结果，配置后续步骤的延迟，并向各 handler 注入共享后端。 |
 | [`workflow-graph`](workflow-graph) | 将入口参数分发给三个图节点，以类型化元组收集依赖结果，并输出 DOT 图。 |
+| [`workflow-graph-dynamic`](workflow-graph-dynamic) | 生成 1,000 个依赖节点，校验 DAG，并通过节点句柄向量收集结果。 |
 
 ## 共享示例支持
 
@@ -59,3 +60,4 @@ cargo run -p basic --locked
 - **`unmonitored-worker`** 以 20 个任务的并发上限处理 100 个耗时五秒的任务，全部完成后停止 worker；此时 `run_until` 仍会等待 Ctrl+C，收到信号后进程才退出。提前按 Ctrl+C 会等待活动任务完成，尚未开始的任务不会继续执行。
 - **`workflow-stepped`** 依次执行欢迎、活动、完成三个步骤，对应 ID 为 1、2、3，随后自动停止。`delay_for(1s)` 会记录调度时间，但内存后端不会等待该时间，后续步骤仍立即执行；实际等待需要支持定时调度的后端。Worker 通过 spawn 执行任务，并发上限为二；步骤间的依赖仍决定执行顺序。
 - **`workflow-graph`** 将 42、43、44 分别交给名称、年龄、地址编码三个入口节点，构成一次图执行的三个输入。汇总节点收到 `("42", 63, 144)`，输出总和 249 后停止 worker。输出的 DOT 图可使用 Graphviz 渲染。
+- **`workflow-graph-dynamic`** 从源节点的值 1 开始，1,000 个动态生成的分支分别加一；汇总节点收到 1,000 个结果，输出总和 2,000 后自动停止。图结构在执行前生成，本示例不展示运行期间修改图。
