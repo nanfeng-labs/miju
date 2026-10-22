@@ -7,6 +7,10 @@ pub mod limit {
     pub use tower::limit::RateLimitLayer;
 }
 
+#[cfg(feature = "catch-panic")]
+use catch_panic::CatchPanicLayer;
+#[cfg(feature = "catch-panic")]
+use miju_core::error::AbortError;
 use miju_core::{backend::Backend, worker::builder::WorkerBuilder};
 use tower::layer::util::{Identity, Stack};
 
@@ -14,6 +18,11 @@ use tower::layer::util::{Identity, Stack};
 #[cfg(feature = "timeout")]
 #[cfg_attr(docsrs, doc(cfg(feature = "timeout")))]
 pub use tower::timeout::TimeoutLayer;
+
+/// CatchPanic middleware for handling panics
+#[cfg(feature = "catch-panic")]
+#[cfg_attr(docsrs, doc(cfg(feature = "catch-panic")))]
+pub mod catch_panic;
 
 /// An extension trait that extends `WorkerBuilder` with additional middleware methods.
 ///
@@ -113,6 +122,21 @@ pub trait WorkerBuilderExt<Args, Source, Middleware> {
         self,
         f: F,
     ) -> WorkerBuilder<Args, Source, Stack<tower::util::MapResultLayer<F>, Middleware>>;
+
+    /// Catch panics in execution and pipe them as errors
+    #[cfg(feature = "catch-panic")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "catch-panic")))]
+    #[allow(clippy::type_complexity)]
+    fn catch_panic(
+        self,
+    ) -> WorkerBuilder<
+        Args,
+        Source,
+        Stack<
+            CatchPanicLayer<fn(&Box<dyn std::any::Any + Send>) -> AbortError, AbortError>,
+            Middleware,
+        >,
+    >;
 }
 
 impl<Args, Source, Middleware> WorkerBuilderExt<Args, Source, Middleware>
@@ -225,5 +249,21 @@ where
         f: F,
     ) -> WorkerBuilder<Args, Source, Stack<tower::util::MapResultLayer<F>, Middleware>> {
         self.layer(tower::util::MapResultLayer::new(f))
+    }
+
+    /// Catch panics in execution and pipe them as errors
+    #[cfg(feature = "catch-panic")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "catch-panic")))]
+    fn catch_panic(
+        self,
+    ) -> WorkerBuilder<
+        Args,
+        Source,
+        Stack<
+            CatchPanicLayer<fn(&Box<dyn std::any::Any + Send>) -> AbortError, AbortError>,
+            Middleware,
+        >,
+    > {
+        self.layer(CatchPanicLayer::new())
     }
 }

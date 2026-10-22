@@ -147,6 +147,19 @@ For explicit layer composition, `layers::limit` exposes
 `layers::TimeoutLayer` provides the timeout layer. Clones of a
 `GlobalConcurrencyLimitLayer` share a concurrency budget across workers.
 
+## Panic handling
+
+Enable `catch-panic` and add `.catch_panic()` to the worker builder to convert
+unwinding panics during service calls and future polling into `AbortError`
+values containing a `PanicError`. Successful responses and ordinary service
+errors pass through. Use `CatchPanicLayer::with_panic_handler` to choose the
+error produced from a panic payload. The `layers::catch_panic` module includes
+examples of both forms.
+
+Panics from readiness checks, the custom panic handler, or separately spawned
+tasks are outside this layer's capture boundary. Rust's panic hook still runs,
+and builds using `panic = "abort"` cannot recover through this middleware.
+
 ## Optional core capabilities
 
 `task-context` exposes `TaskContext` and its completion futures through the

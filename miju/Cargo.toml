@@ -22,6 +22,8 @@ limit = ["tower/limit"]
 timeout = ["tower/timeout"]
 ## Filter tasks with synchronous or asynchronous predicates
 filter = ["tower/filter"]
+## Catch unwinding panics during task execution and convert them to errors
+catch-panic = ["dep:futures-util"]
 ## Track and cancel individual running tasks
 task-context = ["miju-core/task-context"]
 ## Share a backend through cloneable handles
@@ -33,6 +35,8 @@ docsrs = ["dep:document-features"]
 miju-core = { version = "0.1.0", default-features = false }
 tower = { version = "0.5.3", features = ["util"], default-features = false }
 document-features = { version = "0.2", optional = true }
+futures-util = { version = "0.3.34", optional = true, default-features = false }
+pin-project = "1"
 
 [dev-dependencies]
 tokio = { version = "1.53.2", features = ["macros", "rt", "time", "test-util"] }
