@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="../assets/miju-workflow-header.svg" alt="miju-workflow" width="800" />
+  <img src="../assets/miju-workflow-header.svg" alt="miju-workflow" width="480" />
 </p>
 
 <h1 align="center">miju-workflow</h1>
