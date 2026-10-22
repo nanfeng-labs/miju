@@ -26,7 +26,7 @@ filter = ["tower/filter"]
 catch-panic = ["dep:futures-util"]
 ## Retry failed tasks immediately or with backoff
 retry = ["tower/retry"]
-## Create task spans and enable core lifecycle tracing
+## Trace task processing and emit core lifecycle logs
 tracing = ["dep:tracing", "miju-core/tracing"]
 ## Track and cancel individual running tasks
 task-context = ["miju-core/task-context"]

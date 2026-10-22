@@ -3,7 +3,8 @@ use tracing::{Level, Span};
 
 use super::DEFAULT_MESSAGE_LEVEL;
 
-/// Trait used to generate [`Span`]s from task requests.
+/// Trait used to generate [`Span`]s from task requests. [`Trace`](super::Trace)
+/// wraps request handling in this span.
 ///
 /// [`Span`]: tracing::Span
 pub trait MakeSpan<Args> {

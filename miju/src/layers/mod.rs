@@ -29,7 +29,7 @@ pub mod catch_panic;
 #[cfg_attr(docsrs, doc(cfg(feature = "retry")))]
 pub mod retry;
 
-/// Task span factories and tracing context metadata.
+/// Task tracing middleware, span factories, and event callbacks.
 #[cfg(feature = "tracing")]
 #[cfg_attr(docsrs, doc(cfg(feature = "tracing")))]
 pub mod tracing;
@@ -154,6 +154,11 @@ pub trait WorkerBuilderExt<Args, Source, Middleware> {
             Middleware,
         >,
     >;
+
+    /// Enable tracing via tracing crate
+    #[cfg(feature = "tracing")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "tracing")))]
+    fn enable_tracing(self) -> WorkerBuilder<Args, Source, Stack<tracing::TraceLayer, Middleware>>;
 }
 
 impl<Args, Source, Middleware> WorkerBuilderExt<Args, Source, Middleware>
@@ -290,5 +295,14 @@ where
         >,
     > {
         self.layer(CatchPanicLayer::new())
+    }
+
+    /// Enable tracing via tracing crate
+    #[cfg(feature = "tracing")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "tracing")))]
+    fn enable_tracing(self) -> WorkerBuilder<Args, Source, Stack<tracing::TraceLayer, Middleware>> {
+        use tracing::TraceLayer;
+
+        self.layer(TraceLayer::new())
     }
 }

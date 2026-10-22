@@ -216,10 +216,42 @@ Panics from readiness checks, the custom panic handler, or separately spawned
 tasks are outside this layer's capture boundary. Rust's panic hook still runs,
 and builds using `panic = "abort"` cannot recover through this middleware.
 
-## Tracing spans
+## Task tracing
 
-Enable `tracing` for the span factories in `layers::tracing` and core lifecycle
-logs. Configure a tracing subscriber in the application to collect them.
+Enable `tracing` and call `enable_tracing()` to wrap task processing in spans
+with start, success, and failure events. Configure a tracing subscriber in the
+application to collect these events and core lifecycle logs.
+
+```rust
+# #[cfg(feature = "tracing")]
+# #[tokio::main(flavor = "current_thread")]
+# async fn main() -> Result<(), Box<dyn std::error::Error>> {
+use miju::prelude::*;
+
+let mut backend = MemoryStorage::new();
+backend.push(7usize).await?;
+let worker = WorkerBuilder::new("traced-worker")
+    .backend(backend)
+    .enable_tracing()
+    .build(|value: usize, worker: WorkerContext| async move {
+        tracing::info!(value, "processing task");
+        worker.stop().unwrap();
+        value * 2
+    });
+worker.run().await?;
+# Ok(())
+# }
+# #[cfg(not(feature = "tracing"))]
+# fn main() {}
+```
+
+Use `layer(TraceLayer::new()...)` to customize the span factory and callbacks.
+Default events are `task.start` and `task.done` at DEBUG and `task.failed` at ERROR.
+Completion events record latency and the result; callbacks can choose different
+fields or levels. Readiness errors and unfinished futures dropped before
+completion do not produce completion events. The `layers::tracing` module
+documents callback timing and how layer order changes retry reporting.
+
 `DefaultMakeSpan` and `ContextualTaskSpan` create spans under the current span,
 recording the task ID and its attempt count. Both require an assigned task ID.
 `MakeSpan` also accepts a fixed span or a closure for custom fields.
