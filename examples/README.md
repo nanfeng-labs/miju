@@ -22,6 +22,7 @@ Replace `basic` with any example name below. Some examples exit automatically; o
 | [`deps-injection`](deps-injection) | Extract task metadata, share a counter through `Data`, and provide a custom `FromRequest` argument. |
 | [`task-context`](task-context) | Cancel a task through a cloned `TaskContext`, await execution notification, and observe its `Killed` status. |
 | [`worker-context`](worker-context) | Look up a running task and observe its worker through a shared `WorkerContext`. |
+| [`advanced`](advanced) | Compose client-injecting middleware, shared API quota and cache, deferred maintenance, panic capture, and retries. |
 
 ## Execution and shutdown
 
@@ -49,6 +50,7 @@ Replace `basic` with any example name below. Some examples exit automatically; o
 ## Runtime behavior
 
 - **`basic`** exits after processing its task.
+- **`advanced`** queues ten emails; its ten-call budget permits five validated deliveries before readiness blocks. The handler then cancels its task, producing expected task errors. Cache refresh runs independently after execution notification, including cancellation. There is no quota refill; wait for the refresh logs, then press Ctrl+C. See its [guide](advanced/README.md) for cache paths, cancellation semantics, and shutdown limits.
 - **`deps-injection`** exits after ten tasks.
 - **`task-context`** requests cancellation after three seconds, waits for the worker to record `Killed`, then stops automatically. The cancellation produces an expected task error event; the rest of the cancelled handler never runs.
 - **`worker-context`** observes one task for five seconds, then stops and waits for the external observer to finish.

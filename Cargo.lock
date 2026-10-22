@@ -3,6 +3,18 @@
 version = 4
 
 [[package]]
+name = "advanced"
+version = "0.1.0"
+dependencies = [
+ "email-service",
+ "miju",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "aho-corasick"
 version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"

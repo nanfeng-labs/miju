@@ -22,6 +22,7 @@ cargo run -p basic --locked
 | [`deps-injection`](deps-injection) | 提取任务元数据，通过 `Data` 共享计数器，并通过 `FromRequest` 提供自定义参数。 |
 | [`task-context`](task-context) | 通过克隆的 `TaskContext` 取消任务，等待执行结束通知，并观察 `Killed` 状态。 |
 | [`worker-context`](worker-context) | 查询正在执行的任务，并通过共享的 `WorkerContext` 从外部观测 worker。 |
+| [`advanced`](advanced) | 组合客户端注入中间件、共享 API 额度与缓存、后台维护、panic 捕获及重试。 |
 
 ## 执行与关闭
 
@@ -49,6 +50,7 @@ cargo run -p basic --locked
 ## 运行与退出行为
 
 - **`basic`** 处理完任务后自动退出。
+- **`advanced`** 入队十封邮件，十次 API 额度允许五次带校验的模拟投递，随后中间件暂停接收。Handler 在投递后主动取消任务，因此会出现预期的“任务已取消，无法完成”错误。缓存刷新在任务执行结束通知后独立运行，取消也会触发该通知。额度不会补充；等待刷新日志后按 Ctrl+C。初始载荷均为不同地址，因此运行时走缓存未命中路径；命中有效地址只扣一次额度，命中无效地址直接失败。取消不能撤销投递，过早退出也可能丢弃后台刷新，详见[示例说明](advanced/README.md)。
 - **`deps-injection`** 处理十个任务后退出。
 - **`task-context`** 在三秒后请求取消任务，等待 worker 将状态更新为 `Killed` 后自动停止。取消会产生预期的任务错误事件，被取消 handler 的后续代码不会执行。
 - **`worker-context`** 观测一个任务五秒后停止，并等待外部观察任务结束。
