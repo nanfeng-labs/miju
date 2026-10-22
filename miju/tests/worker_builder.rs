@@ -110,6 +110,52 @@ async fn result_layers_handle_success_and_failure() {
     }
 }
 
+#[cfg(all(
+    feature = "limit",
+    feature = "tracing",
+    feature = "retry",
+    feature = "timeout",
+    feature = "catch-panic"
+))]
+#[tokio::test(start_paused = true)]
+async fn composed_middleware_retries_a_timed_out_attempt_and_completes_the_task() {
+    let mut storage = MemoryStorage::new();
+    let task = TaskBuilder::new(7usize).task_id(1u64.into()).build();
+    storage.push_task(task.clone()).await.unwrap();
+    let observed = Arc::new(Mutex::new(None));
+    let output = observed.clone();
+
+    let worker = WorkerBuilder::new("composed-retry")
+        .backend(storage)
+        .concurrency(1)
+        .enable_tracing()
+        .retry(RetryPolicy::retries(1))
+        .timeout(Duration::from_secs(1))
+        .catch_panic()
+        .on_event(move |worker, event| match event {
+            Event::Success(value) => {
+                *output.lock().unwrap() = Some(*value.downcast_ref::<usize>().unwrap());
+                worker.stop().unwrap();
+            }
+            Event::Error(error) => panic!("{error}"),
+            _ => {}
+        })
+        .build(|value: usize, attempt: Attempt| async move {
+            if attempt.current() == 1 {
+                std::future::pending::<()>().await;
+            }
+            value * 2
+        });
+
+    tokio::time::timeout(Duration::from_secs(5), worker.run())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(*observed.lock().unwrap(), Some(14));
+    assert_eq!(task.attempt(), 2);
+    assert_eq!(task.status(), Status::Done);
+}
+
 async fn add_one<F>(future: F) -> Result<usize, BoxDynError>
 where
     F: Future<Output = Result<usize, BoxDynError>>,

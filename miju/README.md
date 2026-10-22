@@ -62,6 +62,33 @@ persist tasks. Use a backend with the capabilities your application needs.
 Backend traits describe those capabilities; importing a trait does not make
 every backend implement it.
 
+## Choosing features
+
+The default features enable `tracing`, `catch-panic`, `limit`, `timeout`,
+`retry`, `config`, and the core defaults. They make the middleware APIs
+available; each worker applies middleware through its builder or configuration.
+The application installs tracing subscribers and other telemetry clients.
+
+Default builds require Rust 1.85. The `sentry` and `full` features require Rust
+1.89 because they enable UUID task-ID conversion.
+
+| Selection | Enabled capabilities |
+| --- | --- |
+| Default | Core defaults, tracing, panic capture, limits, timeouts, retries, and worker configuration |
+| `default-features = false` | Core types, worker execution, and the ungated builder composition methods |
+| `full` | Default features, Sentry, Prometheus, OpenTelemetry, filtering, and task tracking |
+| `shared` | Cloneable backend handles; enable separately when using `full` |
+| `docsrs` | Generated feature documentation; enable separately when using `full` |
+
+For a smaller configuration, select only the features the application uses:
+
+```toml
+miju = { version = "0.1.0", default-features = false, features = ["timeout"] }
+```
+
+`full` does not enable `shared` or `docsrs`; Cargo's `--all-features` enables
+both as well. Core serialization is available through `miju-core/serde`.
+
 ## Task processing
 
 - [`Task`](prelude::Task) holds the payload and execution context.
@@ -84,7 +111,8 @@ backends or worker internals can depend on `miju-core` directly.
 
 ## Execution controls
 
-Enable the middleware features your worker needs:
+The default features include limits and timeouts. Enable `filter` when the
+worker needs predicates:
 
 | Feature | Builder methods | Purpose |
 | --- | --- | --- |
@@ -92,10 +120,10 @@ Enable the middleware features your worker needs:
 | `timeout` | `timeout` | Return an error when a call exceeds its time limit |
 | `filter` | `filter`, `filter_async` | Accept, modify, or reject a task before the handler runs |
 
-For example, enable all three with:
+For example, add filtering to the defaults with:
 
 ```toml
-miju = { version = "0.1.0", features = ["limit", "timeout", "filter"] }
+miju = { version = "0.1.0", features = ["filter"] }
 ```
 
 The following worker allows up to four in-flight calls, starts at most ten calls
@@ -149,13 +177,19 @@ For explicit layer composition, `layers::limit` exposes
 
 ## Retries
 
-Enable `retry` to use `.retry(policy)` and the retry policies exported by the
-prelude. `RetryPolicy::retries(n)` allows up to `n` retries after the first
-execution; `RetryPolicy::default()` allows five. A successful result, a killed
-task, or a worker already shutting down prevents another retry decision.
+The default features include `retry`, which provides `.retry(policy)` and the
+retry policies exported by the prelude. `RetryPolicy::retries(n)` allows up to
+`n` retries after the first execution; `RetryPolicy::default()` allows five.
+A successful result, a killed task, or a worker already shutting down prevents
+another retry decision.
+
+This worker uses the default middleware APIs. The concurrency limit covers a
+task's entire retry sequence. Tracing wraps that sequence, while the timeout
+and panic capture apply inside each attempt. Reversing the timeout and retry
+layers would give the whole sequence a single timeout budget.
 
 ```rust
-# #[cfg(feature = "retry")]
+# #[cfg(all(feature = "retry", feature = "limit", feature = "tracing", feature = "timeout", feature = "catch-panic"))]
 # {
 use miju::prelude::*;
 use std::time::Duration;
@@ -167,7 +201,11 @@ async fn main() -> Result<(), BoxDynError> {
 
     let worker = WorkerBuilder::new("retrying")
         .backend(storage)
+        .concurrency(4)
+        .enable_tracing()
         .retry(RetryPolicy::retries(2))
+        .timeout(Duration::from_secs(1))
+        .catch_panic()
         .on_event(|worker, event| match event {
             Event::Success(_) => worker.stop().unwrap(),
             Event::Error(error) => panic!("{error}"),
@@ -205,7 +243,7 @@ finish within a deadline.
 
 ## Panic handling
 
-Enable `catch-panic` and add `.catch_panic()` to the worker builder to convert
+The default `catch-panic` feature provides `.catch_panic()` to convert
 unwinding panics during service calls and future polling into `AbortError`
 values containing a `PanicError`. Successful responses and ordinary service
 errors pass through. Use `CatchPanicLayer::with_panic_handler` to choose the
@@ -218,7 +256,7 @@ and builds using `panic = "abort"` cannot recover through this middleware.
 
 ## Task tracing
 
-Enable `tracing` and call `enable_tracing()` to wrap task processing in spans
+With the default `tracing` feature, call `enable_tracing()` to wrap processing in spans
 with start, success, and failure events. Configure a tracing subscriber in the
 application to collect these events and core lifecycle logs.
 
@@ -311,7 +349,7 @@ boxed-error requirement for direct Tower services.
 
 ## Worker configuration
 
-Enable `config` to construct a worker from `WorkerConfig` using
+The default `config` feature provides construction from `WorkerConfig` using
 `WorkerFromConfig::try_config`. The configuration contains the worker name,
 the backend's own configuration, and a set of middleware descriptors. Parsing
 and backend construction are separate; applications choose a Serde-compatible

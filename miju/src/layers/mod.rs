@@ -19,32 +19,26 @@ use tower::layer::util::{Identity, Stack};
 #[cfg_attr(docsrs, doc(cfg(feature = "timeout")))]
 pub use tower::timeout::TimeoutLayer;
 
-/// CatchPanic middleware for handling panics
 #[cfg(feature = "catch-panic")]
 #[cfg_attr(docsrs, doc(cfg(feature = "catch-panic")))]
 pub mod catch_panic;
 
-/// Retry middleware for instant and backoff retries
 #[cfg(feature = "retry")]
 #[cfg_attr(docsrs, doc(cfg(feature = "retry")))]
 pub mod retry;
 
-/// Task tracing middleware, span factories, and event callbacks.
 #[cfg(feature = "tracing")]
 #[cfg_attr(docsrs, doc(cfg(feature = "tracing")))]
 pub mod tracing;
 
-/// Prometheus middleware for task counts and processing durations.
 #[cfg(feature = "prometheus")]
 #[cfg_attr(docsrs, doc(cfg(feature = "prometheus")))]
 pub mod prometheus;
 
-/// OpenTelemetry middleware for completed task counts and processing durations.
 #[cfg(feature = "opentelemetry")]
 #[cfg_attr(docsrs, doc(cfg(feature = "opentelemetry")))]
 pub mod opentelemetry;
 
-/// Sentry error reporting and performance transactions for tasks.
 #[cfg(feature = "sentry")]
 #[cfg_attr(docsrs, doc(cfg(feature = "sentry")))]
 pub mod sentry;

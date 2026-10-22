@@ -15,7 +15,15 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
-default = ["miju-core/default"]
+default = [
+    "tracing",
+    "catch-panic",
+    "limit",
+    "timeout",
+    "retry",
+    "miju-core/default",
+    "config",
+]
 ## Limit concurrent tasks and task processing rates
 limit = ["tower/limit"]
 ## Apply timeouts to task execution
@@ -45,6 +53,21 @@ sentry = ["dep:sentry-core", "dep:uuid", "miju-core/uuid"]
 task-context = ["miju-core/task-context"]
 ## Share a backend through cloneable handles
 shared = ["miju-core/shared"]
+## Enable middleware integrations and task tracking (requires Rust 1.89)
+full = [
+    "default",
+    "sentry",
+    "prometheus",
+    "opentelemetry",
+    "tracing",
+    "retry",
+    "timeout",
+    "limit",
+    "filter",
+    "catch-panic",
+    "config",
+    "task-context",
+]
 ## Generate the feature flag reference when building documentation
 docsrs = ["dep:document-features"]
 
