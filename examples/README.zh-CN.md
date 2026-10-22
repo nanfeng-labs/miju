@@ -34,6 +34,12 @@ cargo run -p basic --locked
 | [`unique-jobs`](unique-jobs) | 使用相同幂等键提交两个不同载荷，仅执行第一个任务。 |
 | [`unmonitored-worker`](unmonitored-worker) | 以 20 个任务的并发上限独立运行 worker，待有限批次全部完成后自动停止。 |
 
+## 工作流
+
+| 示例 | 场景 |
+| --- | --- |
+| [`workflow-stepped`](workflow-stepped) | 在三个步骤间传递不同类型的结果，配置后续步骤的延迟，并向各 handler 注入共享后端。 |
+
 ## 共享示例支持
 
 [`email-service`](email-service) 是邮件示例共用的库，不是可直接运行的二进制程序。它提供可序列化的载荷、三种地址校验结果、示例邮件、应用错误及 HTML 提交表单。投递为模拟操作，不会发送邮件。运行 `cargo test -p email-service --locked` 可检查错误分类。
@@ -50,3 +56,4 @@ cargo run -p basic --locked
 - **`retries`** 处理三个地址：一个成功执行一次，一个失败并累计执行四次，一个在首次执行时中止。错误均为预期结果。退避使用一秒下限、五秒上限及随机抖动；所有尝试完成后，按 Ctrl+C 停止 worker。
 - **`unique-jobs`** 为同一收件人提交两次任务，但只处理第一个主题。内存后端在整个生命周期内保留幂等键，任务完成后也不会释放；这不提供跨应用重启的持久去重。按 Ctrl+C 退出。
 - **`unmonitored-worker`** 以 20 个任务的并发上限处理 100 个耗时五秒的任务，全部完成后停止 worker；此时 `run_until` 仍会等待 Ctrl+C，收到信号后进程才退出。提前按 Ctrl+C 会等待活动任务完成，尚未开始的任务不会继续执行。
+- **`workflow-stepped`** 依次执行欢迎、活动、完成三个步骤，对应 ID 为 1、2、3，随后自动停止。`delay_for(1s)` 会记录调度时间，但内存后端不会等待该时间，后续步骤仍立即执行；实际等待需要支持定时调度的后端。Worker 通过 spawn 执行任务，并发上限为二；步骤间的依赖仍决定执行顺序。

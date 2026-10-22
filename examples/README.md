@@ -34,6 +34,12 @@ Replace `basic` with any example name below. Some examples exit automatically; o
 | [`unique-jobs`](unique-jobs) | Submit two different payloads with the same idempotency key and process only the first. |
 | [`unmonitored-worker`](unmonitored-worker) | Run a standalone worker with 20 concurrent tasks and stop after its finite batch drains. |
 
+## Workflows
+
+| Example | Scenario |
+| --- | --- |
+| [`workflow-stepped`](workflow-stepped) | Pass typed results through three steps, configure a continuation delay, and inject a shared backend into each handler. |
+
 ## Shared example support
 
 [`email-service`](email-service) is a library shared by the email examples, not a runnable binary. It provides a serializable payload, three validation outcomes, sample messages, application errors, and an HTML submission form. Delivery is simulated: no mail is sent. Run its checks with `cargo test -p email-service --locked`.
@@ -50,3 +56,4 @@ Replace `basic` with any example name below. Some examples exit automatically; o
 - **`retries`** processes three addresses: one succeeds once, one fails on four attempts, and one aborts on its first attempt. Errors are intentional. Backoff uses a one-second minimum, a five-second maximum, and jitter; press Ctrl+C after the attempts finish to stop the worker.
 - **`unique-jobs`** accepts two submissions for one recipient but processes only the first subject. The in-memory backend remembers the key for its lifetime, including after completion; this is not durable deduplication across application restarts. Press Ctrl+C to exit.
 - **`unmonitored-worker`** processes 100 five-second tasks with a concurrency limit of 20, then stops its worker. Its `run_until` call still waits for Ctrl+C before the process exits. Pressing Ctrl+C earlier drains active tasks and leaves any unstarted tasks unprocessed.
+- **`workflow-stepped`** runs welcome, campaign, and completion steps with IDs 1, 2, and 3, then stops automatically. `delay_for(1s)` records a scheduled time, but the in-memory backend does not enforce it: the next step runs immediately. Actual waiting requires a backend that honors scheduling. The worker spawns task futures with a concurrency limit of two; step dependencies still determine execution order.
