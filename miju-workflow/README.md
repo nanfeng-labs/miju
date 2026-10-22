@@ -1,4 +1,8 @@
-# miju-workflow
+<p align="center">
+  <img src="../assets/miju-workflow-header.svg" alt="miju-workflow" width="800" />
+</p>
+
+<h1 align="center">miju-workflow</h1>
 
 Build typed sequences and dependency graphs of tasks for miju workers. Ordinary
 nonterminal steps encode their outputs and enqueue tasks for the next step;

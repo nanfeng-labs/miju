@@ -1,4 +1,8 @@
-# miju-codec
+<p align="center">
+  <img src="../../assets/miju-codec-header.svg" alt="miju-codec" width="800" />
+</p>
+
+<h1 align="center">miju-codec</h1>
 
 Encoding and decoding strategies for task arguments, results, and other values
 used by backends. Each codec implements

@@ -1,4 +1,8 @@
-# miju
+<p align="center">
+  <img src="../assets/miju-header.svg" alt="miju" width="800" />
+</p>
+
+<h1 align="center">miju</h1>
 
 miju is an application entry point for background task processing. It brings
 task, backend, worker, and monitor APIs into one [`prelude`] and extends
