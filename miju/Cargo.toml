@@ -5,7 +5,7 @@ publish = false
 authors.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "Application-facing APIs for defining and configuring background tasks in Rust"
+description = "Application-facing task processing APIs and worker middleware for miju"
 license.workspace = true
 repository.workspace = true
 
@@ -15,13 +15,89 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
-default = []
-serde = ["miju-core/serde"]
+default = [
+    "tracing",
+    "catch-panic",
+    "limit",
+    "timeout",
+    "retry",
+    "miju-core/default",
+    "config",
+]
+## Limit concurrent tasks and task processing rates
+limit = ["tower/limit"]
+## Apply timeouts to task execution
+timeout = ["tower/timeout"]
+## Filter tasks with synchronous or asynchronous predicates
+filter = ["tower/filter"]
+## Catch unwinding panics during task execution and convert them to errors
+catch-panic = ["dep:futures-util"]
+## Retry failed tasks immediately or with backoff
+retry = ["tower/retry"]
+## Trace task processing and emit core lifecycle logs
+tracing = ["dep:tracing", "miju-core/tracing"]
+## Construct workers and middleware from configuration
+config = ["dep:serde"]
+## Record task counts and durations for Prometheus
+prometheus = ["dep:metrics", "dep:metrics-exporter-prometheus"]
+## Record OpenTelemetry metrics and propagate context when tracing is also enabled
+opentelemetry = [
+    "dep:opentelemetry",
+    "dep:tracing-opentelemetry",
+    "opentelemetry/metrics",
+    "opentelemetry/trace",
+]
+## Report task errors and transactions through Sentry (requires Rust 1.89)
+sentry = ["dep:sentry-core", "dep:uuid", "miju-core/uuid"]
+## Track and cancel individual running tasks
+task-context = ["miju-core/task-context"]
+## Share a backend through cloneable handles
+shared = ["miju-core/shared"]
+## Enable middleware integrations and task tracking (requires Rust 1.89)
+full = [
+    "default",
+    "sentry",
+    "prometheus",
+    "opentelemetry",
+    "tracing",
+    "retry",
+    "timeout",
+    "limit",
+    "filter",
+    "catch-panic",
+    "config",
+    "task-context",
+]
+## Generate the feature flag reference when building documentation
+docsrs = ["dep:document-features"]
 
 [dependencies]
 miju-core = { version = "0.1.0", default-features = false }
+tower = { version = "0.5.3", features = ["util"], default-features = false }
+document-features = { version = "0.2", optional = true }
+futures-util = { version = "0.3.34", optional = true, default-features = false }
+pin-project = "1"
+thiserror = "2.0.21"
+tracing = { version = "0.1.44", default-features = false, optional = true }
+serde = { version = "1", optional = true, features = ["derive"] }
+metrics = { version = "0.24.6", optional = true, default-features = false }
+metrics-exporter-prometheus = { version = "0.18.3", optional = true, default-features = false }
+opentelemetry = { version = "0.33.1", optional = true, default-features = false, features = ["metrics"] }
+tracing-opentelemetry = { version = "0.34.0", optional = true, default-features = false }
+sentry-core = { version = "0.49.3", optional = true, default-features = false }
+uuid = { version = "1.28.0", optional = true }
 
 [dev-dependencies]
+tokio = { version = "1.53.2", features = ["macros", "rt", "time", "test-util"] }
+tracing = { version = "0.1.44", default-features = false, features = ["std"] }
+tracing-core = { version = "0.1.36", default-features = false, features = ["std"] }
+serde_json = "1.0"
+opentelemetry_sdk = { version = "0.33.1", default-features = false, features = ["testing"] }
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["registry"] }
 
 [lints]
 workspace = true
+
+[package.metadata.cargo-udeps.ignore]
+# Used under cfg(doc) to generate the feature reference; checked by the rustdoc CI job.
+normal = ["document-features"]
