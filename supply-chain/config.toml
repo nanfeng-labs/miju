@@ -302,7 +302,7 @@ criteria = "safe-to-deploy"
 notes = "Unaudited initial baseline; replace with a matching audit when available."
 
 [[exemptions.tokio]]
-version = "1.54.0"
+version = "1.54.1"
 criteria = "safe-to-deploy"
 notes = "Unaudited runtime baseline for miju-workflow; replace with a matching audit when available."
 
