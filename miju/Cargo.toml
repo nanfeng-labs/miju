@@ -5,7 +5,7 @@ publish = false
 authors.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "Application-facing APIs for defining and configuring background tasks in Rust"
+description = "Application-facing task processing APIs and worker middleware for miju"
 license.workspace = true
 repository.workspace = true
 
@@ -15,13 +15,25 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
-default = []
-serde = ["miju-core/serde"]
+default = ["miju-core/default"]
+## Track and cancel individual running tasks
+task-context = ["miju-core/task-context"]
+## Share a backend through cloneable handles
+shared = ["miju-core/shared"]
+## Generate the feature flag reference when building documentation
+docsrs = ["dep:document-features"]
 
 [dependencies]
 miju-core = { version = "0.1.0", default-features = false }
+tower = { version = "0.5.3", features = ["util"], default-features = false }
+document-features = { version = "0.2", optional = true }
 
 [dev-dependencies]
+tokio = { version = "1.53.2", features = ["macros", "rt", "time"] }
 
 [lints]
 workspace = true
+
+[package.metadata.cargo-udeps.ignore]
+# Used under cfg(doc) to generate the feature reference; checked by the rustdoc CI job.
+normal = ["document-features"]
