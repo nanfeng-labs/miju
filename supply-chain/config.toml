@@ -91,6 +91,11 @@ version = "0.2.7"
 criteria = "safe-to-deploy"
 notes = "Unaudited Sentry dependency baseline for miju; replace with a matching audit when available."
 
+[[exemptions.email_address]]
+version = "0.2.9"
+criteria = "safe-to-deploy"
+notes = "Unaudited email example dependency baseline; replace with a matching audit when available."
+
 [[exemptions.equivalent]]
 version = "1.0.3"
 criteria = "safe-to-deploy"

@@ -2,7 +2,7 @@
 
 [miju](../README.md) · [简体中文](README.zh-CN.md)
 
-Each example contains its own `Cargo.toml` and `src/main.rs`, with the required features and comments explaining execution.
+Each runnable example contains its own `Cargo.toml` and `src/main.rs`, with the required features and comments explaining execution. Shared support libraries live alongside them.
 
 ## Running an example
 
@@ -30,7 +30,12 @@ Replace `basic` with any example name below. Some examples exit automatically; o
 | [`catch-panic`](catch-panic) | Capture deliberate email-task panics, exclude abort errors from retries, and observe worker error events. |
 | [`graceful-shutdown`](graceful-shutdown) | Respond to Ctrl+C, finish a batch, and simulate saving task state before shutdown. |
 | [`long-running`](long-running) | Run concurrent data exports with `TaskRunner`, collect their results, and drain active work on shutdown. |
+| [`retries`](retries) | Apply three retries with exponential backoff to ordinary errors while excluding `AbortError`. |
 | [`unmonitored-worker`](unmonitored-worker) | Run a standalone worker with 20 concurrent tasks and stop after its finite batch drains. |
+
+## Shared example support
+
+[`email-service`](email-service) is a library shared by the email examples, not a runnable binary. It provides a serializable payload, three validation outcomes, sample messages, application errors, and an HTML submission form. Delivery is simulated: no mail is sent. Run its checks with `cargo test -p email-service --locked`.
 
 ## Runtime behavior
 
@@ -41,4 +46,5 @@ Replace `basic` with any example name below. Some examples exit automatically; o
 - **`catch-panic`** runs until Ctrl+C. It deliberately prints panic-hook messages before reporting captured errors; it does not send email.
 - **`graceful-shutdown`** runs until Ctrl+C. It checks for shutdown between five-second batches, then spends five seconds simulating a checkpoint without writing data.
 - **`long-running`** simulates three concurrent exports lasting eight to twelve seconds. The worker stays running until Ctrl+C, which waits for any active export to finish and its results to be collected.
+- **`retries`** processes three addresses: one succeeds once, one fails on four attempts, and one aborts on its first attempt. Errors are intentional. Backoff uses a one-second minimum, a five-second maximum, and jitter; press Ctrl+C after the attempts finish to stop the worker.
 - **`unmonitored-worker`** processes 100 five-second tasks with a concurrency limit of 20, then stops its worker. Its `run_until` call still waits for Ctrl+C before the process exits. Pressing Ctrl+C earlier drains active tasks and leaves any unstarted tasks unprocessed.
