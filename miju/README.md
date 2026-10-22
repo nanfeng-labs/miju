@@ -147,6 +147,62 @@ For explicit layer composition, `layers::limit` exposes
 `layers::TimeoutLayer` provides the timeout layer. Clones of a
 `GlobalConcurrencyLimitLayer` share a concurrency budget across workers.
 
+## Retries
+
+Enable `retry` to use `.retry(policy)` and the retry policies exported by the
+prelude. `RetryPolicy::retries(n)` allows up to `n` retries after the first
+execution; `RetryPolicy::default()` allows five. A successful result, a killed
+task, or a worker already shutting down prevents another retry decision.
+
+```rust
+# #[cfg(feature = "retry")]
+# {
+use miju::prelude::*;
+use std::time::Duration;
+
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> Result<(), BoxDynError> {
+    let mut storage = MemoryStorage::new();
+    storage.push(7usize).await?;
+
+    let worker = WorkerBuilder::new("retrying")
+        .backend(storage)
+        .retry(RetryPolicy::retries(2))
+        .on_event(|worker, event| match event {
+            Event::Success(_) => worker.stop().unwrap(),
+            Event::Error(error) => panic!("{error}"),
+            _ => {}
+        })
+        .build(|value: usize, attempt: Attempt| async move {
+            if attempt.current() < 3 {
+                Err(std::io::Error::other("temporarily unavailable"))
+            } else {
+                Ok(value)
+            }
+        });
+
+    tokio::time::timeout(Duration::from_secs(5), worker.run()).await??;
+    Ok(())
+}
+# main().unwrap();
+# }
+```
+
+Use `.with_backoff(...)` to wait between retries and `.retry_if(...)` to select
+errors. Put `.retry(...)` before a layer whose errors should be retried. The
+`layers::retry` module re-exports Tower's retry and backoff APIs.
+
+`RetryMetadataExt::retries` stores `RetryConfig` on a task. Enable its use with
+`.from_task_config()`. This wrapper compares the configured value against the
+total attempt count, including the first execution, and also applies the inner
+policy's limit. Missing or invalid metadata uses the inner policy unchanged.
+
+When combining retries with panic handling, use `.retry_if(...)` to explicitly
+exclude the boxed errors that should stop retries. The panic module includes
+a custom-handler example. A shutdown request during an existing backoff can
+leave a retry waiting for readiness; bound worker execution when shutdown must
+finish within a deadline.
+
 ## Panic handling
 
 Enable `catch-panic` and add `.catch_panic()` to the worker builder to convert

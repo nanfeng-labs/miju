@@ -72,6 +72,46 @@
 //!         .unwrap();
 //! }
 //! ```
+//! ### Combining a Custom Handler with Retries
+//!
+//! With both `retry` and `catch-panic` enabled, an explicit predicate can exclude
+//! panic errors while retrying other failures. Add the retry layer first so it
+//! receives errors produced by the panic handler.
+//!
+//! ```rust
+//! # #[cfg(feature = "retry")]
+//! # {
+//! use miju::layers::catch_panic::{CatchPanicLayer, PanicError};
+//! use miju::prelude::*;
+//!
+//! #[tokio::main(flavor = "current_thread")]
+//! async fn main() -> Result<(), BoxDynError> {
+//!     let mut storage = MemoryStorage::new();
+//!     storage.push(42u32).await?;
+//!     async fn task(_: u32) {
+//!         panic!("task panicked");
+//!     }
+//!     let worker = WorkerBuilder::new("panic-with-retry")
+//!         .backend(storage)
+//!         .retry(RetryPolicy::retries(1).retry_if(|error: &BoxDynError| {
+//!             error.downcast_ref::<PanicError>().is_none()
+//!         }))
+//!         .layer(CatchPanicLayer::with_panic_handler(|_| {
+//!             PanicError("Custom panic handler".to_owned())
+//!         }))
+//!         .on_event(|worker, event| {
+//!             if matches!(event, Event::Error(_)) {
+//!                 worker.stop().unwrap();
+//!             }
+//!         })
+//!         .build(task);
+//!     tokio::time::timeout(std::time::Duration::from_secs(5), worker.run()).await??;
+//!     Ok(())
+//! }
+//! # main().unwrap();
+//! # }
+//! ```
+//!
 //! ## Capture boundary
 //!
 //! The layer catches unwinding panics from [`Service::call`] and polling the

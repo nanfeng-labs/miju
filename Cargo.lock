@@ -306,6 +306,7 @@ dependencies = [
  "futures-util",
  "miju-core",
  "pin-project",
+ "thiserror",
  "tokio",
  "tower",
 ]

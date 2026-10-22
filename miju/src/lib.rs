@@ -17,6 +17,10 @@ pub use miju_core::{backend, error, task};
 /// A "prelude" of common imports
 pub mod prelude {
     pub use crate::layers::WorkerBuilderExt;
+    #[cfg(feature = "retry")]
+    pub use crate::layers::retry::{
+        BackoffRetryPolicy, FromTaskConfigPolicy, RetryIfPolicy, RetryPolicy,
+    };
     #[cfg(feature = "task-context")]
     pub use miju_core::task::context::{SubTaskFuture, TaskContext, WaitForExecutionFuture};
 

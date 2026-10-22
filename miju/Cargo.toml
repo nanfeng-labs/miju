@@ -24,6 +24,8 @@ timeout = ["tower/timeout"]
 filter = ["tower/filter"]
 ## Catch unwinding panics during task execution and convert them to errors
 catch-panic = ["dep:futures-util"]
+## Retry failed tasks immediately or with backoff
+retry = ["tower/retry"]
 ## Track and cancel individual running tasks
 task-context = ["miju-core/task-context"]
 ## Share a backend through cloneable handles
@@ -37,6 +39,7 @@ tower = { version = "0.5.3", features = ["util"], default-features = false }
 document-features = { version = "0.2", optional = true }
 futures-util = { version = "0.3.34", optional = true, default-features = false }
 pin-project = "1"
+thiserror = "2.0.21"
 
 [dev-dependencies]
 tokio = { version = "1.53.2", features = ["macros", "rt", "time", "test-util"] }

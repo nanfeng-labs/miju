@@ -24,6 +24,11 @@ pub use tower::timeout::TimeoutLayer;
 #[cfg_attr(docsrs, doc(cfg(feature = "catch-panic")))]
 pub mod catch_panic;
 
+/// Retry middleware for instant and backoff retries
+#[cfg(feature = "retry")]
+#[cfg_attr(docsrs, doc(cfg(feature = "retry")))]
+pub mod retry;
+
 /// An extension trait that extends `WorkerBuilder` with additional middleware methods.
 ///
 /// Layers added earlier wrap those added later. Requests pass through them in
@@ -57,6 +62,13 @@ pub trait WorkerBuilderExt<Args, Source, Middleware> {
         num: u64,
         per: std::time::Duration,
     ) -> WorkerBuilder<Args, Source, Stack<tower::limit::RateLimitLayer, Middleware>>;
+
+    /// Retries failed requests according to the given retry policy.
+    #[cfg(feature = "retry")]
+    fn retry<P>(
+        self,
+        policy: P,
+    ) -> WorkerBuilder<Args, Source, Stack<tower::retry::RetryLayer<P>, Middleware>>;
 
     /// Fails requests that take longer than `timeout`.
     #[cfg(feature = "timeout")]
@@ -173,6 +185,14 @@ where
         per: std::time::Duration,
     ) -> WorkerBuilder<Args, Source, Stack<tower::limit::RateLimitLayer, Middleware>> {
         self.layer(tower::limit::RateLimitLayer::new(num, per))
+    }
+
+    #[cfg(feature = "retry")]
+    fn retry<P>(
+        self,
+        policy: P,
+    ) -> WorkerBuilder<Args, Source, Stack<tower::retry::RetryLayer<P>, Middleware>> {
+        self.layer(tower::retry::RetryLayer::new(policy))
     }
 
     #[cfg(feature = "timeout")]
