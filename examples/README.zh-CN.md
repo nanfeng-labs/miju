@@ -35,6 +35,7 @@ cargo run -p basic --locked
 | [`unique-jobs`](unique-jobs) | 使用相同幂等键提交两个不同载荷，仅执行第一个任务。 |
 | [`unmonitored-worker`](unmonitored-worker) | 以 20 个任务的并发上限独立运行 worker，待有限批次全部完成后自动停止。 |
 | [`monitor`](monitor) | 注册单个及五个带索引的 worker，汇集事件，并配置有次数上限的重启策略与关闭期限。 |
+| [`monitor-context`](monitor-context) | 持续入队并运行可取消任务，同时从外部观察 worker 状态。 |
 
 ## 工作流
 
@@ -66,3 +67,5 @@ cargo run -p basic --locked
 - **`workflow-graph-dynamic`** 从源节点的值 1 开始，1,000 个动态生成的分支分别加一；汇总节点收到 1,000 个结果，输出总和 2,000 后自动停止。图结构在执行前生成，本示例不展示运行期间修改图。
 
 - **`monitor`** 向两个临时 JSON 后端各提交一个任务。五个上下文 worker 具有独立文件游标，可能读取同一条记录，不能据此实现竞争消费。每个 handler 在一秒后停止自身 worker 并返回预期的业务错误，六个 worker 通常会自动退出；也可按 Ctrl+C 发起关闭，最多等待五秒。业务错误不会触发 worker 重启策略。此处只演示元数据接线，完整 trace 传播由 `tracing` 示例展示。
+
+- **`monitor-context`** 每 500 毫秒向两个临时文件入队，并发上限分别为 30、20。任务随机选择 1–20 秒的耗时：超过七秒时立即取消，否则等待后返回预期错误。独立 future 每秒刷新终端面板，展示名称、运行与就绪状态、任务数、重启数和运行时长；重定向输出为纯文本快照。Ctrl+C 最多等待五秒，随后结束生产与展示并恢复终端。十二秒的 `run_until_executed` 子任务在下次被轮询时检查取消，运行时退出也会丢弃它。此示例不安装 trace provider。

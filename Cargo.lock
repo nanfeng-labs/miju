@@ -848,6 +848,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "monitor-context"
+version = "0.1.0"
+dependencies = [
+ "email-service",
+ "miju",
+ "miju-file-storage",
+ "rand 0.10.3",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "nu-ansi-term"
 version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"

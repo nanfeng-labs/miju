@@ -35,6 +35,7 @@ Replace `basic` with any example name below. Some examples exit automatically; o
 | [`unique-jobs`](unique-jobs) | Submit two different payloads with the same idempotency key and process only the first. |
 | [`unmonitored-worker`](unmonitored-worker) | Run a standalone worker with 20 concurrent tasks and stop after its finite batch drains. |
 | [`monitor`](monitor) | Register one worker and five indexed workers, aggregate events, and configure bounded restart and shutdown policies. |
+| [`monitor-context`](monitor-context) | Observe worker state externally while continuous producers and cancellable tasks run. |
 
 ## Workflows
 
@@ -66,3 +67,5 @@ Replace `basic` with any example name below. Some examples exit automatically; o
 - **`workflow-graph-dynamic`** starts with one source value of 1. Each of 1,000 generated branches adds one; the collector receives 1,000 results, prints their sum of 2,000, and stops automatically. Graph construction happens before execution; this does not demonstrate editing a running graph.
 
 - **`monitor`** submits one task to each of two temporary JSON backends. The five contextual workers use independent file cursors and can process the same entry; this is not a competing-consumer queue. Each handler stops its worker after one second and emits an intentional business error. All six workers normally exit automatically; Ctrl+C can also initiate shutdown with a five-second limit. Business errors do not trigger the worker restart predicate. Context metadata is wired without a provider here; the `tracing` example supplies full trace propagation.
+
+- **`monitor-context`** queues jobs every 500 ms into two temporary files, with concurrency limits of 30 and 20. Tasks choose a duration of 1–20 seconds: values above seven seconds cancel immediately; shorter tasks wait and report an intentional error. A separate future refreshes the terminal panel every second, showing names, running/ready state, task counts, restarts, and elapsed time. Redirected output contains plain snapshots. Ctrl+C allows up to five seconds to drain, drops the producers and display, and restores the terminal. The twelve-second `run_until_executed` sub-task checks cancellation on its next poll; runtime shutdown can drop it earlier. Trace metadata is wired without a provider.
