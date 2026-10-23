@@ -11,6 +11,12 @@
 <br />
 
 <div align="center">
+  <a href="https://crates.io/crates/miju">
+    <img src="https://img.shields.io/crates/v/miju.svg" alt="Crates.io version" />
+  </a>
+  <a href="https://docs.rs/miju">
+    <img src="https://img.shields.io/badge/docs-latest-blue.svg" alt="API documentation" />
+  </a>
   <a href="https://github.com/nanfeng-labs/miju/actions/workflows/ci.yaml">
     <img src="https://github.com/nanfeng-labs/miju/actions/workflows/ci.yaml/badge.svg?branch=main" alt="CI" />
   </a>
@@ -70,15 +76,11 @@ Add the facade and an async runtime to your application's `Cargo.toml`:
 miju = { version = "0.1.0" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
-[patch.crates-io]
-miju = { git = "https://github.com/nanfeng-labs/miju", branch = "main" }
-miju-core = { git = "https://github.com/nanfeng-labs/miju", branch = "main" }
-miju-workflow = { git = "https://github.com/nanfeng-labs/miju", branch = "main" }
-miju-codec = { git = "https://github.com/nanfeng-labs/miju", branch = "main" }
-miju-file-storage = { git = "https://github.com/nanfeng-labs/miju", branch = "main" }
+# Optional: workflows, codecs, and file storage
+# miju-workflow = { version = "0.1.0" }
+# miju-codec = { version = "0.1.0" }
+# miju-file-storage = { version = "0.1.0" }
 ```
-
-The patch entries resolve the workspace crates from one repository revision. Add `miju-workflow`, `miju-codec`, or `miju-file-storage` to `[dependencies]` when your application uses them. Pin a Git revision instead of `main` when you need reproducible dependency resolution.
 
 ## Usage
 

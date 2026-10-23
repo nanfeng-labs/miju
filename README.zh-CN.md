@@ -11,6 +11,12 @@
 <br />
 
 <div align="center">
+  <a href="https://crates.io/crates/miju">
+    <img src="https://img.shields.io/crates/v/miju.svg" alt="Crates.io 版本" />
+  </a>
+  <a href="https://docs.rs/miju">
+    <img src="https://img.shields.io/badge/docs-latest-blue.svg" alt="API 文档" />
+  </a>
   <a href="https://github.com/nanfeng-labs/miju/actions/workflows/ci.yaml">
     <img src="https://github.com/nanfeng-labs/miju/actions/workflows/ci.yaml/badge.svg?branch=main" alt="CI" />
   </a>
@@ -70,15 +76,11 @@
 miju = { version = "0.1.0" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
-[patch.crates-io]
-miju = { git = "https://github.com/nanfeng-labs/miju", branch = "main" }
-miju-core = { git = "https://github.com/nanfeng-labs/miju", branch = "main" }
-miju-workflow = { git = "https://github.com/nanfeng-labs/miju", branch = "main" }
-miju-codec = { git = "https://github.com/nanfeng-labs/miju", branch = "main" }
-miju-file-storage = { git = "https://github.com/nanfeng-labs/miju", branch = "main" }
+# 可选：工作流、编解码与文件存储
+# miju-workflow = { version = "0.1.0" }
+# miju-codec = { version = "0.1.0" }
+# miju-file-storage = { version = "0.1.0" }
 ```
-
-这些 patch 会让各个 workspace crate 从同一个仓库修订版解析。使用工作流、编解码或文件存储时，将对应 crate 添加到 `[dependencies]`。需要可复现的依赖解析时，请使用固定 Git revision 替代 `main`。
 
 ## 用法
 
