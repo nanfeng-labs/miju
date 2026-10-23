@@ -46,7 +46,7 @@ async fn produce(
         } else {
             backend.push(example_good_email()).await?;
         }
-        // File storage does not wake a parked reader when a clone pushes a task.
+        // Explicit notification also demonstrates waking a worker by name.
         context.wake_worker(worker_name)?;
         tokio::time::sleep(Duration::from_millis(500)).await;
     }

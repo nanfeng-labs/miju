@@ -4,6 +4,7 @@ use futures_core::{Stream, stream::BoxStream};
 use futures_util::{
     StreamExt,
     future::{Ready, ready},
+    task::AtomicWaker,
 };
 use miju_codec::json::JsonCodec;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -12,17 +13,17 @@ use std::{
     collections::{BTreeMap, HashMap},
     fmt::Debug,
     fs::{File, OpenOptions},
-    io::{self, BufRead, Seek, SeekFrom, Write},
+    io::{self, BufRead, Read, Seek, SeekFrom, Write},
     marker::PhantomData,
     num::ParseIntError,
     path::{Path, PathBuf},
     pin::Pin,
     str::FromStr,
-    sync::{Arc, Mutex, RwLock},
+    sync::{Arc, Mutex, RwLock, Weak},
     task::{Context, Poll},
     time::Duration,
 };
-use tempfile::NamedTempFile;
+use tempfile::{NamedTempFile, TempPath};
 
 pub use crate::error::FileStorageError;
 
@@ -74,7 +75,11 @@ pub enum SyncPolicy {
 #[derive(Debug)]
 enum PendingChange {
     /// Append a new entry (already serialized, includes `\n`).
-    Append(Vec<u8>),
+    Append {
+        bytes: Vec<u8>,
+        /// Retry a partial write at the same offset instead of appending twice.
+        offset: Option<u64>,
+    },
     /// Rewrite the line_id` with new content.
     RewriteLine {
         line_id: usize,
@@ -124,10 +129,13 @@ pub struct FileStorage<Args, A: Adapter> {
     adapter: A,
     lock: Arc<RwLock<FileLock<File>>>,
     path: PathBuf,
+    temp_path: Option<Arc<TempPath>>,
     /// In-memory view of all entries; index == job_id.
     entries: Arc<RwLock<Vec<RawTask>>>,
     /// Staged mutations not yet flushed to disk.
     pending: Arc<RwLock<Vec<PendingChange>>>,
+    waiters: Arc<Mutex<Vec<Weak<AtomicWaker>>>>,
+    reader_waker: Arc<AtomicWaker>,
     /// Next job_id to yield from the `Stream` impl.
     read_cursor: usize,
     sync_policy: SyncPolicy,
@@ -145,8 +153,11 @@ where
             adapter: self.adapter.clone(),
             lock: Arc::clone(&self.lock),
             path: self.path.clone(),
+            temp_path: self.temp_path.clone(),
             entries: Arc::clone(&self.entries),
             pending: Arc::clone(&self.pending),
+            waiters: Arc::clone(&self.waiters),
+            reader_waker: Arc::new(AtomicWaker::new()),
             read_cursor: self.read_cursor,
             sync_policy: self.sync_policy.clone(),
             last_flush: self.last_flush,
@@ -190,22 +201,30 @@ impl Adapter for JsonAdapter {
 impl<A: Adapter, Args> FileStorage<Args, A> {
     /// Creates a new `FileStorage` instance using the specified file path.
     ///
-    /// Existing contents are truncated. This does not reopen persisted tasks.
+    /// Existing records and results are loaded without truncating the file.
+    /// Invalid records return an error and leave the file unchanged.
     pub fn new(path: impl AsRef<Path>) -> Result<Self, FileStorageError<A>>
     where
         A: Default,
     {
-        let adapter = A::default();
         let path = path.as_ref().to_path_buf();
 
         let file = OpenOptions::new()
             .create(true)
             .read(true)
             .write(true)
-            .truncate(true)
+            .truncate(false)
             .open(&path)
             .map_err(FileStorageError::Io)?;
 
+        Self::from_file(file, path)
+    }
+
+    fn from_file(file: File, path: PathBuf) -> Result<Self, FileStorageError<A>>
+    where
+        A: Default,
+    {
+        let adapter = A::default();
         let lock = Arc::new(RwLock::new(FileLock::new(file)));
 
         let entries = {
@@ -225,8 +244,11 @@ impl<A: Adapter, Args> FileStorage<Args, A> {
             adapter,
             lock,
             path,
+            temp_path: None,
             entries: Arc::new(RwLock::new(entries)),
             pending: Default::default(),
+            waiters: Default::default(),
+            reader_waker: Arc::new(AtomicWaker::new()),
             read_cursor: 0,
             sync_policy: SyncPolicy::Instant,
             last_flush: std::time::Instant::now(),
@@ -237,13 +259,16 @@ impl<A: Adapter, Args> FileStorage<Args, A> {
 
     /// Creates a new temporary `FileStorage` instance.
     ///
-    /// The recreated file is not removed automatically when the storage is dropped.
+    /// The original temporary file's permissions are retained. The file is
+    /// removed when the storage and all of its clones are dropped.
     pub fn new_temp() -> Result<Self, FileStorageError<A>>
     where
         A: Default,
     {
-        let p = NamedTempFile::new()?.path().to_path_buf();
-        Self::new(p)
+        let (file, path) = NamedTempFile::new()?.into_parts();
+        let mut storage = Self::from_file(file, path.to_path_buf())?;
+        storage.temp_path = Some(Arc::new(path));
+        Ok(storage)
     }
 
     /// Attach a result to the entry identified by `line_id`.
@@ -261,19 +286,22 @@ impl<A: Adapter, Args> FileStorage<Args, A> {
                 .get_mut(line_id)
                 .ok_or(FileStorageError::JobNotFound { line_id })?;
 
-            entry.result = Some(result);
+            let mut pending = self
+                .pending
+                .try_write()
+                .map_err(|_| FileStorageError::WouldBlockLock)?;
+            let mut updated = entry.clone();
+            updated.result = Some(result);
 
             // Serialize the updated entry through the adapter's native Line type.
-            let line = A::from_entry(entry).map_err(FileStorageError::AdapterError)?;
+            let line = A::from_entry(&updated).map_err(FileStorageError::AdapterError)?;
             let new_bytes = self
                 .adapter
                 .serialize(&line)
                 .map_err(FileStorageError::AdapterError)?;
 
-            self.pending
-                .try_write()
-                .map_err(|_| FileStorageError::WouldBlockLock)?
-                .push(PendingChange::RewriteLine { line_id, new_bytes });
+            *entry = updated;
+            pending.push(PendingChange::RewriteLine { line_id, new_bytes });
         }
 
         if matches!(self.sync_policy, SyncPolicy::Instant) {
@@ -283,13 +311,20 @@ impl<A: Adapter, Args> FileStorage<Args, A> {
     }
 
     /// Persist all pending changes under an exclusive file lock.
+    ///
+    /// On failure, pending changes remain available for another call. A partial
+    /// append is overwritten at its original offset when retried. This does not
+    /// sync the file or containing directory to durable media.
     pub fn flush(&mut self) -> Result<(), FileStorageError<A>> {
-        if self
-            .pending
+        let raw_tasks = self
+            .entries
             .try_read()
-            .map_err(|_| FileStorageError::WouldBlockLock)?
-            .is_empty()
-        {
+            .map_err(|_| FileStorageError::WouldBlockLock)?;
+        let mut pending = self
+            .pending
+            .try_write()
+            .map_err(|_| FileStorageError::WouldBlockLock)?;
+        if pending.is_empty() {
             return Ok(());
         }
 
@@ -304,96 +339,76 @@ impl<A: Adapter, Args> FileStorage<Args, A> {
             .map_err(|_| FileStorageError::WouldBlockLock)?;
 
         // Partition: rewrites require a full-file atomic swap; appends do not.
-        let has_rewrites = self
-            .pending
-            .try_read()
-            .map_err(|_| FileStorageError::WouldBlockLock)?
+        let has_rewrites = pending
             .iter()
             .any(|c| matches!(c, PendingChange::RewriteLine { .. }));
 
         if has_rewrites {
-            // Build the complete new file from the in-memory entries,
-            // applying any pending appends along the way so that the
-            // serialized file is always consistent with `self.entries`.
-            //
-            // Collect rewrite targets so we can substitute updated bytes.
-            let mut rewrites: std::collections::HashMap<usize, Vec<u8>> =
-                std::collections::HashMap::new();
-            let mut extra_appends: Vec<Vec<u8>> = Vec::new();
-
-            for change in self
-                .pending
-                .try_write()
-                .map_err(|_| FileStorageError::WouldBlockLock)?
-                .drain(..)
-            {
-                match change {
-                    PendingChange::RewriteLine { line_id, new_bytes } => {
-                        rewrites.insert(line_id, new_bytes);
-                    }
-                    PendingChange::Append(bytes) => {
-                        extra_appends.push(bytes);
-                    }
+            // Keep the batch until replacement succeeds; new mutations cannot
+            // race the entries snapshot while these guards are held.
+            let mut rewrites = HashMap::new();
+            for change in pending.iter() {
+                if let PendingChange::RewriteLine { line_id, new_bytes } = change {
+                    rewrites.insert(*line_id, new_bytes);
                 }
             }
 
-            // Write tmp file.
-            let tmp_path = self.path.with_extension("tmp");
-            {
-                let mut tmp = File::create(&tmp_path).map_err(FileStorageError::Io)?;
+            // Secure creation in the same directory keeps replacement atomic.
+            let parent = self.path.parent().filter(|p| !p.as_os_str().is_empty());
+            let mut tmp = NamedTempFile::new_in(parent.unwrap_or_else(|| Path::new(".")))?;
 
-                let raw_tasks = self
-                    .entries
-                    .try_read()
-                    .map_err(|_| FileStorageError::WouldBlockLock)?;
-                if let Some(headers) = self.adapter.header(&raw_tasks) {
-                    tmp.write_all(&headers).map_err(FileStorageError::Io)?;
-                }
-                for (job_id, entry) in raw_tasks.iter().enumerate() {
-                    let bytes = if let Some(b) = rewrites.remove(&job_id) {
-                        b
-                    } else {
-                        let line = A::from_entry(entry).map_err(FileStorageError::AdapterError)?;
-                        self.adapter
-                            .serialize(&line)
-                            .map_err(FileStorageError::AdapterError)?
-                    };
-                    tmp.write_all(&bytes).map_err(FileStorageError::Io)?;
-                }
-
-                tmp.flush().map_err(FileStorageError::Io)?;
+            if let Some(headers) = self.adapter.header(&raw_tasks) {
+                tmp.write_all(&headers)?;
             }
+            for (job_id, entry) in raw_tasks.iter().enumerate() {
+                if let Some(bytes) = rewrites.get(&job_id) {
+                    tmp.write_all(bytes)?;
+                } else {
+                    let line = A::from_entry(entry).map_err(FileStorageError::AdapterError)?;
+                    let bytes = self
+                        .adapter
+                        .serialize(&line)
+                        .map_err(FileStorageError::AdapterError)?;
+                    tmp.write_all(&bytes)?;
+                }
+            }
+            tmp.flush()?;
+            tmp.as_file()
+                .set_permissions(guard.metadata()?.permissions())?;
 
-            // Atomic rename over the live file.
-            std::fs::rename(&tmp_path, &self.path).map_err(FileStorageError::Io)?;
-
-            // Re-open the renamed file so `guard` / `lock` stays valid.
-            // We re-open for read+write and replace the lock's inner file.
-            // (fd_lock works on the file descriptor, so we update it.)
+            let new_file = tmp
+                .persist(&self.path)
+                .map_err(|e| FileStorageError::Io(e.error))?;
             drop(guard);
-            drop(outer_guard);
-            let new_file = OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open(&self.path)
-                .map_err(FileStorageError::Io)?;
-            self.lock = Arc::new(RwLock::new(FileLock::new(new_file)));
+            *outer_guard = FileLock::new(new_file);
         } else {
             // Appends only — fast path: seek to end and write.
-            for change in self
-                .pending
-                .try_write()
-                .map_err(|_| FileStorageError::WouldBlockLock)?
-                .drain(..)
-            {
-                if let PendingChange::Append(bytes) = change {
-                    guard.seek(SeekFrom::End(0)).map_err(FileStorageError::Io)?;
-                    guard.write_all(&bytes).map_err(FileStorageError::Io)?;
+            for change in pending.iter_mut() {
+                if let PendingChange::Append { bytes, offset } = change {
+                    let position = if let Some(position) = *offset {
+                        position
+                    } else {
+                        let position = guard.seek(SeekFrom::End(0))?;
+                        if position > 0 {
+                            let mut last = [0];
+                            guard.seek(SeekFrom::End(-1))?;
+                            guard.read_exact(&mut last)?;
+                            // Loading also accepts a final line without a terminator.
+                            if last[0] != b'\n' {
+                                bytes.insert(0, b'\n');
+                            }
+                        }
+                        *offset = Some(position);
+                        position
+                    };
+                    guard.seek(SeekFrom::Start(position))?;
+                    guard.write_all(bytes)?;
                 }
             }
             guard.flush().map_err(FileStorageError::Io)?;
         }
 
+        pending.clear();
         self.last_flush = std::time::Instant::now();
         Ok(())
     }
@@ -450,7 +465,7 @@ impl<A: Adapter, Args> FileStorage<Args, A> {
 impl<A: Adapter + Unpin, Args: Unpin> Stream for FileStorage<Args, A> {
     type Item = Result<(usize, RawTask), FileStorageError<A>>;
 
-    fn poll_next(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
         let raw_tasks = this
             .entries
@@ -462,6 +477,17 @@ impl<A: Adapter + Unpin, Args: Unpin> Stream for FileStorage<Args, A> {
             this.read_cursor += 1;
             Poll::Ready(Some(Ok((line_id, job))))
         } else {
+            // Register while holding entries so an append cannot miss this reader.
+            let mut waiters = this
+                .waiters
+                .lock()
+                .map_err(|_| FileStorageError::WouldBlockLock)?;
+            this.reader_waker.register(cx.waker());
+            waiters.retain(|waiter| waiter.strong_count() > 0);
+            let waiter = Arc::downgrade(&this.reader_waker);
+            if !waiters.iter().any(|existing| existing.ptr_eq(&waiter)) {
+                waiters.push(waiter);
+            }
             Poll::Pending
         }
     }
@@ -909,6 +935,380 @@ mod tests {
         assert_eq!(line_id, 0);
         assert_eq!(entry.task_id, id);
         assert_eq!(entry.args, 42);
+    }
+
+    #[tokio::test]
+    async fn reopening_preserves_tasks_and_results() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("tasks.json");
+        let mut store = JsonStorage::<u32>::new(&path).unwrap();
+        let id = TaskId::from_string(RandomId::default());
+        store
+            .push_task(
+                TaskBuilder::new(7_u32)
+                    .task_id(id.clone())
+                    .idempotency_key("restored")
+                    .build(),
+            )
+            .await
+            .unwrap();
+        store.set_result(0, serde_json::json!({"Ok": 14})).unwrap();
+        drop(store);
+
+        let mut reopened = JsonStorage::<u32>::try_new(path).unwrap();
+        let results =
+            <JsonStorage<u32> as WaitForCompletion<u32>>::check_status(&mut reopened, [id.clone()])
+                .await
+                .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].result, Ok(14));
+        let (_, task) = reopened.next().await.unwrap().unwrap();
+        assert_eq!(task.task_id, id);
+        assert_eq!(task.args, 7);
+        reopened
+            .push_task(TaskBuilder::new(99_u32).idempotency_key("restored").build())
+            .await
+            .unwrap();
+        reopened.push(8).await.unwrap();
+        assert_eq!(reopened.next().await.unwrap().unwrap().1.args, 8);
+    }
+
+    #[test]
+    fn invalid_existing_records_are_not_modified() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("tasks.json");
+        let invalid = b"not a JSON record\n";
+        std::fs::write(&path, invalid).unwrap();
+        assert!(matches!(
+            JsonStorage::<u32>::new(&path),
+            Err(FileStorageError::AdapterError(_))
+        ));
+        assert_eq!(std::fs::read(path).unwrap(), invalid);
+    }
+
+    #[tokio::test]
+    async fn csv_reopens_and_rewrites_a_stable_schema() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("tasks.csv");
+        let mut store = CsvStorage::<u32>::new(&path).unwrap();
+        store.push(7).await.unwrap();
+        store.set_result(0, serde_json::json!(14)).unwrap();
+        drop(store);
+
+        let mut reopened = CsvStorage::<u32>::new(&path).unwrap();
+        let (_, entry) = reopened.next().await.unwrap().unwrap();
+        assert_eq!(entry.args, 7);
+        assert_eq!(entry.result, Some(serde_json::json!(14)));
+        reopened.push(8).await.unwrap();
+        reopened.set_result(1, serde_json::json!(16)).unwrap();
+        drop(reopened);
+
+        let mut reopened = CsvStorage::<u32>::new(&path).unwrap();
+        assert_eq!(reopened.next().await.unwrap().unwrap().1.args, 7);
+        let (_, entry) = reopened.next().await.unwrap().unwrap();
+        assert_eq!(entry.args, 8);
+        assert_eq!(entry.result, Some(serde_json::json!(16)));
+        assert_eq!(std::fs::read_to_string(path).unwrap().lines().count(), 3);
+    }
+
+    #[tokio::test]
+    async fn reopening_an_unterminated_record_allows_appending() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("tasks.json");
+        let mut store = JsonStorage::<u32>::new(&path).unwrap();
+        store.push(7).await.unwrap();
+        drop(store);
+        let mut bytes = std::fs::read(&path).unwrap();
+        assert_eq!(bytes.pop(), Some(b'\n'));
+        std::fs::write(&path, &bytes).unwrap();
+
+        let mut reopened = JsonStorage::<u32>::new(&path).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        reopened.push(8).await.unwrap();
+        drop(reopened);
+        let mut reopened = JsonStorage::<u32>::new(&path).unwrap();
+        assert_eq!(reopened.next().await.unwrap().unwrap().1.args, 7);
+        assert_eq!(reopened.next().await.unwrap().unwrap().1.args, 8);
+    }
+
+    #[tokio::test]
+    async fn temporary_storage_is_private_and_lives_until_last_clone() {
+        let store = JsonStorage::<u32>::new_temp().unwrap();
+        let path = store.config().clone();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o077,
+                0
+            );
+        }
+        let mut clone = store.clone();
+        drop(store);
+        assert!(path.exists());
+        clone.push(42).await.unwrap();
+        assert_eq!(clone.next().await.unwrap().unwrap().1.args, 42);
+        clone.set_result(0, serde_json::json!({"Ok": 84})).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o077,
+                0
+            );
+        }
+        drop(clone);
+        assert!(!path.exists());
+    }
+
+    #[tokio::test]
+    async fn clones_append_to_the_rewritten_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("tasks.json");
+        let mut store = JsonStorage::<u32>::new(&path).unwrap();
+        store.push(1).await.unwrap();
+        let mut clone = store.clone();
+        store.set_result(0, serde_json::json!({"Ok": 2})).unwrap();
+        clone.push(3).await.unwrap();
+        let records: Vec<Value> = std::fs::read_to_string(&path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0]["result"], serde_json::json!({"Ok": 2}));
+        assert_eq!(records[1]["args"], 3);
+        clone.set_result(1, serde_json::json!({"Ok": 4})).unwrap();
+        store.push(5).await.unwrap();
+        assert_eq!(std::fs::read_to_string(path).unwrap().lines().count(), 3);
+    }
+
+    #[tokio::test]
+    async fn failed_rewrite_can_be_retried_without_losing_changes() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("tasks.json");
+        let backup = directory.path().join("saved.json");
+        let mut store = JsonStorage::<u32>::new(&path).unwrap();
+        store.push(1).await.unwrap();
+        let original = std::fs::read(&path).unwrap();
+        std::fs::rename(&path, &backup).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert!(store.set_result(0, serde_json::json!({"Ok": 2})).is_err());
+        assert!(store.flush().is_err());
+        assert_eq!(std::fs::read(&backup).unwrap(), original);
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 2);
+
+        std::fs::remove_dir(&path).unwrap();
+        std::fs::rename(&backup, &path).unwrap();
+        store.push(3).await.unwrap();
+        store.flush().unwrap();
+        store.flush().unwrap();
+        let records: Vec<Value> = std::fs::read_to_string(path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0]["result"], serde_json::json!({"Ok": 2}));
+        assert_eq!(records[1]["args"], 3);
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn rewrite_preserves_permissions_and_ignores_preexisting_temporary_paths() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("tasks.json");
+        let unrelated = directory.path().join("unrelated.txt");
+        std::fs::write(&unrelated, b"preserve me").unwrap();
+        let mut store = JsonStorage::<u32>::new(&path).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        store.push(1).await.unwrap();
+        symlink(&unrelated, path.with_extension("tmp")).unwrap();
+        store.set_result(0, serde_json::json!({"Ok": 2})).unwrap();
+        assert_eq!(std::fs::read(unrelated).unwrap(), b"preserve me");
+        assert!(
+            !std::fs::symlink_metadata(&path)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_duplicate_keys_are_not_staged_twice() {
+        use futures_util::SinkExt;
+        use std::sync::Barrier;
+
+        static SERIALIZING: Barrier = Barrier::new(2);
+        static RELEASE: Barrier = Barrier::new(2);
+
+        #[derive(Debug, Clone, Default)]
+        struct PausingAdapter;
+
+        impl Adapter for PausingAdapter {
+            type Line = Value;
+            type Error = serde_json::Error;
+
+            fn serialize(&self, line: &Value) -> Result<Vec<u8>, Self::Error> {
+                if line["args"] == 1 {
+                    SERIALIZING.wait();
+                    RELEASE.wait();
+                }
+                JsonAdapter.serialize(line)
+            }
+
+            fn deserialize(&self, raw: &[u8]) -> Result<Value, Self::Error> {
+                JsonAdapter.deserialize(raw)
+            }
+
+            fn to_entry(&self, line: Value) -> Result<RawTask, Self::Error> {
+                JsonAdapter.to_entry(line)
+            }
+
+            fn from_entry(entry: &RawTask) -> Result<Value, Self::Error> {
+                JsonAdapter::from_entry(entry)
+            }
+        }
+
+        let mut store = FileStorage::<u32, PausingAdapter>::new_temp().unwrap();
+        let mut first = store.clone();
+        let sender = std::thread::spawn(move || {
+            first.start_send_unpin(
+                TaskBuilder::new(serde_json::json!(1))
+                    .idempotency_key("same")
+                    .build(),
+            )
+        });
+        SERIALIZING.wait();
+        let second = TaskBuilder::new(serde_json::json!(2))
+            .idempotency_key("same")
+            .build();
+        let competing = store.start_send_unpin(second.clone());
+        RELEASE.wait();
+        sender.join().unwrap().unwrap();
+        if let Err(error) = competing {
+            assert!(matches!(error, FileStorageError::WouldBlockLock));
+            store.start_send_unpin(second).unwrap();
+        }
+        store.flush().unwrap();
+        assert_eq!(
+            std::fs::read_to_string(store.config())
+                .unwrap()
+                .lines()
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_result_encoding_does_not_change_the_stored_entry() {
+        #[derive(Debug, Clone, Default)]
+        struct RejectResults;
+
+        impl Adapter for RejectResults {
+            type Line = Value;
+            type Error = serde_json::Error;
+
+            fn serialize(&self, line: &Value) -> Result<Vec<u8>, Self::Error> {
+                if !line["result"].is_null() {
+                    return Err(serde_json::Error::io(io::Error::other("result rejected")));
+                }
+                JsonAdapter.serialize(line)
+            }
+
+            fn deserialize(&self, raw: &[u8]) -> Result<Value, Self::Error> {
+                JsonAdapter.deserialize(raw)
+            }
+
+            fn to_entry(&self, line: Value) -> Result<RawTask, Self::Error> {
+                JsonAdapter.to_entry(line)
+            }
+
+            fn from_entry(entry: &RawTask) -> Result<Value, Self::Error> {
+                JsonAdapter::from_entry(entry)
+            }
+        }
+
+        let mut store = FileStorage::<u32, RejectResults>::new_temp().unwrap();
+        store.push(7).await.unwrap();
+        assert!(store.set_result(0, serde_json::json!({"Ok": 14})).is_err());
+        store.flush().unwrap();
+        assert_eq!(store.next().await.unwrap().unwrap().1.result, None);
+    }
+
+    #[tokio::test]
+    async fn append_wakes_all_waiting_clones() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::task::{Wake, Waker};
+
+        #[derive(Default)]
+        struct WakeCount(AtomicUsize);
+        impl Wake for WakeCount {
+            fn wake(self: Arc<Self>) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        let mut writer = JsonStorage::<u32>::new_temp().unwrap();
+        let mut first = writer.clone();
+        let mut second = writer.clone();
+        let mut dropped = writer.clone();
+        let old_count = Arc::new(WakeCount::default());
+        let old_waker = Waker::from(old_count.clone());
+        assert!(
+            first
+                .poll_next_unpin(&mut Context::from_waker(&old_waker))
+                .is_pending()
+        );
+        let first_count = Arc::new(WakeCount::default());
+        let first_waker = Waker::from(first_count.clone());
+        let second_count = Arc::new(WakeCount::default());
+        let second_waker = Waker::from(second_count.clone());
+        for _ in 0..3 {
+            assert!(
+                first
+                    .poll_next_unpin(&mut Context::from_waker(&first_waker))
+                    .is_pending()
+            );
+            assert!(
+                second
+                    .poll_next_unpin(&mut Context::from_waker(&second_waker))
+                    .is_pending()
+            );
+        }
+        let dropped_count = Arc::new(WakeCount::default());
+        let dropped_waker = Waker::from(dropped_count.clone());
+        assert!(
+            dropped
+                .poll_next_unpin(&mut Context::from_waker(&dropped_waker))
+                .is_pending()
+        );
+        drop(dropped);
+        drop(dropped_waker);
+        assert_eq!(Arc::strong_count(&dropped_count), 1);
+
+        writer.push(7).await.unwrap();
+        assert_eq!(old_count.0.load(Ordering::SeqCst), 0);
+        assert_eq!(first_count.0.load(Ordering::SeqCst), 1);
+        assert_eq!(second_count.0.load(Ordering::SeqCst), 1);
+        assert_eq!(first.next().await.unwrap().unwrap().1.args, 7);
+        assert_eq!(second.next().await.unwrap().unwrap().1.args, 7);
+
+        assert!(
+            first
+                .poll_next_unpin(&mut Context::from_waker(&first_waker))
+                .is_pending()
+        );
+        writer.push(8).await.unwrap();
+        assert_eq!(first_count.0.load(Ordering::SeqCst), 2);
+        assert_eq!(second_count.0.load(Ordering::SeqCst), 1);
+        assert_eq!(first.next().await.unwrap().unwrap().1.args, 8);
     }
 
     #[tokio::test]

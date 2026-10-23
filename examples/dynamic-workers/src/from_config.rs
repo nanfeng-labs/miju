@@ -21,7 +21,7 @@ async fn main() -> Result<(), BoxDynError> {
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
-    // Construct JSON with a fresh path: creating file storage truncates its file.
+    // Give each demonstration run a fresh file that is removed on normal exit.
     let directory = tempfile::tempdir()?;
     let json = serde_json::json!({
         "name": "configured-worker",

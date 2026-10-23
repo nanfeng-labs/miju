@@ -85,7 +85,7 @@ async fn main() -> Result<(), BoxDynError> {
     });
     let worker = async {
         WorkerBuilder::new("email-metrics")
-            // A push through a file-storage clone does not wake the reader.
+            // Retain periodic polling alongside the storage's append notifications.
             .backend(backend.poll_with_interval(Duration::from_millis(100)))
             .layer(PrometheusLayer::default())
             .enable_tracing()

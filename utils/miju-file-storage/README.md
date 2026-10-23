@@ -36,6 +36,19 @@ provide the built-in formats. Tasks can be pushed through `TaskSink`; the backen
 adds a line identifier to execution metadata and acknowledgement stores the
 handler result. `WaitForCompletion` exposes result polling and status queries.
 
+`new` and `try_new` load existing records and results without truncating the
+file. Invalid records return an error without changing its contents. Each new
+instance starts reading at the first record, including records with results.
+`new_temp` retains the temporary file's restrictive permissions and removes it
+when the last storage clone is dropped.
+
+Clones share entries, pending changes, and the active file handle. Appending a
+task wakes waiting readers. Result updates replace the file using a securely
+created temporary file in the same directory, retaining file permissions.
+Failed writes retain pending changes for a later `flush`; retrying an append
+resumes at its original offset. A failed flush can leave a partial record on
+disk, so keep the storage alive and retry after correcting the I/O failure.
+
 `SharedJsonStore` creates typed `MemoryStorage` handles backed by one temporary
 JSON store. It separates streams by task type metadata. These handles use the
 memory backend's execution contract; they do not provide the file backend's
@@ -46,22 +59,18 @@ completion acknowledgement middleware.
 This backend is intended for development, testing, and low-volume workloads.
 File operations are synchronous, including those invoked through async traits.
 
-- **Opening an existing path with `new` or `try_new` truncates the file.** Do not
-  use these constructors to recover persisted tasks or open valuable files.
-- Use a private, trusted storage directory. Rewrites use a predictable sibling
-  `.tmp` path and follow existing symlinks, which can overwrite unrelated files
-  if another user or process can modify that directory.
-- Temporary storage currently leaves its recreated file behind and does not
-  preserve the temporary file's restrictive permissions. Avoid sensitive data
-  with `new_temp`; use a caller-owned private temporary directory and `new`.
+- Use a private, trusted storage directory. External changes to the file or its
+  directory are not coordinated with the in-memory state.
 - New instances use immediate flushing. `SyncPolicy` also describes periodic
   and manual policies, but the public API currently has no policy setter.
-- Clones share entries and pending changes, but have independent read cursors.
-  They do not implement exclusive task claiming. After a rewrite, file handles
-  can diverge between clones; pending changes can also be lost on write errors.
-  Avoid concurrent writers and do not rely on crash-safe durability.
-- Exhausted streams do not register a wake-up when tasks are appended. Enqueue
-  tasks before running workers; live producer/consumer use can stall.
+- Clones have independent read cursors and do not implement exclusive task
+  claiming. Independently opening the same path does not share in-memory state
+  or file-handle replacement; use one storage and its clones per file.
+- Concurrent operations on clones can return `WouldBlockLock`. An I/O failure
+  can occur after a mutation is staged in memory; retry `flush` to persist it.
+- Flushing does not sync the file or directory to durable media. Cross-process
+  coordination, crash or power-loss recovery, and exactly-once execution are
+  not provided. Dropping storage does not flush pending changes.
 - The CSV adapter splits on commas without quoting or escaping. Its flattened
   representation does not preserve all JSON types, keys, or changing schemas.
   Prefer JSON for structured data. CSV is not a general-purpose interchange

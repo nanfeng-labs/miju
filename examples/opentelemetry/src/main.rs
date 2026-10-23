@@ -98,7 +98,7 @@ async fn main() -> Result<(), BoxDynError> {
 
     let worker = async {
         WorkerBuilder::new("email-otel-metrics")
-            // File-storage clones need a polling wakeup to see later HTTP pushes.
+            // Retain periodic polling alongside the storage's append notifications.
             .backend(backend.poll_with_interval(Duration::from_millis(100)))
             .layer(OpenTelemetryMetricsLayer::default())
             .enable_tracing()
