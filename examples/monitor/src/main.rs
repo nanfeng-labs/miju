@@ -39,8 +39,8 @@ async fn main() -> Result<(), BoxDynError> {
         .with_target(false)
         .init();
 
-    // FileStorage::new truncates its path. A fresh owned directory avoids
-    // overwriting data and removes these demonstration files on normal exit.
+    // A fresh owned directory keeps each run independent and removes these
+    // demonstration files on normal exit.
     let directory = tempfile::tempdir()?;
     let mut plain = JsonStorage::new(directory.path().join("plain.json"))?;
     let mut contextual = JsonStorage::new(directory.path().join("contextual.json"))?;

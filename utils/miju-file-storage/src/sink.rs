@@ -38,34 +38,46 @@ impl<A: Adapter + Unpin, Args: Unpin> Sink<Task<Value>> for FileStorage<Args, A>
             idempotency_key,
         };
         let this = self.get_mut();
-        let tasks = this
+        let mut entries = this
             .entries
-            .try_read()
+            .try_write()
             .map_err(|_| FileStorageError::WouldBlockLock)?;
         // Enforce idempotency
         if entry.idempotency_key.is_some()
-            && tasks
+            && entries
                 .iter()
                 .any(|t| t.idempotency_key == entry.idempotency_key)
         {
             return Ok(());
         }
-        drop(tasks);
+        let mut pending = this
+            .pending
+            .try_write()
+            .map_err(|_| FileStorageError::WouldBlockLock)?;
         let line = A::from_entry(&entry).map_err(FileStorageError::AdapterError)?;
         let bytes = this
             .adapter
             .serialize(&line)
             .map_err(FileStorageError::AdapterError)?;
-        let mut entries = this
-            .entries
-            .try_write()
-            .map_err(|_| FileStorageError::WouldBlockLock)?;
-        entries.push(entry); // optimistic in-memory update
+        let waiters = std::mem::take(
+            &mut *this
+                .waiters
+                .lock()
+                .map_err(|_| FileStorageError::WouldBlockLock)?,
+        );
+        entries.push(entry);
+        pending.push(PendingChange::Append {
+            bytes,
+            offset: None,
+        });
+        drop(pending);
         drop(entries);
-        this.pending
-            .try_write()
-            .map_err(|_| FileStorageError::WouldBlockLock)?
-            .push(PendingChange::Append(bytes));
+
+        for waiter in waiters {
+            if let Some(waiter) = waiter.upgrade() {
+                waiter.wake();
+            }
+        }
 
         Ok(())
     }
