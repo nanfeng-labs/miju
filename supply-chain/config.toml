@@ -128,8 +128,8 @@ notes = "Unaudited initial baseline; replace with a matching audit when availabl
 
 [[exemptions.futures-executor]]
 version = "0.3.34"
-criteria = "safe-to-run"
-notes = "Unaudited OpenTelemetry dependency baseline for miju; replace with a matching audit when available."
+criteria = "safe-to-deploy"
+notes = "Unaudited runtime example dependency baseline; replace with a matching audit when available."
 
 [[exemptions.futures-macro]]
 version = "0.3.34"
@@ -323,8 +323,8 @@ notes = "Unaudited OpenTelemetry dependency baseline for miju; replace with a ma
 
 [[exemptions.opentelemetry_sdk]]
 version = "0.33.1"
-criteria = "safe-to-run"
-notes = "Unaudited OpenTelemetry dependency baseline for miju; replace with a matching audit when available."
+criteria = "safe-to-deploy"
+notes = "Unaudited runtime example dependency baseline; replace with a matching audit when available."
 
 [[exemptions.parking_lot_core]]
 version = "0.9.12"
@@ -610,6 +610,11 @@ notes = "Unaudited initial baseline; replace with a matching audit when availabl
 version = "0.1.44"
 criteria = "safe-to-deploy"
 notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.tracing-attributes]]
+version = "0.1.31"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
 
 [[exemptions.tracing-opentelemetry]]
 version = "0.34.0"

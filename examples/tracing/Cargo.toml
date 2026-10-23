@@ -1,0 +1,26 @@
+[package]
+name = "tracing-example"
+version = "0.1.0"
+publish = false
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Compares local worker spans with producer context propagated through task metadata"
+
+[dependencies]
+miju = { version = "0.1.0", default-features = false, features = ["tracing", "opentelemetry"] }
+email-service = { path = "../email-service", version = "0.1.0" }
+opentelemetry = { version = "0.33.1", default-features = false, features = ["trace"] }
+opentelemetry_sdk = { version = "0.33.1", default-features = false, features = ["trace"] }
+tracing-opentelemetry = { version = "0.34.0", default-features = false }
+tokio = { version = "1.53.2", default-features = false, features = ["macros", "rt-multi-thread", "time"] }
+tracing = { version = "0.1.44", default-features = false, features = ["std", "attributes"] }
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["env-filter", "fmt"] }
+
+[dev-dependencies]
+opentelemetry_sdk = { version = "0.33.1", default-features = false, features = ["testing"] }
+
+[lints]
+workspace = true

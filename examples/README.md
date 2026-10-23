@@ -12,7 +12,7 @@ From the repository root, run:
 cargo run -p basic --locked
 ```
 
-Replace `basic` with any example name below. Some examples exit automatically; others keep running until **Ctrl+C**. See [runtime behavior](#runtime-behavior) for details.
+Use the package names and any `--bin` arguments listed under [runtime behavior](#runtime-behavior). Some examples exit automatically; others keep running until **Ctrl+C**.
 
 ## Task handlers and context
 
@@ -45,6 +45,12 @@ Replace `basic` with any example name below. Some examples exit automatically; o
 | [`workflow-graph`](workflow-graph) | Distribute entry inputs to three graph nodes, collect a typed dependency tuple, and print the graph as DOT. |
 | [`workflow-graph-dynamic`](workflow-graph-dynamic) | Generate 1,000 dependent nodes, validate the DAG, and collect their results through a vector of node handles. |
 
+## Observability
+
+| Example | Scenario |
+| --- | --- |
+| [`tracing`](tracing) | Compare local backend/worker spans with a producer trace restored from task metadata. |
+
 ## Shared example support
 
 [`email-service`](email-service) is a library shared by the email examples, not a runnable binary. It provides a serializable payload, three validation outcomes, sample messages, application errors, and an HTML submission form. Delivery is simulated: no mail is sent. Run its checks with `cargo test -p email-service --locked`.
@@ -69,3 +75,5 @@ Replace `basic` with any example name below. Some examples exit automatically; o
 - **`monitor`** submits one task to each of two temporary JSON backends. The five contextual workers use independent file cursors and can process the same entry; this is not a competing-consumer queue. Each handler stops its worker after one second and emits an intentional business error. All six workers normally exit automatically; Ctrl+C can also initiate shutdown with a five-second limit. Business errors do not trigger the worker restart predicate. Context metadata is wired without a provider here; the `tracing` example supplies full trace propagation.
 
 - **`monitor-context`** queues jobs every 500 ms into two temporary files, with concurrency limits of 30 and 20. Tasks choose a duration of 1–20 seconds: values above seven seconds cancel immediately; shorter tasks wait and report an intentional error. A separate future refreshes the terminal panel every second, showing names, running/ready state, task counts, restarts, and elapsed time. Redirected output contains plain snapshots. Ctrl+C allows up to five seconds to drain, drops the producers and display, and restores the terminal. The twelve-second `run_until_executed` sub-task checks cancellation on its next poll; runtime shutdown can drop it earlier. Trace metadata is wired without a provider.
+
+- **`tracing`** runs as `cargo run -p tracing-example --locked`. It prints four trace/span ID pairs and exits after two intentional task errors. The contextual consumer shares the producer's trace ID and has its own span ID; the ordinary consumer belongs to its worker's trace. Keep the default debug filter (or set `RUST_LOG=debug`) to see the task spans. The SDK and W3C propagator are installed, but no remote exporter is configured. Its inline test also verifies the actual exported parent span IDs.
