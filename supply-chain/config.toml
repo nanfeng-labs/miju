@@ -371,10 +371,20 @@ version = "0.33.1"
 criteria = "safe-to-deploy"
 notes = "Unaudited OpenTelemetry dependency baseline for miju; replace with a matching audit when available."
 
+[[exemptions.opentelemetry-prometheus]]
+version = "0.33.1"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
+
 [[exemptions.opentelemetry_sdk]]
 version = "0.33.1"
 criteria = "safe-to-deploy"
 notes = "Unaudited runtime example dependency baseline; replace with a matching audit when available."
+
+[[exemptions.parking_lot]]
+version = "0.12.5"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
 
 [[exemptions.parking_lot_core]]
 version = "0.9.12"
@@ -425,6 +435,11 @@ notes = "Unaudited Prometheus dependency baseline for miju; replace with a match
 version = "1.0.107"
 criteria = "safe-to-deploy"
 notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.prometheus]]
+version = "0.14.0"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
 
 [[exemptions.quanta]]
 version = "0.12.6"
