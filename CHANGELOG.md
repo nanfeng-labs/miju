@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- feat(examples): complete worker, workflow and observability examples ([#14](https://github.com/nanfeng-labs/miju/pull/14))
 - docs(assets): add social preview card ([#13](https://github.com/nanfeng-labs/miju/pull/13))
 - ci: add tag-triggered crate publishing ([#12](https://github.com/nanfeng-labs/miju/pull/12))
 - docs(readme): reduce header logo width ([#11](https://github.com/nanfeng-labs/miju/pull/11))
