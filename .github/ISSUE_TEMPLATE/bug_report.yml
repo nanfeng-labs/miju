@@ -64,7 +64,7 @@ body:
       label: Environment
       description: |
         Please provide information about your environment:
-        - OS: [e.g. Ubuntu 20.04, macOS 12.0, Windows 11]
+        - OS: [e.g. Ubuntu 26.04, macOS 27.0, Windows 11]
         - Rust version: [e.g. 1.85.0]
         - Cargo version: [e.g. 1.85.0]
       value: |
