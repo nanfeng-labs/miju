@@ -303,6 +303,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "dynamic-workers"
+version = "0.1.0"
+dependencies = [
+ "email-service",
+ "enum_dispatch",
+ "futures-util",
+ "miju",
+ "miju-file-storage",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "email-service"
 version = "0.1.0"
 dependencies = [
@@ -317,6 +333,18 @@ name = "email_address"
 version = "0.2.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e079f19b08ca6239f47f8ba8509c11cf3ea30095831f7fed61441475edd8c449"
+
+[[package]]
+name = "enum_dispatch"
+version = "0.3.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aa18ce2bc66555b3218614519ac839ddb759a7d6720732f979ef8d13be147ecd"
+dependencies = [
+ "once_cell",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
 
 [[package]]
 name = "equivalent"

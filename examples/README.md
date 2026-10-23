@@ -2,7 +2,7 @@
 
 [miju](../README.md) · [简体中文](README.zh-CN.md)
 
-Each runnable example contains its own `Cargo.toml` and `src/main.rs`, with the required features and comments explaining execution. Shared support libraries live alongside them.
+Each runnable example has its own `Cargo.toml`, explicit features, and commented source. Most use `src/main.rs`; `dynamic-workers` provides four named binaries. Shared support libraries live alongside them.
 
 ## Running an example
 
@@ -23,6 +23,7 @@ Use the package names and any `--bin` arguments listed under [runtime behavior](
 | [`task-context`](task-context) | Cancel a task through a cloned `TaskContext`, await execution notification, and observe its `Killed` status. |
 | [`worker-context`](worker-context) | Look up a running task and observe its worker through a shared `WorkerContext`. |
 | [`advanced`](advanced) | Compose client-injecting middleware, shared API quota and cache, deferred maintenance, panic capture, and retries. |
+| [`dynamic-workers`](dynamic-workers) | Build typed worker factories, generated enum dispatch, registration macros, and JSON-configured workers. |
 
 ## Execution and shutdown
 
@@ -78,6 +79,8 @@ Use the package names and any `--bin` arguments listed under [runtime behavior](
 - **`monitor`** submits one task to each of two temporary JSON backends. The five contextual workers use independent file cursors and can process the same entry; this is not a competing-consumer queue. Each handler stops its worker after one second and emits an intentional business error. All six workers normally exit automatically; Ctrl+C can also initiate shutdown with a five-second limit. Business errors do not trigger the worker restart predicate. Context metadata is wired without a provider here; the `tracing` example supplies full trace propagation.
 
 - **`monitor-context`** queues jobs every 500 ms into two temporary files, with concurrency limits of 30 and 20. Tasks choose a duration of 1–20 seconds: values above seven seconds cancel immediately; shorter tasks wait and report an intentional error. A separate future refreshes the terminal panel every second, showing names, running/ready state, task counts, restarts, and elapsed time. Redirected output contains plain snapshots. Ctrl+C allows up to five seconds to drain, drops the producers and display, and restores the terminal. The twelve-second `run_until_executed` sub-task checks cancellation on its next poll; runtime shutdown can drop it earlier. Trace metadata is wired without a provider.
+
+- **`dynamic-workers`** has four binaries. Run `cargo run -p dynamic-workers --bin generics --locked`, replacing `generics` with `enum-dispatch`, `macros`, or `from-config`. `generics` handles an email and text on separate typed queues; `enum-dispatch` handles both variants on one queue using generated dispatch and boxed futures. `macros` registers four payload types across temporary JSON and cloneable in-memory backends, with optional concurrency and rate limits. `from-config` constructs a file backend from JSON and enqueues 42 in an `after_start` hook. All four exit after processing their finite inputs.
 
 - **`tracing`** runs as `cargo run -p tracing-example --locked`. It prints four trace/span ID pairs and exits after two intentional task errors. The contextual consumer shares the producer's trace ID and has its own span ID; the ordinary consumer belongs to its worker's trace. Keep the default debug filter (or set `RUST_LOG=debug`) to see the task spans. The SDK and W3C propagator are installed, but no remote exporter is configured. Its inline test also verifies the actual exported parent span IDs.
 - **`prometheus`** and **`opentelemetry`** run as `cargo run -p prometheus-example --locked` and `cargo run -p opentelemetry-example --locked`. Run one at a time: both bind `127.0.0.1:3000`. Open `/` to submit simulated email jobs and `/metrics` to scrape results. A 201 response means queued; address validation happens in the worker, so invalid addresses become error metrics. The first example exposes `tasks_total` and `task_duration_seconds`; the second exposes `messaging_client_consumed_messages_total` and `messaging_process_duration_seconds`, with an OpenTelemetry resource and reader. Both use a single-thread runtime to serialize the file backend's synchronous operations while handling HTTP requests concurrently. They create a fresh temporary JSON file, poll for later submissions, and clean up on Ctrl+C. Files are for the demonstration, not durable storage across restarts.

@@ -2,7 +2,7 @@
 
 [miju](../README.zh-CN.md) · [English](README.md)
 
-每个可运行示例均包含独立的 `Cargo.toml` 和 `src/main.rs`，展示所需 feature 和执行过程的注释。共享辅助库与这些示例放在同一目录下。
+每个可运行示例均包含独立的 `Cargo.toml`、明确的 feature 和源码注释。多数使用 `src/main.rs`，`dynamic-workers` 提供四个具名二进制入口；共享辅助库与示例放在同一目录下。
 
 ## 运行示例
 
@@ -23,6 +23,7 @@ cargo run -p basic --locked
 | [`task-context`](task-context) | 通过克隆的 `TaskContext` 取消任务，等待执行结束通知，并观察 `Killed` 状态。 |
 | [`worker-context`](worker-context) | 查询正在执行的任务，并通过共享的 `WorkerContext` 从外部观测 worker。 |
 | [`advanced`](advanced) | 组合客户端注入中间件、共享 API 额度与缓存、后台维护、panic 捕获及重试。 |
+| [`dynamic-workers`](dynamic-workers) | 使用泛型工厂、自动枚举分派、注册宏和 JSON 配置构建 worker。 |
 
 ## 执行与关闭
 
@@ -78,6 +79,8 @@ cargo run -p basic --locked
 - **`monitor`** 向两个临时 JSON 后端各提交一个任务。五个上下文 worker 具有独立文件游标，可能读取同一条记录，不能据此实现竞争消费。每个 handler 在一秒后停止自身 worker 并返回预期的业务错误，六个 worker 通常会自动退出；也可按 Ctrl+C 发起关闭，最多等待五秒。业务错误不会触发 worker 重启策略。此处只演示元数据接线，完整 trace 传播由 `tracing` 示例展示。
 
 - **`monitor-context`** 每 500 毫秒向两个临时文件入队，并发上限分别为 30、20。任务随机选择 1–20 秒的耗时：超过七秒时立即取消，否则等待后返回预期错误。独立 future 每秒刷新终端面板，展示名称、运行与就绪状态、任务数、重启数和运行时长；重定向输出为纯文本快照。Ctrl+C 最多等待五秒，随后结束生产与展示并恢复终端。十二秒的 `run_until_executed` 子任务在下次被轮询时检查取消，运行时退出也会丢弃它。此示例不安装 trace provider。
+
+- **`dynamic-workers`** 提供四个二进制入口。运行 `cargo run -p dynamic-workers --bin generics --locked`，可将 `generics` 替换为 `enum-dispatch`、`macros` 或 `from-config`。`generics` 通过两个独立类型队列处理邮件和文本；`enum-dispatch` 在单队列中通过生成的分派和 boxed future 处理两种载荷。`macros` 注册四种载荷，组合临时 JSON 与可克隆内存后端，并展示可选的并发和速率限制。`from-config` 从 JSON 构建文件后端，在 `after_start` 中入队 42。四个入口均处理完有限输入后自动退出。
 
 - **`tracing`** 使用 `cargo run -p tracing-example --locked` 运行。输出四组 trace/span ID，在两个任务返回预期错误后退出。携带元数据的 consumer 与 producer 共享 trace ID，但有独立的 span ID；普通 consumer 属于自身 worker 的 trace。保留默认 debug 过滤器或设置 `RUST_LOG=debug`，才能看到任务 span。示例安装 SDK 和 W3C propagator，不配置远端 exporter；内联测试还会校验实际导出的父 span ID。
 - **`prometheus`** 与 **`opentelemetry`** 分别使用 `cargo run -p prometheus-example --locked`、`cargo run -p opentelemetry-example --locked` 运行。两者都监听 `127.0.0.1:3000`，请逐个启动。在 `/` 提交模拟邮件，在 `/metrics` 抓取指标。201 仅表示入队成功，地址校验由 worker 执行，无效地址会产生错误指标。前者暴露 `tasks_total` 和 `task_duration_seconds`；后者通过 OpenTelemetry resource 与 reader 暴露 `messaging_client_consumed_messages_total` 和 `messaging_process_duration_seconds`。两者使用单线程运行时，在并发处理 HTTP 请求的同时串行执行文件后端的同步操作。它们均使用新建的临时 JSON 文件，轮询接收后续提交，并在 Ctrl+C 后清理文件，不提供跨重启的持久存储。
