@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - fix(file-storage): preserve records and make writes retryable ([#15](https://github.com/nanfeng-labs/miju/pull/15))
+- chore(github): add issue templates ([#17](https://github.com/nanfeng-labs/miju/pull/17))
 - feat(examples): complete worker, workflow and observability examples ([#14](https://github.com/nanfeng-labs/miju/pull/14))
 - docs(assets): add social preview card ([#13](https://github.com/nanfeng-labs/miju/pull/13))
 - ci: add tag-triggered crate publishing ([#12](https://github.com/nanfeng-labs/miju/pull/12))
