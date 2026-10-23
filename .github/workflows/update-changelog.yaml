@@ -95,7 +95,8 @@ jobs:
               sys.exit("CHANGELOG.md must contain exactly one ## [Unreleased] heading")
           start = headings[0] + 1
           end = next((i for i in range(start, len(lines)) if lines[i].startswith("## ")), len(lines))
-          existing = [i for i in range(start, end) if lines[i].startswith("- ") and link in lines[i]]
+          # Preserve the location of entries already organized into release sections.
+          existing = [i for i, line in enumerate(lines) if line.startswith("- ") and link in line]
           if existing:
               lines[existing[0]] = entry
               for index in reversed(existing[1:]):
