@@ -26,6 +26,26 @@ version = "1.5.1"
 criteria = "safe-to-deploy"
 notes = "Unaudited miju-codec dependency baseline; replace with a matching audit when available."
 
+[[exemptions.axum]]
+version = "0.8.9"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
+
+[[exemptions.axum-core]]
+version = "0.5.6"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
+
+[[exemptions.base64]]
+version = "0.23.1"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
+
+[[exemptions.base64ct]]
+version = "1.8.3"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
+
 [[exemptions.bincode]]
 version = "2.0.1"
 criteria = "safe-to-deploy"
@@ -56,10 +76,20 @@ version = "1.0.5"
 criteria = "safe-to-deploy"
 notes = "Unaudited initial baseline; replace with a matching audit when available."
 
+[[exemptions.cfg_aliases]]
+version = "0.2.2"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
+
 [[exemptions.chacha20]]
 version = "0.10.2"
 criteria = "safe-to-deploy"
 notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.core-foundation]]
+version = "0.10.1"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
 
 [[exemptions.cpufeatures]]
 version = "0.3.1"
@@ -81,6 +111,11 @@ version = "6.2.1"
 criteria = "safe-to-deploy"
 notes = "Unaudited initial baseline; replace with a matching audit when available."
 
+[[exemptions.der]]
+version = "0.8.2"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
+
 [[exemptions.deranged]]
 version = "0.5.9"
 criteria = "safe-to-deploy"
@@ -90,6 +125,16 @@ notes = "Unaudited Sentry dependency baseline for miju; replace with a matching 
 version = "0.2.7"
 criteria = "safe-to-deploy"
 notes = "Unaudited Sentry dependency baseline for miju; replace with a matching audit when available."
+
+[[exemptions.email_address]]
+version = "0.2.9"
+criteria = "safe-to-deploy"
+notes = "Unaudited email example dependency baseline; replace with a matching audit when available."
+
+[[exemptions.enum_dispatch]]
+version = "0.3.13"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
 
 [[exemptions.equivalent]]
 version = "1.0.3"
@@ -123,8 +168,13 @@ notes = "Unaudited initial baseline; replace with a matching audit when availabl
 
 [[exemptions.futures-executor]]
 version = "0.3.34"
-criteria = "safe-to-run"
-notes = "Unaudited OpenTelemetry dependency baseline for miju; replace with a matching audit when available."
+criteria = "safe-to-deploy"
+notes = "Unaudited runtime example dependency baseline; replace with a matching audit when available."
+
+[[exemptions.futures-io]]
+version = "0.3.34"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
 
 [[exemptions.futures-macro]]
 version = "0.3.34"
@@ -176,6 +226,41 @@ version = "0.14.5"
 criteria = "safe-to-deploy"
 notes = "Unaudited initial baseline; replace with a matching audit when available."
 
+[[exemptions.http]]
+version = "1.5.0"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
+
+[[exemptions.http-body]]
+version = "1.1.0"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
+
+[[exemptions.http-body-util]]
+version = "0.1.5"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
+
+[[exemptions.httparse]]
+version = "1.10.1"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
+
+[[exemptions.hyper]]
+version = "1.12.0"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
+
+[[exemptions.hyper-tls]]
+version = "0.6.0"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
+
+[[exemptions.hyper-util]]
+version = "0.1.21"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
+
 [[exemptions.icu_collections]]
 version = "2.3.0"
 criteria = "safe-to-deploy"
@@ -225,6 +310,11 @@ notes = "Unaudited Sentry dependency baseline for miju; replace with a matching 
 version = "2.14.2"
 criteria = "safe-to-deploy"
 notes = "Unaudited miju-workflow dependency baseline; replace with a matching audit when available."
+
+[[exemptions.ipnet]]
+version = "2.12.2"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
 
 [[exemptions.itoa]]
 version = "1.0.18"
@@ -281,6 +371,11 @@ version = "0.7.2"
 criteria = "safe-to-deploy"
 notes = "Unaudited Prometheus dependency baseline for miju; replace with a matching audit when available."
 
+[[exemptions.matchit]]
+version = "0.8.4"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
+
 [[exemptions.memchr]]
 version = "2.8.3"
 criteria = "safe-to-deploy"
@@ -301,30 +396,70 @@ version = "0.20.4"
 criteria = "safe-to-deploy"
 notes = "Unaudited Prometheus dependency baseline for miju; replace with a matching audit when available."
 
+[[exemptions.mime]]
+version = "0.3.17"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
+
 [[exemptions.mio]]
 version = "1.2.4"
 criteria = "safe-to-deploy"
 notes = "Unaudited runtime baseline for miju-workflow; replace with a matching audit when available."
+
+[[exemptions.native-tls]]
+version = "0.2.18"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
 
 [[exemptions.once_cell]]
 version = "1.21.4"
 criteria = "safe-to-deploy"
 notes = "Unaudited initial baseline; replace with a matching audit when available."
 
+[[exemptions.openssl]]
+version = "0.10.81"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
+
+[[exemptions.openssl-probe]]
+version = "0.2.1"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
+
+[[exemptions.openssl-sys]]
+version = "0.9.117"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
+
 [[exemptions.opentelemetry]]
 version = "0.33.1"
 criteria = "safe-to-deploy"
 notes = "Unaudited OpenTelemetry dependency baseline for miju; replace with a matching audit when available."
 
+[[exemptions.opentelemetry-prometheus]]
+version = "0.33.1"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
+
 [[exemptions.opentelemetry_sdk]]
 version = "0.33.1"
-criteria = "safe-to-run"
-notes = "Unaudited OpenTelemetry dependency baseline for miju; replace with a matching audit when available."
+criteria = "safe-to-deploy"
+notes = "Unaudited runtime example dependency baseline; replace with a matching audit when available."
+
+[[exemptions.parking_lot]]
+version = "0.12.5"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
 
 [[exemptions.parking_lot_core]]
 version = "0.9.12"
 criteria = "safe-to-deploy"
 notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.pem-rfc7468]]
+version = "1.0.0"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
 
 [[exemptions.petgraph]]
 version = "0.8.3"
@@ -370,6 +505,11 @@ notes = "Unaudited Prometheus dependency baseline for miju; replace with a match
 version = "1.0.107"
 criteria = "safe-to-deploy"
 notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.prometheus]]
+version = "0.14.0"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
 
 [[exemptions.quanta]]
 version = "0.12.6"
@@ -441,15 +581,35 @@ version = "0.8.11"
 criteria = "safe-to-deploy"
 notes = "Unaudited Prometheus dependency baseline for miju; replace with a matching audit when available."
 
+[[exemptions.reqwest]]
+version = "0.13.5"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
+
 [[exemptions.rustix]]
 version = "1.1.5"
 criteria = "safe-to-deploy"
 notes = "Unaudited miju-file-storage dependency baseline; replace with a matching audit when available."
 
+[[exemptions.rustls-pki-types]]
+version = "1.15.1"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
+
 [[exemptions.rustversion]]
 version = "1.0.23"
 criteria = "safe-to-deploy"
 notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.ryu]]
+version = "1.0.23"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
+
+[[exemptions.schannel]]
+version = "0.1.30"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
 
 [[exemptions.scoped-tls]]
 version = "1.0.1"
@@ -461,10 +621,35 @@ version = "1.2.0"
 criteria = "safe-to-deploy"
 notes = "Unaudited initial baseline; replace with a matching audit when available."
 
+[[exemptions.security-framework]]
+version = "3.7.0"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
+
+[[exemptions.security-framework-sys]]
+version = "2.17.0"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
+
+[[exemptions.sentry]]
+version = "0.49.3"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
+
 [[exemptions.sentry-core]]
 version = "0.49.3"
 criteria = "safe-to-deploy"
 notes = "Unaudited Sentry dependency baseline for miju; replace with a matching audit when available."
+
+[[exemptions.sentry-tower]]
+version = "0.49.3"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
+
+[[exemptions.sentry-tracing]]
+version = "0.49.3"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
 
 [[exemptions.sentry-types]]
 version = "0.49.3"
@@ -491,6 +676,16 @@ version = "1.0.154"
 criteria = "safe-to-deploy"
 notes = "Unaudited runtime dependency baseline for miju-codec; replace with a matching audit when available."
 
+[[exemptions.serde_path_to_error]]
+version = "0.1.20"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
+
+[[exemptions.serde_urlencoded]]
+version = "0.7.1"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
+
 [[exemptions.signal-hook-registry]]
 version = "1.4.8"
 criteria = "safe-to-deploy"
@@ -510,6 +705,11 @@ notes = "Unaudited initial baseline; replace with a matching audit when availabl
 version = "1.16.3"
 criteria = "safe-to-deploy"
 notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.socket2]]
+version = "0.6.5"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
 
 [[exemptions.stable_deref_trait]]
 version = "1.2.1"
@@ -591,6 +791,11 @@ version = "0.5.3"
 criteria = "safe-to-deploy"
 notes = "Unaudited runtime baseline for miju-workflow; replace with a matching audit when available."
 
+[[exemptions.tower-http]]
+version = "0.6.11"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
+
 [[exemptions.tower-layer]]
 version = "0.3.3"
 criteria = "safe-to-deploy"
@@ -605,6 +810,11 @@ notes = "Unaudited initial baseline; replace with a matching audit when availabl
 version = "0.1.44"
 criteria = "safe-to-deploy"
 notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.tracing-attributes]]
+version = "0.1.31"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
 
 [[exemptions.tracing-opentelemetry]]
 version = "0.34.0"
@@ -631,10 +841,25 @@ version = "0.0.4"
 criteria = "safe-to-deploy"
 notes = "Unaudited miju-codec dependency baseline; replace with a matching audit when available."
 
+[[exemptions.ureq]]
+version = "3.5.0"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
+
+[[exemptions.ureq-proto]]
+version = "0.6.5"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
+
 [[exemptions.url]]
 version = "2.5.8"
 criteria = "safe-to-deploy"
 notes = "Unaudited Sentry dependency baseline for miju; replace with a matching audit when available."
+
+[[exemptions.utf8-zero]]
+version = "0.8.1"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
 
 [[exemptions.uuid]]
 version = "1.28.0"
@@ -651,6 +876,11 @@ version = "0.0.18"
 criteria = "safe-to-deploy"
 notes = "Unaudited miju-codec dependency baseline; replace with a matching audit when available."
 
+[[exemptions.want]]
+version = "0.3.2"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
+
 [[exemptions.wasi]]
 version = "0.11.1+wasi-snapshot-preview1"
 criteria = "safe-to-deploy"
@@ -660,6 +890,11 @@ notes = "Unaudited runtime baseline for miju-workflow; replace with a matching a
 version = "0.2.129"
 criteria = "safe-to-deploy"
 notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.wasm-bindgen-futures]]
+version = "0.4.79"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
 
 [[exemptions.wasm-bindgen-macro]]
 version = "0.2.129"
@@ -685,6 +920,11 @@ notes = "Unaudited Prometheus dependency baseline for miju; replace with a match
 version = "1.1.0"
 criteria = "safe-to-deploy"
 notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.webpki-root-certs]]
+version = "1.0.10"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
 
 [[exemptions.winapi]]
 version = "0.3.9"
@@ -795,6 +1035,11 @@ notes = "Unaudited Sentry dependency baseline for miju; replace with a matching 
 version = "0.1.8"
 criteria = "safe-to-deploy"
 notes = "Unaudited Sentry dependency baseline for miju; replace with a matching audit when available."
+
+[[exemptions.zeroize]]
+version = "1.9.1"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
 
 [[exemptions.zerotrie]]
 version = "0.2.5"

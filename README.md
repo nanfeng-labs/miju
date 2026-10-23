@@ -116,16 +116,13 @@ async fn main() -> Result<(), BoxDynError> {
 
 ## Examples
 
-| Example | Scenario | Run |
-| --- | --- | --- |
-| [`basic`](examples/basic) | Process an in-memory task with rate limiting, concurrency, retries, panic capture, task spawning, and tracing. | `cargo run -p basic --locked` |
-| [`catch-panic`](examples/catch-panic) | Capture deliberate email-task panics, exclude abort errors from retries, and observe worker error events. | `cargo run -p catch-panic --locked` |
-| [`graceful-shutdown`](examples/graceful-shutdown) | Respond to Ctrl+C, finish a batch, and simulate saving task state before shutdown. | `cargo run -p graceful-shutdown --locked` |
-| [`long-running`](examples/long-running) | Run concurrent data exports with `TaskRunner`, collect their results, and drain active work on shutdown. | `cargo run -p long-running --locked` |
+Start with [`basic`](examples/basic) to see task processing and middleware in action. Run it from the repository root:
 
-Run these commands from the repository root. Each example contains its own `Cargo.toml` and `src/main.rs`, with the required features and execution comments.
+```sh
+cargo run -p basic --locked
+```
 
-`basic` exits after processing its task. The other examples keep the worker running until **Ctrl+C**. `catch-panic` deliberately prints panic-hook messages before reporting captured errors; it does not send email. `graceful-shutdown` checks for shutdown between five-second batches, then spends five seconds simulating a checkpoint without writing data. `long-running` simulates three exports lasting eight to twelve seconds; Ctrl+C waits for the active export to finish and its results to be collected.
+Browse the [example guide](examples/README.md) for dependency injection, worker context, panic handling, and shutdown scenarios, with instructions for running and stopping each example.
 
 ## How miju works
 

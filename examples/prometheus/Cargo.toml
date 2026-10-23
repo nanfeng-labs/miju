@@ -1,0 +1,25 @@
+[package]
+name = "prometheus-example"
+version = "0.1.0"
+publish = false
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Serves an email task form and Prometheus task metrics over local HTTP"
+
+[dependencies]
+miju = { version = "0.1.0", default-features = false, features = ["prometheus", "tracing"] }
+miju-file-storage = "0.1.0"
+email-service = { path = "../email-service", version = "0.1.0" }
+axum = { version = "0.8.9", default-features = false, features = ["form", "http1", "tokio"] }
+metrics-exporter-prometheus = { version = "0.18.3", default-features = false }
+serde = "1.0"
+tempfile = "3.27.0"
+tokio = { version = "1.53.2", default-features = false, features = ["macros", "net", "rt", "signal", "time"] }
+tracing = { version = "0.1.44", default-features = false, features = ["std"] }
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["env-filter", "fmt"] }
+
+[lints]
+workspace = true

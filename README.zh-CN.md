@@ -116,16 +116,13 @@ async fn main() -> Result<(), BoxDynError> {
 
 ## 示例
 
-| 示例 | 场景 | 运行命令 |
-| --- | --- | --- |
-| [`basic`](examples/basic) | 使用速率限制、并发、重试、panic 捕获、任务 spawn 和 tracing 处理内存任务。 | `cargo run -p basic --locked` |
-| [`catch-panic`](examples/catch-panic) | 捕获邮件任务中主动触发的 panic，排除中止错误的重试，并观测 worker 错误事件。 | `cargo run -p catch-panic --locked` |
-| [`graceful-shutdown`](examples/graceful-shutdown) | 响应 Ctrl+C，完成当前批次，并在关闭前模拟保存任务状态。 | `cargo run -p graceful-shutdown --locked` |
-| [`long-running`](examples/long-running) | 通过 `TaskRunner` 并发执行数据导出、收集结果，并在关闭时等待执行中的任务完成。 | `cargo run -p long-running --locked` |
+从 [`basic`](examples/basic) 了解任务处理与中间件的组合方式。在仓库根目录运行：
 
-请在仓库根目录运行这些命令。每个示例均包含独立的 `Cargo.toml` 和 `src/main.rs`，展示所需 feature 和执行过程的注释。
+```sh
+cargo run -p basic --locked
+```
 
-`basic` 处理完任务后自动退出，其他示例会保持 worker 运行，直到按下 **Ctrl+C**。`catch-panic` 会先打印 panic hook 信息，再上报捕获到的错误，不会发送邮件。`graceful-shutdown` 在每个五秒批次结束后检查关闭状态，再用五秒模拟检查点保存，不会实际写入数据。`long-running` 模拟三个耗时八至十二秒的导出操作；按下 Ctrl+C 后，会等待当前导出完成并收集结果。
+更多依赖注入、worker 上下文、panic 处理和关闭场景，以及各示例的运行与退出说明，见[示例指南](examples/README.zh-CN.md)。
 
 ## miju 的运行方式
 

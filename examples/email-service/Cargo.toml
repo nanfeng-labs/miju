@@ -1,0 +1,19 @@
+[package]
+name = "email-service"
+version = "0.1.0"
+publish = false
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared simulated email jobs, validation outcomes, and form markup for examples"
+
+[dependencies]
+miju = { version = "0.1.0", default-features = false }
+email_address = { version = "0.2.9", default-features = false }
+serde = { version = "1", features = ["derive"] }
+tracing = { version = "0.1.44", default-features = false, features = ["std"] }
+
+[lints]
+workspace = true
