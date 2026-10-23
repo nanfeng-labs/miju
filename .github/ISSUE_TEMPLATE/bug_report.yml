@@ -1,0 +1,88 @@
+name: Bug Report
+description: Report a bug to help improve miju.
+title: "[Bug]: "
+labels: ["bug"]
+assignees: []
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting a problem with miju!
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Briefly describe the bug.
+      placeholder: What did you observe?
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: Describe the behavior you expected.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Explain how to reproduce the issue.
+      placeholder: |
+        1. Set up ...
+        2. Run ...
+        3. See the error.
+    validations:
+      required: true
+
+  - type: textarea
+    id: code
+    attributes:
+      label: Minimal code example
+      description: If applicable, include a minimal example that reproduces the issue.
+      render: rust
+
+  - type: dropdown
+    id: version
+    attributes:
+      label: Version
+      description: Which version of miju are you using?
+      options:
+        - 0.1.x
+        - main branch
+        - Other (specify in additional context)
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: |
+        Provide the following environment details:
+        - OS name and version (e.g. Ubuntu 24.04, macOS 15, Windows 11)
+        - Rust version (e.g. 1.85.0)
+        - Cargo version (e.g. 1.85.0)
+      value: |
+        - OS:
+        - Rust version:
+        - Cargo version:
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log output
+      description: Paste any relevant logs here. They will be formatted as code automatically, so omit backticks.
+      render: shell
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Add any other details about the issue.
