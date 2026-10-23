@@ -26,6 +26,16 @@ version = "1.5.1"
 criteria = "safe-to-deploy"
 notes = "Unaudited miju-codec dependency baseline; replace with a matching audit when available."
 
+[[exemptions.axum]]
+version = "0.8.9"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
+
+[[exemptions.axum-core]]
+version = "0.5.6"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
+
 [[exemptions.bincode]]
 version = "2.0.1"
 criteria = "safe-to-deploy"
@@ -181,6 +191,36 @@ version = "0.14.5"
 criteria = "safe-to-deploy"
 notes = "Unaudited initial baseline; replace with a matching audit when available."
 
+[[exemptions.http]]
+version = "1.5.0"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
+
+[[exemptions.http-body]]
+version = "1.1.0"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
+
+[[exemptions.http-body-util]]
+version = "0.1.5"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
+
+[[exemptions.httparse]]
+version = "1.10.1"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
+
+[[exemptions.hyper]]
+version = "1.12.0"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
+
+[[exemptions.hyper-util]]
+version = "0.1.21"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
+
 [[exemptions.icu_collections]]
 version = "2.3.0"
 criteria = "safe-to-deploy"
@@ -286,6 +326,11 @@ version = "0.7.2"
 criteria = "safe-to-deploy"
 notes = "Unaudited Prometheus dependency baseline for miju; replace with a matching audit when available."
 
+[[exemptions.matchit]]
+version = "0.8.4"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
+
 [[exemptions.memchr]]
 version = "2.8.3"
 criteria = "safe-to-deploy"
@@ -305,6 +350,11 @@ notes = "Unaudited Prometheus dependency baseline for miju; replace with a match
 version = "0.20.4"
 criteria = "safe-to-deploy"
 notes = "Unaudited Prometheus dependency baseline for miju; replace with a matching audit when available."
+
+[[exemptions.mime]]
+version = "0.3.17"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
 
 [[exemptions.mio]]
 version = "1.2.4"
@@ -456,6 +506,11 @@ version = "1.0.23"
 criteria = "safe-to-deploy"
 notes = "Unaudited initial baseline; replace with a matching audit when available."
 
+[[exemptions.ryu]]
+version = "1.0.23"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
+
 [[exemptions.scoped-tls]]
 version = "1.0.1"
 criteria = "safe-to-deploy"
@@ -496,6 +551,16 @@ version = "1.0.154"
 criteria = "safe-to-deploy"
 notes = "Unaudited runtime dependency baseline for miju-codec; replace with a matching audit when available."
 
+[[exemptions.serde_path_to_error]]
+version = "0.1.20"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
+
+[[exemptions.serde_urlencoded]]
+version = "0.7.1"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
+
 [[exemptions.signal-hook-registry]]
 version = "1.4.8"
 criteria = "safe-to-deploy"
@@ -515,6 +580,11 @@ notes = "Unaudited initial baseline; replace with a matching audit when availabl
 version = "1.16.3"
 criteria = "safe-to-deploy"
 notes = "Unaudited initial baseline; replace with a matching audit when available."
+
+[[exemptions.socket2]]
+version = "0.6.5"
+criteria = "safe-to-deploy"
+notes = "Unaudited example dependency baseline; replace with a matching audit when available."
 
 [[exemptions.stable_deref_trait]]
 version = "1.2.1"

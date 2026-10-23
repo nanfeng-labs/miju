@@ -50,6 +50,7 @@ cargo run -p basic --locked
 | 示例 | 场景 |
 | --- | --- |
 | [`tracing`](tracing) | 对比后端与 worker 的本地 span，以及通过任务元数据恢复的 producer trace。 |
+| [`prometheus`](prometheus) | 通过 HTTP 表单提交邮件任务，使用 metrics recorder 暴露任务计数和耗时直方图。 |
 
 ## 共享示例支持
 
@@ -77,3 +78,4 @@ cargo run -p basic --locked
 - **`monitor-context`** 每 500 毫秒向两个临时文件入队，并发上限分别为 30、20。任务随机选择 1–20 秒的耗时：超过七秒时立即取消，否则等待后返回预期错误。独立 future 每秒刷新终端面板，展示名称、运行与就绪状态、任务数、重启数和运行时长；重定向输出为纯文本快照。Ctrl+C 最多等待五秒，随后结束生产与展示并恢复终端。十二秒的 `run_until_executed` 子任务在下次被轮询时检查取消，运行时退出也会丢弃它。此示例不安装 trace provider。
 
 - **`tracing`** 使用 `cargo run -p tracing-example --locked` 运行。输出四组 trace/span ID，在两个任务返回预期错误后退出。携带元数据的 consumer 与 producer 共享 trace ID，但有独立的 span ID；普通 consumer 属于自身 worker 的 trace。保留默认 debug 过滤器或设置 `RUST_LOG=debug`，才能看到任务 span。示例安装 SDK 和 W3C propagator，不配置远端 exporter；内联测试还会校验实际导出的父 span ID。
+- **`prometheus`** 使用 `cargo run -p prometheus-example --locked` 运行，监听 `127.0.0.1:3000`。在 `/` 提交模拟邮件，在 `/metrics` 抓取 `tasks_total` 和 `task_duration_seconds`。201 仅表示入队成功，地址校验由 worker 执行，无效地址会产生错误指标。示例使用单线程运行时，在并发处理 HTTP 请求的同时串行执行文件后端的同步操作；使用新建的临时 JSON 文件，轮询接收后续提交，并在 Ctrl+C 后清理文件，不提供跨重启的持久存储。
