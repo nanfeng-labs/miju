@@ -52,6 +52,7 @@ cargo run -p basic --locked
 | [`tracing`](tracing) | 对比后端与 worker 的本地 span，以及通过任务元数据恢复的 producer trace。 |
 | [`prometheus`](prometheus) | 通过 HTTP 表单提交邮件任务，使用 metrics recorder 暴露任务计数和耗时直方图。 |
 | [`opentelemetry`](opentelemetry) | 通过 Prometheus registry 与 HTTP 抓取端点导出 OpenTelemetry SDK 的计数及直方图。 |
+| [`sentry`](sentry) | 隔离并发任务的 hub，记录进度 breadcrumbs 和嵌套 spans，并上报模拟错误。 |
 
 ## 共享示例支持
 
@@ -80,3 +81,4 @@ cargo run -p basic --locked
 
 - **`tracing`** 使用 `cargo run -p tracing-example --locked` 运行。输出四组 trace/span ID，在两个任务返回预期错误后退出。携带元数据的 consumer 与 producer 共享 trace ID，但有独立的 span ID；普通 consumer 属于自身 worker 的 trace。保留默认 debug 过滤器或设置 `RUST_LOG=debug`，才能看到任务 span。示例安装 SDK 和 W3C propagator，不配置远端 exporter；内联测试还会校验实际导出的父 span ID。
 - **`prometheus`** 与 **`opentelemetry`** 分别使用 `cargo run -p prometheus-example --locked`、`cargo run -p opentelemetry-example --locked` 运行。两者都监听 `127.0.0.1:3000`，请逐个启动。在 `/` 提交模拟邮件，在 `/metrics` 抓取指标。201 仅表示入队成功，地址校验由 worker 执行，无效地址会产生错误指标。前者暴露 `tasks_total` 和 `task_duration_seconds`；后者通过 OpenTelemetry resource 与 reader 暴露 `messaging_client_consumed_messages_total` 和 `messaging_process_duration_seconds`。两者使用单线程运行时，在并发处理 HTTP 请求的同时串行执行文件后端的同步操作。它们均使用新建的临时 JSON 文件，轮询接收后续提交，并在 Ctrl+C 后清理文件，不提供跨重启的持久存储。
+- **`sentry`** 使用 `SENTRY_DSN=<your-dsn> cargo run -p sentry-example --locked` 运行，要求 Rust 1.89 或更新版本。并发处理两封模拟邮件，记录 DNS、服务商、用户查询及两个嵌套用户 span，随后上报预期错误。示例对错误和事务全部采样；该运行命令会向配置的 Sentry 项目发送遥测，不会发送邮件。等待进度日志后按 Ctrl+C，客户端会排空待发送事件。`cargo test -p sentry-example --locked` 完全在内存中捕获事件、breadcrumbs 和事务，不进行网络投递。
