@@ -1,5 +1,5 @@
 name: Feature Request
-description: Suggest a feature or improvement for miju.
+description: Suggest an idea for this project
 title: "[Feature]: "
 labels: ["enhancement"]
 assignees: []
@@ -8,14 +8,14 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thank you for suggesting a feature for miju!
+        Thanks for taking the time to suggest a new feature!
 
   - type: textarea
     id: problem
     attributes:
       label: Is your feature request related to a problem?
-      description: Briefly describe the problem behind your request.
-      placeholder: I run into a problem when ...
+      description: A clear and concise description of what the problem is.
+      placeholder: I'm always frustrated when...
     validations:
       required: true
 
@@ -23,7 +23,7 @@ body:
     id: solution
     attributes:
       label: Describe the solution you'd like
-      description: Describe the change you would like to see.
+      description: A clear and concise description of what you want to happen.
     validations:
       required: true
 
@@ -31,13 +31,13 @@ body:
     id: alternatives
     attributes:
       label: Describe alternatives you've considered
-      description: Describe any alternative solutions or features you have considered.
+      description: A clear and concise description of any alternative solutions or features you've considered.
 
   - type: textarea
     id: use-case
     attributes:
       label: Use case
-      description: Explain your use case and how the feature would help you.
+      description: Describe your specific use case and how this feature would help.
     validations:
       required: true
 
@@ -45,4 +45,4 @@ body:
     id: implementation
     attributes:
       label: Additional context
-      description: Include any other details, screenshots, or ideas for implementing the feature.
+      description: Add any other context, screenshots, or implementation ideas about the feature request here.
