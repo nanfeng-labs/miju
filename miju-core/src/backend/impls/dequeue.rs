@@ -81,7 +81,17 @@ impl<T> Backend for VecDequeBackend<T> {
             .is_empty()
         {
             *self.waker.lock().unwrap() = Some(cx.waker().clone());
-            Poll::Pending
+            // A producer may have sent before the waker was registered.
+            if self
+                .queue
+                .lock()
+                .map_err(|e| VecDequeError::PollError(Arc::new(e.to_string().into())))?
+                .is_empty()
+            {
+                Poll::Pending
+            } else {
+                Poll::Ready(Ok(()))
+            }
         } else {
             Poll::Ready(Ok(()))
         }
