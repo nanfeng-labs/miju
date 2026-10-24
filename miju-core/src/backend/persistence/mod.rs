@@ -137,10 +137,13 @@ where
 }
 
 macro_rules! poll_fut_or_return {
-    ($fut:expr, $cx:expr) => {
+    ($fut:expr, $cx:expr, $state:expr) => {
         match $fut.poll_unpin($cx) {
             Poll::Ready(Ok(v)) => v,
-            Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+            Poll::Ready(Err(e)) => {
+                $state = State::Dead;
+                return Poll::Ready(Err(e));
+            }
             Poll::Pending => return Poll::Pending,
         }
     };
@@ -411,8 +414,8 @@ where
     /// An in-progress fetch is dropped without awaiting its result or returning
     /// tasks it may already have claimed. Submission flushing is separate: use
     /// the `Sink` interface to flush tasks queued by producers.
-    /// On a close-path error, the completed future remains in the current state;
-    /// callers must not assume it can safely be polled again.
+    /// On a close-path error, normal task polling stops and the error is returned.
+    /// Later close polls can finish without retrying the failed operation.
     pub fn poll_close(
         &mut self,
         cx: &mut Context<'_>,
@@ -423,20 +426,20 @@ where
             match &mut self.state {
                 // Let any in-flight future finish before we start forcing drains
                 State::RegisterWorker(fut) | State::HeartBeat(fut) => {
-                    poll_fut_or_return!(fut, cx);
+                    poll_fut_or_return!(fut, cx, self.state);
                     debug!("poll_close: in-flight RegisterWorker/HeartBeat completed");
                     worker.heartbeat(cx);
                     self.state = State::Ready;
                 }
 
                 State::ProcessEvents(fut) => {
-                    poll_fut_or_return!(fut, cx);
+                    poll_fut_or_return!(fut, cx, self.state);
                     trace!("poll_close: ProcessEvents complete -> Ready");
                     self.state = State::Ready;
                 }
 
                 State::ReenqueueOrphaned(fut) => {
-                    poll_fut_or_return!(fut, cx);
+                    poll_fut_or_return!(fut, cx, self.state);
                     debug!("poll_close: ReenqueueOrphaned complete -> Ready");
                     self.state = State::Ready;
                 }
@@ -787,7 +790,7 @@ mod tests {
     }
 
     #[test]
-    fn shutdown_reenqueues_before_draining_events_and_retains_failed_future() {
+    fn shutdown_reenqueues_before_draining_events_and_stops_on_error() {
         for failure in [None, Some("reenqueue"), Some("events")] {
             let (provider, mut driver, worker) = fixture();
             ready(&mut driver, &worker);
@@ -810,9 +813,20 @@ mod tests {
                     };
                     assert_eq!(error.to_string(), operation);
                     assert!(matches!(
-                        driver.state(),
-                        State::ReenqueueOrphaned(_) | State::ProcessEvents(_)
+                        driver.poll_close(&mut cx, &worker),
+                        Poll::Ready(Ok(()))
                     ));
+                    assert_eq!(
+                        provider
+                            .0
+                            .lock()
+                            .unwrap()
+                            .calls
+                            .iter()
+                            .filter(|name| **name == operation)
+                            .count(),
+                        1
+                    );
                 }
             }
         }
@@ -1200,7 +1214,7 @@ mod tests {
         assert!(records.reenqueued.is_empty());
     }
     #[test]
-    fn close_errors_preserve_registration_and_heartbeat_states() {
+    fn close_errors_discard_completed_registration_and_heartbeat_futures() {
         for operation in ["register", "heartbeat"] {
             let (provider, mut driver, worker) = fixture();
             if operation == "heartbeat" {
@@ -1219,9 +1233,20 @@ mod tests {
             };
             assert_eq!(error.to_string(), operation);
             assert!(matches!(
-                driver.state(),
-                State::RegisterWorker(_) | State::HeartBeat(_)
+                driver.poll_close(&mut cx, &worker),
+                Poll::Ready(Ok(()))
             ));
+            assert_eq!(
+                provider
+                    .0
+                    .lock()
+                    .unwrap()
+                    .calls
+                    .iter()
+                    .filter(|name| **name == operation)
+                    .count(),
+                1
+            );
         }
     }
 }
