@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- docs(retry): clarify the metadata attempt limit ([#54](https://github.com/nanfeng-labs/miju/pull/54))
 - fix(core): release task registration on synchronous call panic ([#22](https://github.com/nanfeng-labs/miju/pull/22))
 - fix(core): honor destination readiness when polling pipes ([#21](https://github.com/nanfeng-labs/miju/pull/21))
 - fix(core): restore shared backend wakeups under contention ([#20](https://github.com/nanfeng-labs/miju/pull/20))
