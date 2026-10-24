@@ -319,8 +319,7 @@ impl Future for WaitForExecutionFuture {
 ///
 /// The sub-task is cancelled if the parent task context is completed before
 /// the future resolves. The sub-task is also tracked by the parent context,
-/// and the parent context will not be considered complete until all sub-tasks
-/// have completed.
+/// but tracking does not delay the parent context's completion or cancellation.
 #[must_use = "futures do nothing unless polled"]
 #[pin_project::pin_project(PinnedDrop)]
 #[derive(Debug)]
