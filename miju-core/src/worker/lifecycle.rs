@@ -103,15 +103,46 @@ where
             .register_task(task.ctx())
             .expect("Could not register task");
 
+        // Cover unwinding before the future takes over registration cleanup.
+        let mut registration = TaskRegistrationGuard {
+            worker: Some(&self.worker),
+            task_ctx: &task_ctx,
+        };
+        let fut = self.service.call(task);
+        let worker = self.worker.clone();
+        registration.worker = None;
+        drop(registration);
+
         LifecycleFuture {
-            fut: self.service.call(task),
-            worker: self.worker.clone(),
+            fut,
+            worker,
             #[cfg(feature = "task-context")]
             task_ctx,
             #[cfg(not(feature = "task-context"))]
             task_ctx: (),
             record_attempt: Some(attempt),
             task_status: status,
+        }
+    }
+}
+
+struct TaskRegistrationGuard<'a> {
+    worker: Option<&'a WorkerContext>,
+    #[cfg(feature = "task-context")]
+    task_ctx: &'a TaskContext,
+    #[cfg(not(feature = "task-context"))]
+    task_ctx: &'a (),
+}
+
+impl Drop for TaskRegistrationGuard<'_> {
+    fn drop(&mut self) {
+        if let Some(worker) = self.worker {
+            if worker.remove_task(self.task_ctx).is_err() {
+                warn!("Dropped a task without removing it from the worker's context");
+            }
+            if worker.task_count() == 0 {
+                worker.wake();
+            }
         }
     }
 }
@@ -228,12 +259,10 @@ where
 impl<Fut> PinnedDrop for LifecycleFuture<Fut> {
     fn drop(self: Pin<&mut Self>) {
         let this = self.project();
-        if this.worker.remove_task(this.task_ctx).is_err() {
-            warn!("Dropped a task without removing it from the worker's context");
-        }
-        if this.worker.task_count() == 0 {
-            this.worker.wake();
-        }
+        drop(TaskRegistrationGuard {
+            worker: Some(this.worker),
+            task_ctx: this.task_ctx,
+        });
     }
 }
 
@@ -242,15 +271,86 @@ mod tests {
     use super::*;
     use crate::task::{builder::TaskBuilder, task_fn::task_fn};
     use std::{
-        future::{Future, pending, ready},
-        task::Waker,
+        future::{Future, Ready, pending, ready},
+        panic::{AssertUnwindSafe, catch_unwind},
+        sync::{Arc, atomic::AtomicUsize},
+        task::{Wake, Waker},
         time::Duration,
     };
+
+    struct CountWake(AtomicUsize);
+
+    impl Wake for CountWake {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
 
     fn task() -> Task<u32> {
         TaskBuilder::new(7)
             .task_id("tracked".to_owned().into())
             .build()
+    }
+
+    #[test]
+    fn synchronous_call_panic_releases_registration_and_wakes_worker() {
+        let worker = WorkerContext::new("call-panic");
+        let observer = worker.clone();
+        let mut service = LifecycleLayer::new(worker.clone()).layer(task_fn(
+            move |_: u32| -> Ready<Result<(), BoxDynError>> {
+                assert_eq!(observer.task_count(), 1);
+                #[cfg(feature = "task-context")]
+                assert!(observer.get_task("tracked").is_ok());
+                panic!("call failed");
+            },
+        ));
+        let wake = Arc::new(CountWake(AtomicUsize::new(0)));
+        let waker = wake.clone().into();
+        worker.register_waker(&Context::from_waker(&waker));
+
+        for expected_wakes in 1..=3 {
+            let task = task();
+            let panic = catch_unwind(AssertUnwindSafe(|| service.call(task.clone()))).unwrap_err();
+            assert_eq!(panic.downcast_ref::<&str>(), Some(&"call failed"));
+            assert_eq!(worker.task_count(), 0);
+            assert_eq!(wake.0.load(Ordering::SeqCst), expected_wakes);
+            assert_eq!(task.attempt(), 0);
+            assert_eq!(task.status(), Status::Pending);
+            #[cfg(feature = "task-context")]
+            assert!(worker.get_task("tracked").is_err());
+        }
+    }
+
+    #[test]
+    fn synchronous_call_panic_keeps_other_tasks_registered() {
+        let worker = WorkerContext::new("call-panic-with-pending");
+        let mut pending_service = LifecycleLayer::new(worker.clone())
+            .layer(task_fn(|_: u32| pending::<Result<(), BoxDynError>>()));
+        let other = task()
+            .into_builder()
+            .task_id("other".to_owned().into())
+            .build();
+        let pending = pending_service.call(other);
+        let observer = worker.clone();
+        let mut service = LifecycleLayer::new(worker.clone()).layer(task_fn(
+            move |_: u32| -> Ready<Result<(), BoxDynError>> {
+                assert_eq!(observer.task_count(), 2);
+                panic!("call failed");
+            },
+        ));
+        let wake = Arc::new(CountWake(AtomicUsize::new(0)));
+        let waker = wake.clone().into();
+        worker.register_waker(&Context::from_waker(&waker));
+
+        let panic = catch_unwind(AssertUnwindSafe(|| service.call(task()))).unwrap_err();
+        assert_eq!(panic.downcast_ref::<&str>(), Some(&"call failed"));
+        assert_eq!(worker.task_count(), 1);
+        assert_eq!(wake.0.load(Ordering::SeqCst), 0);
+        #[cfg(feature = "task-context")]
+        assert!(worker.get_task("other").is_ok());
+        drop(pending);
+        assert_eq!(worker.task_count(), 0);
+        assert_eq!(wake.0.load(Ordering::SeqCst), 1);
     }
 
     #[test]
