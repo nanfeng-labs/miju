@@ -423,13 +423,16 @@ where
 
 /// Retry metadata extension to include [`RetryConfig`]
 pub trait RetryMetadataExt {
-    /// Set number of retries
+    /// Set [`RetryConfig::retries`] in the task metadata.
+    ///
+    /// [`FromTaskConfigPolicy`] compares this limit with the total attempt count,
+    /// including the first execution, and also applies its inner policy's limit.
     #[must_use]
     fn retries(self, retries: usize) -> Self;
 }
 
 impl<Args> RetryMetadataExt for TaskBuilder<Args> {
-    /// Set number of retries in the metadata
+    /// Set [`RetryConfig::retries`] in the task metadata.
     fn retries(self, retries: usize) -> Self {
         self.metadata(&RetryConfig { retries })
     }
