@@ -71,6 +71,36 @@ async fn synchronous_call_panic_becomes_an_abort_error() {
     assert_aborted_panic(&future.await.unwrap_err(), "call failed");
 }
 
+#[tokio::test(start_paused = true)]
+async fn worker_can_stop_after_synchronous_call_panic() {
+    let mut storage = MemoryStorage::new();
+    let task = TaskBuilder::new(7u32)
+        .task_id("sync-panic".to_owned().into())
+        .build();
+    storage.push_task(task.clone()).await.unwrap();
+    let observed = Arc::new(Mutex::new(None));
+    let capture = observed.clone();
+    let worker = WorkerBuilder::new("sync-panic")
+        .backend(storage)
+        .catch_panic()
+        .on_event(move |worker, event| {
+            if let Event::Error(error) = event {
+                assert_aborted_panic(error, "call failed");
+                *capture.lock().unwrap() = Some(worker.clone());
+                worker.stop().unwrap();
+            }
+        })
+        .build(|_: u32| -> Ready<()> { panic!("call failed") });
+
+    tokio::time::timeout(Duration::from_secs(5), worker.run())
+        .await
+        .expect("worker must finish after the panic was caught")
+        .unwrap();
+    assert_eq!(observed.lock().unwrap().as_ref().unwrap().task_count(), 0);
+    assert_eq!(task.attempt(), 0);
+    assert_eq!(task.status(), Status::Pending);
+}
+
 #[tokio::test]
 async fn polling_panics_preserve_strings_and_handle_other_payloads() {
     for (payload, message) in [(0, "borrowed"), (1, "owned"), (2, "Unknown panic")] {
