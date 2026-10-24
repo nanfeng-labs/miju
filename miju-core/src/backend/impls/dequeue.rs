@@ -1,6 +1,8 @@
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
+    mem,
     pin::Pin,
+    ptr,
     sync::{Arc, Mutex},
     task::{Context, Poll, Waker},
 };
@@ -24,14 +26,41 @@ use crate::{
 #[derive(Debug, Clone)]
 pub struct VecDequeBackend<T> {
     queue: Arc<Mutex<VecDeque<Task<T>>>>,
-    waker: Arc<Mutex<Option<Waker>>>,
+    waker: WakerRegistration,
+}
+
+#[derive(Debug, Clone)]
+struct WakerRegistration {
+    wakers: Arc<Mutex<HashMap<usize, Waker>>>,
+    // The allocation keeps this handle's identity unique until cleanup finishes.
+    key: Box<u8>,
+}
+
+impl Drop for WakerRegistration {
+    fn drop(&mut self) {
+        let previous = self
+            .wakers
+            .lock()
+            .unwrap()
+            .remove(&(ptr::from_ref(self.key.as_ref()) as usize));
+        drop(previous);
+    }
+}
+
+impl Default for WakerRegistration {
+    fn default() -> Self {
+        Self {
+            wakers: Arc::new(Mutex::new(HashMap::new())),
+            key: Box::new(0),
+        }
+    }
 }
 
 impl<T> Default for VecDequeBackend<T> {
     fn default() -> Self {
         Self {
             queue: Arc::new(Mutex::new(VecDeque::new())),
-            waker: Arc::new(Mutex::new(None)),
+            waker: WakerRegistration::default(),
         }
     }
 }
@@ -48,7 +77,7 @@ impl<T> VecDequeBackend<T> {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             queue: Arc::new(Mutex::new(VecDeque::with_capacity(capacity))),
-            waker: Arc::new(Mutex::new(None)),
+            waker: WakerRegistration::default(),
         }
     }
 }
@@ -80,7 +109,14 @@ impl<T> Backend for VecDequeBackend<T> {
             .map_err(|e| VecDequeError::PollError(Arc::new(e.to_string().into())))?
             .is_empty()
         {
-            *self.waker.lock().unwrap() = Some(cx.waker().clone());
+            let waker = cx.waker().clone();
+            let previous = self
+                .waker
+                .wakers
+                .lock()
+                .unwrap()
+                .insert(ptr::from_ref(self.waker.key.as_ref()) as usize, waker);
+            drop(previous);
             Poll::Pending
         } else {
             Poll::Ready(Ok(()))
@@ -152,8 +188,12 @@ where
 
         tasks.push_back(item);
 
-        if let Some(waker) = this.waker.lock().unwrap().as_ref() {
-            waker.wake_by_ref();
+        drop(tasks);
+
+        // Take the whole batch before callbacks can reenter and register again.
+        let wakers = mem::take(&mut *this.waker.wakers.lock().unwrap());
+        for waker in wakers.into_values() {
+            waker.wake();
         }
 
         Ok(())
