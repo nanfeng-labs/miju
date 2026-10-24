@@ -404,14 +404,15 @@ mod tests {
         ops::Deref,
         sync::{
             Arc,
-            atomic::{AtomicUsize, Ordering},
+            atomic::{AtomicBool, AtomicUsize, Ordering},
         },
+        task::Poll,
         time::Duration,
     };
 
     use super::*;
     use crate::{
-        backend::{TaskSink, memory::MemoryStorage},
+        backend::{TaskSink, ext::BackendExt, memory::MemoryStorage},
         task::ExecutionContext,
         worker::{
             builder::WorkerBuilder,
@@ -425,6 +426,7 @@ mod tests {
     };
     use futures_channel::mpsc::SendError;
     use futures_core::future::BoxFuture;
+    use tokio::sync::Notify;
 
     #[cfg(feature = "task-context")]
     use crate::task::context::TaskContext;
@@ -578,7 +580,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn handler_errors_are_events_and_eof_requires_context_stop() {
+    async fn handler_errors_are_events_and_eof_completes_shutdown() {
         let backend = futures_util::stream::iter([Ok::<_, std::io::Error>(7u32)]).boxed();
         let ctx = WorkerContext::new("events-and-eof");
         let worker = WorkerBuilder::new(&ctx)
@@ -590,13 +592,86 @@ mod tests {
             panic!("handler error must be emitted as an event");
         };
         assert_eq!(error.to_string(), "handler");
-        assert!(events.next().now_or_never().is_none());
-        assert!(ctx.is_running());
         assert_eq!(ctx.task_count(), 0);
-        ctx.stop().unwrap();
-        assert!(matches!(events.next().await, Some(Ok(Event::Exit))));
+        assert!(matches!(
+            events.next().now_or_never(),
+            Some(Some(Ok(Event::Exit)))
+        ));
         assert!(events.next().await.is_none());
         assert!(ctx.is_terminated());
+    }
+
+    #[tokio::test]
+    async fn eof_waits_for_inflight_tasks_and_backend_close_before_stopping() {
+        let task_gate = Arc::new(Notify::new());
+        let close_gate = Arc::new(Notify::new());
+        let eof_seen = Arc::new(AtomicBool::new(false));
+        let close_started = Arc::new(AtomicBool::new(false));
+        let stops = Arc::new(AtomicUsize::new(0));
+        let observed_eof = eof_seen.clone();
+        let mut next_task = Some(7u32);
+        let backend = futures_util::stream::poll_fn(move |_| {
+            let task = next_task.take();
+            if task.is_none() {
+                observed_eof.store(true, Ordering::SeqCst);
+            }
+            Poll::Ready(task.map(Ok::<_, std::io::Error>))
+        })
+        .boxed()
+        .before_stop({
+            let gate = close_gate.clone();
+            let started = close_started.clone();
+            move |_| {
+                started.store(true, Ordering::SeqCst);
+                let gate = gate.clone();
+                async move {
+                    gate.notified().await;
+                    Ok(())
+                }
+            }
+        });
+        let ctx = WorkerContext::new("eof-drains-before-stop");
+        let worker = WorkerBuilder::new(&ctx)
+            .backend(backend)
+            .on_event({
+                let stops = stops.clone();
+                move |_, event| {
+                    if matches!(event, Event::Stop) {
+                        stops.fetch_add(1, Ordering::SeqCst);
+                    }
+                }
+            })
+            .build({
+                let gate = task_gate.clone();
+                move |_: u32| {
+                    let gate = gate.clone();
+                    async move { gate.notified().await }
+                }
+            });
+        let mut events = worker.stream();
+        assert!(matches!(events.next().await, Some(Ok(Event::Start))));
+        assert!(events.next().now_or_never().is_none());
+        assert!(eof_seen.load(Ordering::SeqCst));
+        assert_eq!(ctx.task_count(), 1);
+        assert!(!close_started.load(Ordering::SeqCst));
+        assert!(ctx.is_running());
+
+        task_gate.notify_one();
+        assert!(matches!(events.next().await, Some(Ok(Event::Success(_)))));
+        assert_eq!(ctx.task_count(), 0);
+        assert!(events.next().now_or_never().is_none());
+        assert!(close_started.load(Ordering::SeqCst));
+        assert!(ctx.is_running());
+        assert_eq!(stops.load(Ordering::SeqCst), 0);
+
+        close_gate.notify_one();
+        assert!(matches!(
+            events.next().now_or_never(),
+            Some(Some(Ok(Event::Exit)))
+        ));
+        assert_eq!(stops.load(Ordering::SeqCst), 1);
+        assert!(ctx.is_terminated());
+        assert!(events.next().await.is_none());
     }
 
     #[tokio::test]
