@@ -499,10 +499,16 @@ mod tests {
             panic!("successfully completed send lost its buffered task")
         };
         assert_eq!(task.args, 7);
+        assert!(receiver.poll_next(&mut cx, &worker).is_pending());
         assert!(matches!(
-            receiver.poll_next(&mut cx, &worker),
-            Poll::Ready(None)
+            receiver.poll_ready_unpin(&mut cx),
+            Poll::Ready(Ok(()))
         ));
+        receiver.start_send_unpin(Task::new(8)).unwrap();
+        let Poll::Ready(Some(Ok(task))) = receiver.poll_next(&mut cx, &worker) else {
+            panic!("the live receiver must accept a later task")
+        };
+        assert_eq!(task.args, 8);
     }
 
     #[test]
