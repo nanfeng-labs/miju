@@ -815,7 +815,12 @@ where
 
                     if let Some((task_id, result, attempt)) = completed_task {
                         state.pending_tasks.remove(&task_id);
-                        let result: Result<O, String> = serde_json::from_value(result).unwrap();
+                        let result: Result<O, String> = match serde_json::from_value(result) {
+                            Ok(result) => result,
+                            Err(error) => {
+                                return Some((Err(FileStorageError::Json(error)), state));
+                            }
+                        };
                         return Some((
                             Ok(TaskResult {
                                 task_id,
