@@ -191,7 +191,7 @@ where
             Poll::Pending => {}
         }
 
-        if let Poll::Ready(Err(e)) = self.into.poll_ready(cx, worker) {
+        if let Err(e) = ready!(self.into.poll_ready(cx, worker)) {
             trace!(error = ?e, "poll_next: destination backend poll_ready failed");
             return Poll::Ready(Some(Err(PipeError::Inner(e.into()))));
         }
@@ -310,12 +310,25 @@ delegate_expose!(
 
 #[cfg(test)]
 mod tests {
-    use std::{io, time::Duration};
+    use std::{
+        io,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        task::Wake,
+        time::Duration,
+    };
 
-    use futures_util::{StreamExt, stream};
+    use futures_channel::oneshot;
+    use futures_util::{FutureExt, StreamExt, stream, task::noop_waker_ref};
 
     use crate::{
-        backend::{dequeue::VecDequeBackend, ext::BackendExt, memory::MemoryStorage},
+        backend::{
+            dequeue::{VecDequeBackend, VecDequeError},
+            ext::BackendExt,
+            memory::MemoryStorage,
+        },
         error::BoxDynError,
         worker::{
             builder::WorkerBuilder, context::WorkerContext, ext::event_listener::EventListenerExt,
@@ -323,6 +336,116 @@ mod tests {
     };
 
     use super::*;
+
+    struct ReadinessGate<B> {
+        inner: B,
+        gate: Option<oneshot::Receiver<bool>>,
+        next_calls: usize,
+    }
+
+    impl<B: Backend<Error = VecDequeError>> Backend for ReadinessGate<B> {
+        type Task = B::Task;
+        type Error = B::Error;
+
+        fn poll_ready(
+            &mut self,
+            cx: &mut Context<'_>,
+            worker: &WorkerContext,
+        ) -> Poll<Result<(), Self::Error>> {
+            if let Some(gate) = &mut self.gate {
+                let allowed = ready!(gate.poll_unpin(cx)).unwrap();
+                self.gate = None;
+                if !allowed {
+                    return Poll::Ready(Err(VecDequeError::PollError(Arc::new(
+                        io::Error::other("readiness failed").into(),
+                    ))));
+                }
+            }
+            self.inner.poll_ready(cx, worker)
+        }
+
+        fn poll_next(
+            &mut self,
+            cx: &mut Context<'_>,
+            worker: &WorkerContext,
+        ) -> Poll<Option<Result<Self::Task, Self::Error>>> {
+            self.next_calls += 1;
+            self.inner.poll_next(cx, worker)
+        }
+
+        fn poll_close(
+            &mut self,
+            cx: &mut Context<'_>,
+            worker: &WorkerContext,
+        ) -> Poll<Result<(), Self::Error>> {
+            self.inner.poll_close(cx, worker)
+        }
+    }
+
+    delegate_config!(ReadinessGate<B>, inner);
+    delegate_sink!(ReadinessGate<B>, inner);
+
+    struct CountWake(AtomicUsize);
+
+    impl Wake for CountWake {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn destination_readiness_pending_blocks_next_until_woken() {
+        let mut queue = VecDequeBackend::new();
+        queue.start_send_unpin(Task::new(1u32)).unwrap();
+        let destination = ReadinessGate {
+            inner: queue,
+            gate: None,
+            next_calls: 0,
+        };
+        let mut pipe = stream::iter([Ok::<_, io::Error>(2u32)]).pipe_to(destination);
+        let worker = WorkerContext::new("pipe-readiness");
+        let wake = Arc::new(CountWake(AtomicUsize::new(0)));
+        let waker = wake.clone().into();
+        let mut cx = Context::from_waker(&waker);
+        assert!(matches!(
+            Backend::poll_ready(&mut pipe, &mut cx, &worker),
+            Poll::Ready(Ok(()))
+        ));
+
+        let (tx, rx) = oneshot::channel();
+        pipe.into.gate = Some(rx);
+        assert!(pipe.poll_next(&mut cx, &worker).is_pending());
+        assert_eq!(pipe.into.next_calls, 0);
+        wake.0.store(0, Ordering::SeqCst);
+        tx.send(true).unwrap();
+        assert!(wake.0.load(Ordering::SeqCst) > 0);
+        for expected in [1, 2] {
+            let Poll::Ready(Some(Ok(task))) = pipe.poll_next(&mut cx, &worker) else {
+                panic!("missing task after readiness resumed");
+            };
+            assert_eq!(task.args, expected);
+        }
+        assert_eq!(pipe.into.next_calls, 2);
+    }
+
+    #[test]
+    fn destination_readiness_error_is_returned_without_polling_next() {
+        let (tx, rx) = oneshot::channel();
+        tx.send(false).unwrap();
+        let destination = ReadinessGate {
+            inner: VecDequeBackend::<u32>::new(),
+            gate: Some(rx),
+            next_calls: 0,
+        };
+        let mut pipe = stream::empty::<io::Result<u32>>().pipe_to(destination);
+        let worker = WorkerContext::new("pipe-readiness-error");
+        let mut cx = Context::from_waker(noop_waker_ref());
+        let Poll::Ready(Some(Err(error))) = pipe.poll_next(&mut cx, &worker) else {
+            panic!("missing readiness error");
+        };
+        assert!(error.to_string().contains("readiness failed"));
+        assert_eq!(pipe.into.next_calls, 0);
+    }
 
     const ITEMS: u32 = 10;
 
