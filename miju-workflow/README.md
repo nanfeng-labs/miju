@@ -447,10 +447,11 @@ single entry first.
 The root service clones node services for each call and skips their readiness
 polls. Clone-local mutable state does not persist between calls. New tasks copy
 graph metadata but omit arbitrary application data and unrelated metadata.
-Single-edge scheduling does not update dependency IDs, fan-out lets existing IDs
-override fresh ones, and fan-out increments the position twice. Completed-node
-sets are not updated. Do not rely on those fields as a complete execution history
-or assume joins across longer branches are fully supported.
+Fan-out records fresh IDs for newly enqueued nodes and retains other mappings.
+Single-edge scheduling does not update dependency IDs, and independently extended
+branches do not merge their mappings. Fan-out increments the position twice, and
+completed-node sets are not updated. Do not rely on those fields as a complete
+execution history or assume joins across longer branches are fully supported.
 
 Dependency waits have no timeout. Missing mappings can return a waiting response
 without scheduling another attempt, and backend errors are collected only after
