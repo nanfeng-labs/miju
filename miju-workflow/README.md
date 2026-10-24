@@ -105,9 +105,9 @@ Delay steps do not sleep. The backend must enforce scheduling timestamps, which
 use whole Unix seconds. The in-memory backend currently delivers these tasks
 immediately. A delay result contains the duration and the next task ID.
 
-Always follow a delay with a processing step. A terminal delay currently enqueues
-an index that has no registered step, causing dispatch to panic. This limitation
-applies to both fixed and computed delays.
+A terminal fixed or computed delay returns `GoTo::Done` without scheduling a
+successor. Computed delays still decode the input and invoke the duration
+function before finishing.
 
 ## Filter and map collections
 
