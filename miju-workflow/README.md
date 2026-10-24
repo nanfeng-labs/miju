@@ -273,17 +273,16 @@ steps; inspect `StepResponse.next_task_id` for continuations, including a fold's
 final `GoTo::Break` and a repeater's `GoTo::Break` between iterations.
 `check_status` returns only results currently stored and omits missing IDs.
 
-Handler errors are returned as stream errors; `check_status` fails if a requested
-stored task failed. A successful value that cannot be decoded into the requested
-output type instead produces an error inside `TaskResult.result`.
+Handler errors and output serialization errors are returned as stream errors;
+`check_status` fails if a requested stored task failed. A successful value that
+cannot be decoded into the requested output type instead produces an error
+inside `TaskResult.result`.
 
 Results are process-local, unbounded, and retained after being read. There is no
 persistence or automatic eviction. The current waiter implementation has a
 check/register race, shares registration IDs when streams are cloned, and does
 not remove registrations when pending streams are dropped. Avoid assuming that
-result waiting is reliable under all concurrent interleavings. If serializing a
-successful handler output fails, the service returns an error without recording
-a result, so a waiter for that task may remain pending.
+result waiting is reliable under all concurrent interleavings.
 Reusing the in-memory sink after a failed send to a closed channel can also panic;
 the underlying error mapper is consumed by its first failure.
 
