@@ -22,9 +22,9 @@ struct Inner<B> {
 
 /// Cloneable handles that share one backend behind an asynchronous mutex.
 ///
-/// Each handle owns its codec clone and pending-send buffer. Only sink
-/// `poll_ready` drains that buffer; `poll_flush` and `poll_close` delegate
-/// directly to the underlying backend.
+/// Each handle owns its codec clone and pending-send buffer. Sink `poll_ready`,
+/// `poll_flush`, and `poll_close` drain that buffer before delegating to the
+/// underlying backend.
 ///
 /// Calling [`BackendConfig::config`] panics. Middleware construction also
 /// panics if another handle currently holds the backend lock.
@@ -77,6 +77,21 @@ where
 }
 
 impl<B: WireFormatBackend> Shared<B> {
+    fn poll_drain_buffer(
+        sink: &mut VecDeque<Task<B::Compact>>,
+        backend: &mut B,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(), B::Error>>
+    where
+        B: Sink<Task<B::Compact>> + Unpin,
+    {
+        while !sink.is_empty() {
+            ready!(backend.poll_ready_unpin(cx))?;
+            backend.start_send_unpin(sink.pop_front().unwrap())?;
+        }
+        Poll::Ready(Ok(()))
+    }
+
     fn register_waker(inner: &Inner<B>, key: usize, cx: &Context<'_>) {
         let res = &inner.wakers;
         res.insert(key, cx.waker().clone());
@@ -197,20 +212,19 @@ where
     fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let this = self.get_mut();
         let mut guard = ready!(this.inner.backend.lock().poll_unpin(cx));
-        while !this.sink.is_empty() {
-            ready!(guard.poll_ready_unpin(cx))?;
-            let item = this.sink.pop_front().unwrap();
-            guard.start_send_unpin(item)?;
-        }
-
+        ready!(Self::poll_drain_buffer(&mut this.sink, &mut guard, cx))?;
         guard.poll_ready_unpin(cx)
     }
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        let mut guard = ready!(self.inner.backend.lock().poll_unpin(cx));
+        let this = self.get_mut();
+        let mut guard = ready!(this.inner.backend.lock().poll_unpin(cx));
+        ready!(Self::poll_drain_buffer(&mut this.sink, &mut guard, cx))?;
         guard.poll_flush_unpin(cx)
     }
     fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        let mut guard = ready!(self.inner.backend.lock().poll_unpin(cx));
+        let this = self.get_mut();
+        let mut guard = ready!(this.inner.backend.lock().poll_unpin(cx));
+        ready!(Self::poll_drain_buffer(&mut this.sink, &mut guard, cx))?;
         guard.poll_close_unpin(cx)
     }
 }
@@ -374,7 +388,14 @@ impl<B: WireFormatBackend> Drop for Shared<B> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::{codec::Codec, dequeue::VecDequeBackend, ext::BackendExt};
+    use crate::backend::{
+        codec::Codec,
+        custom::{BackendBuilder, CustomBackend},
+        dequeue::VecDequeBackend,
+        ext::{BackendExt, with_codec::WithCodec},
+    };
+    use futures_channel::mpsc;
+    use futures_util::stream::{self, Empty};
     use futures_util::task::noop_waker_ref;
     use std::convert::Infallible;
 
@@ -392,7 +413,7 @@ mod tests {
     }
 
     #[test]
-    fn contended_send_buffer_is_drained_by_readiness_not_flush_or_close() {
+    fn contended_send_buffer_is_drained_by_readiness() {
         let mut shared = VecDequeBackend::<u32>::new()
             .with_codec(IdentityCodec)
             .shared();
@@ -407,15 +428,6 @@ mod tests {
         assert_eq!(shared.sink.len(), 1);
         drop(guard);
         assert!(matches!(
-            shared.poll_flush_unpin(&mut cx),
-            Poll::Ready(Ok(()))
-        ));
-        assert!(matches!(
-            shared.poll_close_unpin(&mut cx),
-            Poll::Ready(Ok(()))
-        ));
-        assert_eq!(shared.sink.len(), 1);
-        assert!(matches!(
             shared.poll_ready_unpin(&mut cx),
             Poll::Ready(Ok(()))
         ));
@@ -426,6 +438,163 @@ mod tests {
             panic!("missing buffered task")
         };
         assert_eq!(task.args, 7);
+    }
+
+    fn assert_contended_send_is_completed(close: bool) {
+        let mut receiver = VecDequeBackend::<u32>::new();
+        let mut shared = receiver.clone().with_codec(IdentityCodec).shared();
+        let mut cx = Context::from_waker(noop_waker_ref());
+        assert!(matches!(
+            shared.poll_ready_unpin(&mut cx),
+            Poll::Ready(Ok(()))
+        ));
+        let inner = shared.inner.clone();
+        let guard = inner.backend.try_lock().unwrap();
+        shared.start_send_unpin(Task::new(7)).unwrap();
+        drop(guard);
+        let completion = poll_completion(&mut shared, &mut cx, close);
+        assert!(matches!(completion, Poll::Ready(Ok(()))));
+        drop(shared);
+        let worker = WorkerContext::new("shared-completion");
+        let Poll::Ready(Some(Ok(task))) = receiver.poll_next(&mut cx, &worker) else {
+            panic!("successfully completed send lost its buffered task")
+        };
+        assert_eq!(task.args, 7);
+        assert!(matches!(
+            receiver.poll_next(&mut cx, &worker),
+            Poll::Ready(None)
+        ));
+    }
+
+    #[test]
+    fn contended_send_is_delivered_before_flush_completes() {
+        assert_contended_send_is_completed(false);
+    }
+
+    #[test]
+    fn contended_send_is_delivered_before_close_completes() {
+        assert_contended_send_is_completed(true);
+    }
+
+    type ChannelBackend = WithCodec<
+        CustomBackend<
+            u32,
+            Option<mpsc::Sender<Task<u32>>>,
+            Empty<Result<Option<Task<u32>>, mpsc::SendError>>,
+            mpsc::Sender<Task<u32>>,
+        >,
+        IdentityCodec,
+    >;
+
+    fn channel_backend() -> (Shared<ChannelBackend>, mpsc::Receiver<Task<u32>>) {
+        let (sender, receiver) = mpsc::channel(0);
+        let backend = BackendBuilder::new()
+            .database(Some(sender))
+            .fetcher(|_, _, _| stream::empty())
+            .sink(|sender, _| sender.take().unwrap())
+            .build()
+            .unwrap()
+            .with_codec(IdentityCodec)
+            .shared();
+        (backend, receiver)
+    }
+
+    fn poll_completion<S: Sink<Task<u32>> + Unpin>(
+        sink: &mut S,
+        cx: &mut Context<'_>,
+        close: bool,
+    ) -> Poll<Result<(), S::Error>> {
+        if close {
+            sink.poll_close_unpin(cx)
+        } else {
+            sink.poll_flush_unpin(cx)
+        }
+    }
+
+    #[test]
+    fn buffered_completion_respects_backpressure_and_preserves_order() {
+        for close in [false, true] {
+            let (mut shared, mut receiver) = channel_backend();
+            let mut cx = Context::from_waker(noop_waker_ref());
+            assert!(matches!(
+                shared.poll_ready_unpin(&mut cx),
+                Poll::Ready(Ok(()))
+            ));
+            let inner = shared.inner.clone();
+            let mut guard = inner.backend.try_lock().unwrap();
+            // Another sender fills the channel after this handle becomes ready.
+            assert!(matches!(
+                guard.poll_ready_unpin(&mut cx),
+                Poll::Ready(Ok(()))
+            ));
+            guard.start_send_unpin(Task::new(1)).unwrap();
+            shared.start_send_unpin(Task::new(7)).unwrap();
+            drop(guard);
+
+            assert!(poll_completion(&mut shared, &mut cx, close).is_pending());
+            let Poll::Ready(Some(first)) = receiver.poll_next_unpin(&mut cx) else {
+                panic!("missing first task")
+            };
+            assert_eq!(first.args, 1);
+
+            let completion = poll_completion(&mut shared, &mut cx, close);
+            if close {
+                // Closing must not wait for capacity to accept an additional task.
+                assert!(matches!(completion, Poll::Ready(Ok(()))));
+            } else {
+                assert!(completion.is_pending());
+            }
+            let Poll::Ready(Some(second)) = receiver.poll_next_unpin(&mut cx) else {
+                panic!("missing buffered task")
+            };
+            assert_eq!(second.args, 7);
+            if !close {
+                assert!(matches!(
+                    shared.poll_flush_unpin(&mut cx),
+                    Poll::Ready(Ok(()))
+                ));
+            }
+            drop(shared);
+            drop(inner);
+            assert!(matches!(
+                receiver.poll_next_unpin(&mut cx),
+                Poll::Ready(None)
+            ));
+        }
+    }
+
+    #[test]
+    fn buffered_completion_propagates_readiness_errors() {
+        for close in [false, true] {
+            let (mut shared, receiver) = channel_backend();
+            let mut cx = Context::from_waker(noop_waker_ref());
+            assert!(matches!(
+                shared.poll_ready_unpin(&mut cx),
+                Poll::Ready(Ok(()))
+            ));
+            let inner = shared.inner.clone();
+            let guard = inner.backend.try_lock().unwrap();
+            shared.start_send_unpin(Task::new(7)).unwrap();
+            drop(guard);
+            drop(receiver);
+            assert!(matches!(
+                poll_completion(&mut shared, &mut cx, close),
+                Poll::Ready(Err(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn empty_completion_does_not_require_send_readiness() {
+        for close in [false, true] {
+            let (mut shared, receiver) = channel_backend();
+            drop(receiver);
+            let mut cx = Context::from_waker(noop_waker_ref());
+            assert!(matches!(
+                poll_completion(&mut shared, &mut cx, close),
+                Poll::Ready(Ok(()))
+            ));
+        }
     }
 
     #[test]
