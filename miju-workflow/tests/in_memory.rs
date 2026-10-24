@@ -5,7 +5,7 @@ use std::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     },
-    task::{Context, Wake, Waker},
+    task::{Context, Poll, Wake, Waker},
     time::Duration,
 };
 
@@ -193,4 +193,104 @@ async fn empty_wait_finishes_and_incompatible_result_types_are_reported() {
         .await
         .unwrap();
     assert!(snapshot[0].result.is_err());
+}
+
+#[tokio::test]
+async fn duplicate_result_ids_finish_after_each_distinct_result() {
+    let mut backend = InMemoryWorkflow::<u32>::create();
+    let layer = backend.middleware(&mut WorkerContext::new("duplicates"));
+    let ids = [RandomId::generate(), RandomId::generate()];
+    let service = layer.layer(service_fn(async |task: Task<u32>| {
+        Ok::<_, BoxDynError>(task.args)
+    }));
+    for (value, id) in ids.iter().enumerate() {
+        service
+            .clone()
+            .oneshot(TaskBuilder::new(value as u32).task_id(id.clone()).build())
+            .await
+            .unwrap();
+    }
+    let waker = Waker::from(Arc::new(WakeCounter::default()));
+    for input in [
+        vec![ids[0].clone(), ids[0].clone()],
+        vec![ids[0].clone(), ids[1].clone(), ids[0].clone()],
+    ] {
+        let expected = if input.len() == 2 {
+            &ids[..1]
+        } else {
+            &ids[..]
+        };
+        let mut results = WaitForCompletion::<u32>::wait_for(&mut backend, input);
+        for (value, id) in expected.iter().enumerate() {
+            assert!(matches!(
+                results.poll_next_unpin(&mut Context::from_waker(&waker)),
+                Poll::Ready(Some(Ok(result)))
+                    if result.task_id == *id && result.result == Ok(value as u32)
+            ));
+        }
+        assert!(
+            matches!(
+                results.poll_next_unpin(&mut Context::from_waker(&waker)),
+                Poll::Ready(None)
+            ),
+            "observing every distinct requested task must finish the stream"
+        );
+    }
+}
+
+#[tokio::test]
+async fn duplicate_result_ids_still_wait_for_missing_tasks_and_finish_after_errors() {
+    let mut backend = InMemoryWorkflow::<u32>::create();
+    let layer = backend.middleware(&mut WorkerContext::new("duplicate-errors"));
+    let ids = [RandomId::generate(), RandomId::generate()];
+    let service = layer.layer(service_fn(async |task: Task<u32>| {
+        if task.args == 0 {
+            Err::<u32, BoxDynError>("handler failed".into())
+        } else {
+            Ok(task.args)
+        }
+    }));
+    let mut results = WaitForCompletion::<u32>::wait_for(
+        &mut backend,
+        [ids[0].clone(), ids[1].clone(), ids[0].clone()],
+    );
+    let counter = Arc::new(WakeCounter::default());
+    let waker = Waker::from(counter.clone());
+    assert!(
+        results
+            .poll_next_unpin(&mut Context::from_waker(&waker))
+            .is_pending()
+    );
+    service
+        .clone()
+        .oneshot(TaskBuilder::new(7).task_id(ids[0].clone()).build())
+        .await
+        .unwrap();
+    assert!(matches!(
+        results.poll_next_unpin(&mut Context::from_waker(&waker)),
+        Poll::Ready(Some(Ok(result))) if result.result == Ok(7)
+    ));
+    counter.0.store(0, Ordering::SeqCst);
+    assert!(
+        results
+            .poll_next_unpin(&mut Context::from_waker(&waker))
+            .is_pending()
+    );
+    assert_eq!(counter.0.load(Ordering::SeqCst), 0);
+    service
+        .oneshot(TaskBuilder::new(0).task_id(ids[1].clone()).build())
+        .await
+        .unwrap_err();
+    assert!(counter.0.load(Ordering::SeqCst) > 0);
+    assert!(matches!(
+        results.poll_next_unpin(&mut Context::from_waker(&waker)),
+        Poll::Ready(Some(Err(error))) if error.to_string().contains("handler failed")
+    ));
+    assert!(
+        matches!(
+            results.poll_next_unpin(&mut Context::from_waker(&waker)),
+            Poll::Ready(None)
+        ),
+        "an observed error also completes its requested task"
+    );
 }
