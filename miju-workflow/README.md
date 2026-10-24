@@ -438,11 +438,10 @@ results must have `Done` status and contain `FanOut`, `EnqueuedNext` or `Complet
 their values are supplied in incoming edge insertion order. The backend must
 store these responses and implement `WaitForCompletion<GraphNodeResponse>`.
 
-Execution currently assumes node zero for an initial task with one entry node,
-even if the actual entry has another index. Missing or malformed graph metadata
-also takes the initial-task path; reinjecting context into partial metadata can
-fail or panic on duplicate keys. Use fresh initial metadata and register the
-single entry first.
+A task without readable graph context starts at the sole entry node, regardless
+of node registration order. Missing or malformed graph metadata takes the
+initial-task path; reinjecting context into partial metadata can fail or panic on
+duplicate keys. Use fresh initial metadata.
 
 The root service clones node services for each call and skips their readiness
 polls. Clone-local mutable state does not persist between calls. New tasks copy
