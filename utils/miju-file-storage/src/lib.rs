@@ -10,7 +10,7 @@ use miju_codec::json::JsonCodec;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     fmt::Debug,
     fs::{File, OpenOptions},
     io::{self, BufRead, Read, Seek, SeekFrom, Write},
@@ -768,9 +768,6 @@ where
 {
     type ResultStream = BoxStream<'static, Result<TaskResult<O>, FileStorageError<A>>>;
     fn wait_for(&mut self, task_ids: impl IntoIterator<Item = TaskId>) -> Self::ResultStream {
-        use futures_util::StreamExt;
-        use std::{collections::HashSet, time::Duration};
-
         let task_ids: HashSet<_> = task_ids.into_iter().collect();
         struct PollState<Res, T, A: Adapter> {
             vault: FileStorage<T, A>,
@@ -795,7 +792,9 @@ where
                     let vault = &state.vault;
 
                     let completed_task = {
-                        let vault = vault.entries.try_read().ok()?;
+                        let Ok(vault) = vault.entries.try_read() else {
+                            return Some((Err(FileStorageError::WouldBlockLock), state));
+                        };
                         vault.iter().find_map(|value| {
                             let attempt = value
                                 .ctx
@@ -839,15 +838,13 @@ where
         &mut self,
         task_ids: impl IntoIterator<Item = TaskId> + Send,
     ) -> Result<Vec<TaskResult<O>>, Self::Error> {
-        use miju_core::task::status::Status;
-        use std::collections::HashSet;
         let task_ids: HashSet<_> = task_ids.into_iter().collect();
         let mut results = Vec::new();
         for task_id in task_ids {
             if let Some(value) = self
                 .entries
                 .try_read()
-                .unwrap()
+                .map_err(|_| FileStorageError::WouldBlockLock)?
                 .iter()
                 .find(|s| s.task_id == task_id)
             {
