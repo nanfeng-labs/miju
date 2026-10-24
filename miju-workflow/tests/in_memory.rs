@@ -2,21 +2,22 @@
 
 use std::{
     sync::{
-        Arc,
+        Arc, Barrier,
         atomic::{AtomicUsize, Ordering},
     },
-    task::{Context, Wake, Waker},
+    task::{Context, Poll, Wake, Waker},
     time::Duration,
 };
 
 use futures_util::StreamExt;
 use miju_core::{
-    backend::{BackendConfig, TaskSink, WaitForCompletion},
+    backend::{BackendConfig, TaskResult, TaskSink, WaitForCompletion},
     error::BoxDynError,
     task::{
         Task,
         builder::TaskBuilder,
-        task_id::{GenerateId, RandomId},
+        status::Status,
+        task_id::{GenerateId, RandomId, TaskId},
     },
     worker::{builder::WorkerBuilder, context::WorkerContext},
 };
@@ -127,6 +128,112 @@ async fn result_insertion_wakes_a_pending_waiter_and_decodes_the_result() {
         .unwrap();
     assert_eq!(snapshot.len(), 1);
     assert_eq!(snapshot[0].result, Ok(9));
+}
+
+#[test]
+fn concurrent_result_insertion_does_not_leave_a_waiter_without_a_wakeup() {
+    const ROUNDS: usize = 512;
+    let mut backend = InMemoryWorkflow::<u32>::create();
+    let store = backend.middleware(&mut WorkerContext::new("race")).store();
+    let barrier = Arc::new(Barrier::new(2));
+    let pending_ids: Vec<_> = (0..256)
+        .map(|i| TaskId::from_string(format!("pending-{i}")))
+        .collect();
+    let mut missed_wakeups = 0;
+
+    std::thread::scope(|scope| {
+        let writer_barrier = barrier.clone();
+        let writer_store = store.clone();
+        scope.spawn(move || {
+            for i in 0..ROUNDS {
+                let id = TaskId::from_string(format!("result-{i}"));
+                writer_barrier.wait();
+                std::thread::yield_now();
+                writer_store.insert(
+                    id.clone(),
+                    TaskResult {
+                        task_id: id,
+                        attempt: 0,
+                        status: Status::Done,
+                        result: Ok(json!(7)),
+                    },
+                );
+                writer_barrier.wait();
+            }
+        });
+
+        for i in 0..ROUNDS {
+            let id = TaskId::from_string(format!("result-{i}"));
+            let ids = std::iter::once(id).chain(pending_ids.iter().cloned());
+            let mut results = WaitForCompletion::<u32>::wait_for(&mut backend, ids);
+            let counter = Arc::new(WakeCounter::default());
+            let waker = Waker::from(counter.clone());
+            barrier.wait();
+            let polled = results.poll_next_unpin(&mut Context::from_waker(&waker));
+            barrier.wait();
+            if polled.is_pending() && counter.0.load(Ordering::SeqCst) == 0 {
+                missed_wakeups += 1;
+            }
+        }
+    });
+
+    assert_eq!(
+        missed_wakeups, 0,
+        "a completed result must be returned or wake its pending observer"
+    );
+}
+
+#[test]
+fn result_waiting_replaces_the_waker_and_does_not_rewake_for_completed_ids() {
+    let mut backend = InMemoryWorkflow::<u32>::create();
+    let store = backend
+        .middleware(&mut WorkerContext::new("results"))
+        .store();
+    let ids = [RandomId::generate(), RandomId::generate()];
+    let mut results = WaitForCompletion::<u32>::wait_for(&mut backend, ids.clone());
+    let old_counter = Arc::new(WakeCounter::default());
+    let old_waker = Waker::from(old_counter.clone());
+    let counter = Arc::new(WakeCounter::default());
+    let waker = Waker::from(counter.clone());
+    assert!(
+        results
+            .poll_next_unpin(&mut Context::from_waker(&old_waker))
+            .is_pending()
+    );
+    assert!(
+        results
+            .poll_next_unpin(&mut Context::from_waker(&waker))
+            .is_pending()
+    );
+
+    for (index, id) in ids.into_iter().enumerate() {
+        store.insert(
+            id.clone(),
+            TaskResult {
+                task_id: id.clone(),
+                attempt: 0,
+                status: Status::Done,
+                result: Ok(json!(7)),
+            },
+        );
+        assert_eq!(old_counter.0.load(Ordering::SeqCst), 0);
+        assert!(counter.0.swap(0, Ordering::SeqCst) > 0);
+        assert!(matches!(
+            results.poll_next_unpin(&mut Context::from_waker(&waker)),
+            Poll::Ready(Some(Ok(result))) if result.task_id == id && result.result == Ok(7)
+        ));
+        let next = results.poll_next_unpin(&mut Context::from_waker(&waker));
+        if index == 0 {
+            assert!(next.is_pending());
+        } else {
+            assert!(matches!(next, Poll::Ready(None)));
+        }
+        assert_eq!(counter.0.load(Ordering::SeqCst), 0);
+    }
+    assert!(matches!(
+        results.poll_next_unpin(&mut Context::from_waker(&waker)),
+        Poll::Ready(None)
+    ));
 }
 
 #[tokio::test]
