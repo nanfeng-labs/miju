@@ -96,7 +96,9 @@ where
         let meta = WorkflowContext::extract(req.metadata()).unwrap_or_default();
         let idx = meta.step_index;
 
-        let has_next = self.services.contains_key(&(idx + 1));
+        let has_next = idx
+            .checked_add(1)
+            .is_some_and(|next| self.services.contains_key(&next));
         let step_ctx: StepContext<B> = StepContext::new(self.backend.clone(), idx, has_next);
 
         let svc = self
