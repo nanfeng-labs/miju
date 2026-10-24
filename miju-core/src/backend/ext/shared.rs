@@ -10,14 +10,37 @@ use crate::worker::context::WorkerContext;
 use dashmap::DashMap;
 use futures_core::ready;
 use futures_sink::Sink;
-use futures_util::lock::Mutex;
-use futures_util::{FutureExt, SinkExt, StreamExt};
+use futures_util::lock::{Mutex, MutexGuard};
+use futures_util::{SinkExt, StreamExt};
 
 #[derive(Debug)]
 struct Inner<B> {
     backend: Mutex<B>,
     wakers: DashMap<usize, Waker>,
     next_key: std::sync::atomic::AtomicUsize,
+}
+
+impl<B> Inner<B> {
+    fn wake_all(&self) {
+        let keys: Vec<_> = self.wakers.iter().map(|entry| *entry.key()).collect();
+        // Consume the batch before callbacks can reenter and notify again.
+        let wakers: Vec<_> = keys
+            .into_iter()
+            .filter_map(|key| self.wakers.remove(&key).map(|(_, waker)| waker))
+            .collect();
+        for waker in wakers {
+            waker.wake();
+        }
+    }
+}
+
+// Declare before the backend guard, initialize only after acquiring the lock.
+struct NotifyOnUnlock<'a, B>(&'a Inner<B>);
+
+impl<B> Drop for NotifyOnUnlock<'_, B> {
+    fn drop(&mut self) {
+        self.0.wake_all();
+    }
 }
 
 /// Cloneable handles that share one backend behind an asynchronous mutex.
@@ -65,7 +88,7 @@ where
         Self {
             inner: Inner {
                 backend: Mutex::new(backend),
-                next_key: AtomicUsize::new(0),
+                next_key: AtomicUsize::new(1),
                 wakers: Default::default(),
             }
             .into(),
@@ -97,14 +120,19 @@ impl<B: WireFormatBackend> Shared<B> {
         res.insert(key, cx.waker().clone());
     }
 
-    fn wake_others(inner: &Inner<B>, except: usize) {
-        let wakers = &inner.wakers;
-        wakers.retain(|key, waker| {
-            if *key != except {
-                waker.wake_by_ref();
-            }
-            true
-        });
+    fn poll_lock<'a>(inner: &'a Inner<B>, key: usize, cx: &Context<'_>) -> Poll<MutexGuard<'a, B>> {
+        if let Some(guard) = inner.backend.try_lock() {
+            inner.wakers.remove(&key);
+            return Poll::Ready(guard);
+        }
+        Self::register_waker(inner, key, cx);
+        // An unlock may have happened before registration; check again.
+        if let Some(guard) = inner.backend.try_lock() {
+            inner.wakers.remove(&key);
+            Poll::Ready(guard)
+        } else {
+            Poll::Pending
+        }
     }
 }
 
@@ -120,18 +148,10 @@ where
         cx: &mut Context<'_>,
         worker: &WorkerContext,
     ) -> Poll<Result<(), Self::Error>> {
-        if let Some(mut guard) = self.inner.backend.try_lock() {
-            let result = guard.poll_ready(cx, worker);
-            drop(guard);
-
-            if result.is_ready() {
-                Self::wake_others(&self.inner, self.waker_key);
-            }
-            result
-        } else {
-            Self::register_waker(&self.inner, self.waker_key, cx);
-            Poll::Pending
-        }
+        let _notify;
+        let mut guard = ready!(Self::poll_lock(&self.inner, self.waker_key, cx));
+        _notify = NotifyOnUnlock(&self.inner);
+        guard.poll_ready(cx, worker)
     }
 
     fn poll_next(
@@ -139,17 +159,10 @@ where
         cx: &mut Context<'_>,
         worker: &WorkerContext,
     ) -> Poll<Option<Result<Self::Task, Self::Error>>> {
-        let inner = &self.inner;
-
-        if let Some(mut guard) = inner.backend.try_lock() {
-            let result = guard.poll_next(cx, worker);
-            drop(guard);
-            Self::wake_others(inner, self.waker_key);
-            result
-        } else {
-            Self::register_waker(inner, self.waker_key, cx);
-            Poll::Pending
-        }
+        let _notify;
+        let mut guard = ready!(Self::poll_lock(&self.inner, self.waker_key, cx));
+        _notify = NotifyOnUnlock(&self.inner);
+        guard.poll_next(cx, worker)
     }
 
     fn poll_close(
@@ -157,22 +170,10 @@ where
         cx: &mut Context<'_>,
         worker: &WorkerContext,
     ) -> Poll<Result<(), Self::Error>> {
-        let inner = self.inner.as_ref();
-
-        if let Some(mut guard) = inner.backend.try_lock() {
-            let result = guard.poll_close(cx, worker);
-            drop(guard);
-            if result.is_ready() {
-                inner.wakers.remove(&self.waker_key);
-                Self::wake_others(inner, self.waker_key);
-            } else {
-                Self::wake_others(inner, self.waker_key);
-            }
-            result
-        } else {
-            Self::register_waker(inner, self.waker_key, cx);
-            Poll::Pending
-        }
+        let _notify;
+        let mut guard = ready!(Self::poll_lock(&self.inner, self.waker_key, cx));
+        _notify = NotifyOnUnlock(&self.inner);
+        guard.poll_close(cx, worker)
     }
 }
 
@@ -197,13 +198,11 @@ where
     fn start_send(self: Pin<&mut Self>, item: Task<B::Compact>) -> Result<(), Self::Error> {
         let this = self.get_mut();
 
+        let _notify;
         if let Some(mut guard) = this.inner.backend.try_lock() {
-            let result = guard.start_send_unpin(item);
-            drop(guard);
-            if result.is_ok() {
-                Self::wake_others(&this.inner, this.waker_key);
-            }
-            result
+            _notify = NotifyOnUnlock(&this.inner);
+            this.inner.wakers.remove(&this.waker_key);
+            guard.start_send_unpin(item)
         } else {
             this.sink.push_back(item);
             Ok(())
@@ -211,19 +210,25 @@ where
     }
     fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let this = self.get_mut();
-        let mut guard = ready!(this.inner.backend.lock().poll_unpin(cx));
+        let _notify;
+        let mut guard = ready!(Self::poll_lock(&this.inner, this.waker_key, cx));
+        _notify = NotifyOnUnlock(&this.inner);
         ready!(Self::poll_drain_buffer(&mut this.sink, &mut guard, cx))?;
         guard.poll_ready_unpin(cx)
     }
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let this = self.get_mut();
-        let mut guard = ready!(this.inner.backend.lock().poll_unpin(cx));
+        let _notify;
+        let mut guard = ready!(Self::poll_lock(&this.inner, this.waker_key, cx));
+        _notify = NotifyOnUnlock(&this.inner);
         ready!(Self::poll_drain_buffer(&mut this.sink, &mut guard, cx))?;
         guard.poll_flush_unpin(cx)
     }
     fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let this = self.get_mut();
-        let mut guard = ready!(this.inner.backend.lock().poll_unpin(cx));
+        let _notify;
+        let mut guard = ready!(Self::poll_lock(&this.inner, this.waker_key, cx));
+        _notify = NotifyOnUnlock(&this.inner);
         ready!(Self::poll_drain_buffer(&mut this.sink, &mut guard, cx))?;
         guard.poll_close_unpin(cx)
     }
@@ -244,7 +249,11 @@ where
         unreachable!("Dont call config on shared")
     }
     fn middleware(&mut self, worker: &mut WorkerContext) -> Self::Layer {
-        self.inner.backend.try_lock().unwrap().middleware(worker)
+        let _notify;
+        let mut backend = self.inner.backend.try_lock().unwrap();
+        _notify = NotifyOnUnlock(&self.inner);
+        self.inner.wakers.remove(&self.waker_key);
+        backend.middleware(worker)
     }
 }
 
@@ -260,7 +269,11 @@ where
         &mut self,
         task_id: &crate::task::task_id::TaskId,
     ) -> Result<Option<B::Task>, Self::Error> {
-        self.inner.backend.lock().await.fetch_by_id(task_id).await
+        let _notify;
+        let mut backend = self.inner.backend.lock().await;
+        _notify = NotifyOnUnlock(&self.inner);
+        self.inner.wakers.remove(&self.waker_key);
+        backend.fetch_by_id(task_id).await
     }
 }
 impl<B> Update for Shared<B>
@@ -272,7 +285,11 @@ where
     B::Compact: Send,
 {
     async fn update(&mut self, task: Self::Task) -> Result<(), Self::Error> {
-        self.inner.backend.lock().await.update(task).await
+        let _notify;
+        let mut backend = self.inner.backend.lock().await;
+        _notify = NotifyOnUnlock(&self.inner);
+        self.inner.wakers.remove(&self.waker_key);
+        backend.update(task).await
     }
 }
 impl<B> Reschedule for Shared<B>
@@ -288,7 +305,11 @@ where
         task: Self::Task,
         wait: std::time::Duration,
     ) -> Result<(), Self::Error> {
-        self.inner.backend.lock().await.reschedule(task, wait).await
+        let _notify;
+        let mut backend = self.inner.backend.lock().await;
+        _notify = NotifyOnUnlock(&self.inner);
+        self.inner.wakers.remove(&self.waker_key);
+        backend.reschedule(task, wait).await
     }
 }
 impl<B> Vacuum for Shared<B>
@@ -299,15 +320,18 @@ where
     B::Compact: Send,
 {
     async fn vacuum(&mut self) -> Result<usize, Self::Error> {
-        self.inner.backend.lock().await.vacuum().await
+        let _notify;
+        let mut backend = self.inner.backend.lock().await;
+        _notify = NotifyOnUnlock(&self.inner);
+        self.inner.wakers.remove(&self.waker_key);
+        backend.vacuum().await
     }
     async fn vacuum_before(&mut self, duration: Duration) -> Result<usize, Self::Error> {
-        self.inner
-            .backend
-            .lock()
-            .await
-            .vacuum_before(duration)
-            .await
+        let _notify;
+        let mut backend = self.inner.backend.lock().await;
+        _notify = NotifyOnUnlock(&self.inner);
+        self.inner.wakers.remove(&self.waker_key);
+        backend.vacuum_before(duration).await
     }
 }
 impl<B> ResumeById for Shared<B>
@@ -318,7 +342,11 @@ where
     B::Compact: Send,
 {
     async fn resume_by_id(&mut self, id: TaskId) -> Result<bool, Self::Error> {
-        self.inner.backend.lock().await.resume_by_id(id).await
+        let _notify;
+        let mut backend = self.inner.backend.lock().await;
+        _notify = NotifyOnUnlock(&self.inner);
+        self.inner.wakers.remove(&self.waker_key);
+        backend.resume_by_id(id).await
     }
 }
 impl<B> ResumeAbandoned for Shared<B>
@@ -329,7 +357,11 @@ where
     B::Compact: Send,
 {
     async fn resume_abandoned(&mut self) -> Result<usize, Self::Error> {
-        self.inner.backend.lock().await.resume_abandoned().await
+        let _notify;
+        let mut backend = self.inner.backend.lock().await;
+        _notify = NotifyOnUnlock(&self.inner);
+        self.inner.wakers.remove(&self.waker_key);
+        backend.resume_abandoned().await
     }
 }
 impl<B> RegisterWorker for Shared<B>
@@ -340,12 +372,11 @@ where
     B::Compact: Send,
 {
     async fn register_worker(&mut self, worker_id: String) -> Result<(), Self::Error> {
-        self.inner
-            .backend
-            .lock()
-            .await
-            .register_worker(worker_id)
-            .await
+        let _notify;
+        let mut backend = self.inner.backend.lock().await;
+        _notify = NotifyOnUnlock(&self.inner);
+        self.inner.wakers.remove(&self.waker_key);
+        backend.register_worker(worker_id).await
     }
 }
 impl<Output, B> WaitForCompletion<Output> for Shared<B>
@@ -363,7 +394,9 @@ where
         let inner = self.inner.clone();
         let task_ids: Vec<_> = task_ids.into_iter().collect();
         futures_util::stream::once(async move {
+            let _notify;
             let mut backend = inner.backend.lock().await;
+            _notify = NotifyOnUnlock(&inner);
             backend.wait_for(task_ids)
         })
         .flatten()
@@ -373,7 +406,11 @@ where
         &mut self,
         task_ids: impl IntoIterator<Item = TaskId> + Send,
     ) -> Result<Vec<TaskResult<Output>>, Self::Error> {
-        self.inner.backend.lock().await.check_status(task_ids).await
+        let _notify;
+        let mut backend = self.inner.backend.lock().await;
+        _notify = NotifyOnUnlock(&self.inner);
+        self.inner.wakers.remove(&self.waker_key);
+        backend.check_status(task_ids).await
     }
 }
 
@@ -391,13 +428,15 @@ mod tests {
     use crate::backend::{
         codec::Codec,
         custom::{BackendBuilder, CustomBackend},
-        dequeue::VecDequeBackend,
+        dequeue::{VecDequeBackend, VecDequeError},
         ext::{BackendExt, with_codec::WithCodec},
     };
-    use futures_channel::mpsc;
+    use futures_channel::{mpsc, oneshot};
     use futures_util::stream::{self, Empty};
     use futures_util::task::noop_waker_ref;
     use std::convert::Infallible;
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    use std::sync::atomic::Ordering;
 
     #[derive(Clone)]
     struct IdentityCodec;
@@ -598,23 +637,22 @@ mod tests {
     }
 
     #[test]
-    fn first_clone_reuses_waker_key_and_removes_original_registration_on_drop() {
+    fn first_clone_has_an_independent_wait_registration() {
         let shared = VecDequeBackend::<u32>::new()
             .with_codec(IdentityCodec)
             .shared();
         let clone = shared.clone();
-        assert_eq!(shared.waker_key, clone.waker_key);
+        assert_ne!(shared.waker_key, clone.waker_key);
         let cx = Context::from_waker(noop_waker_ref());
         Shared::register_waker(&shared.inner, shared.waker_key, &cx);
         Shared::register_waker(&clone.inner, clone.waker_key, &cx);
-        assert_eq!(shared.inner.wakers.len(), 1);
+        assert_eq!(shared.inner.wakers.len(), 2);
         drop(clone);
-        assert!(shared.inner.wakers.is_empty());
+        assert!(shared.inner.wakers.contains_key(&shared.waker_key));
     }
 
     #[test]
     fn configuration_and_contended_middleware_panic() {
-        use std::panic::{AssertUnwindSafe, catch_unwind};
         let mut shared = VecDequeBackend::<u32>::new()
             .with_codec(IdentityCodec)
             .shared();
@@ -627,5 +665,681 @@ mod tests {
             ))
             .is_err()
         );
+    }
+
+    // The queue is real. The one-shot stands in for a database lookup awaiting I/O.
+    struct LookupBackend {
+        queue: VecDequeBackend<u32>,
+        lookup_complete: Option<oneshot::Receiver<()>>,
+        on_wait_for: Option<Box<dyn FnMut() + Send + Sync>>,
+    }
+    impl WireFormatBackend for LookupBackend {
+        type Codec = IdentityCodec;
+        type Compact = u32;
+        fn codec(&self) -> &IdentityCodec {
+            &IdentityCodec
+        }
+    }
+    impl Backend for LookupBackend {
+        type Task = Task<u32>;
+        type Error = VecDequeError;
+        fn poll_ready(
+            &mut self,
+            cx: &mut Context<'_>,
+            worker: &WorkerContext,
+        ) -> Poll<Result<(), Self::Error>> {
+            Backend::poll_ready(&mut self.queue, cx, worker)
+        }
+        fn poll_next(
+            &mut self,
+            cx: &mut Context<'_>,
+            worker: &WorkerContext,
+        ) -> Poll<Option<Result<Self::Task, Self::Error>>> {
+            match Backend::poll_ready(&mut self.queue, cx, worker) {
+                Poll::Pending => Poll::Pending,
+                Poll::Ready(Err(e)) => Poll::Ready(Some(Err(e))),
+                Poll::Ready(Ok(())) => self.queue.poll_next(cx, worker),
+            }
+        }
+        fn poll_close(
+            &mut self,
+            cx: &mut Context<'_>,
+            worker: &WorkerContext,
+        ) -> Poll<Result<(), Self::Error>> {
+            Backend::poll_close(&mut self.queue, cx, worker)
+        }
+    }
+    impl Sink<Task<u32>> for LookupBackend {
+        type Error = VecDequeError;
+        fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            self.get_mut().queue.poll_ready_unpin(cx)
+        }
+        fn start_send(self: Pin<&mut Self>, item: Task<u32>) -> Result<(), Self::Error> {
+            self.get_mut().queue.start_send_unpin(item)
+        }
+        fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            self.get_mut().queue.poll_flush_unpin(cx)
+        }
+        fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            self.get_mut().queue.poll_close_unpin(cx)
+        }
+    }
+    impl FetchById for LookupBackend {
+        async fn fetch_by_id(&mut self, _: &TaskId) -> Result<Option<Task<u32>>, Self::Error> {
+            self.gate().await?;
+            Ok(None)
+        }
+    }
+
+    impl LookupBackend {
+        async fn gate(&mut self) -> Result<(), VecDequeError> {
+            self.lookup_complete
+                .take()
+                .unwrap()
+                .await
+                .map_err(|e| VecDequeError::PollError(Arc::new(e.into())))
+        }
+    }
+    impl Update for LookupBackend {
+        async fn update(&mut self, _: Task<u32>) -> Result<(), VecDequeError> {
+            self.gate().await
+        }
+    }
+    impl Reschedule for LookupBackend {
+        async fn reschedule(
+            &mut self,
+            _: Task<u32>,
+            _: std::time::Duration,
+        ) -> Result<(), VecDequeError> {
+            self.gate().await
+        }
+    }
+    impl Vacuum for LookupBackend {
+        async fn vacuum(&mut self) -> Result<usize, VecDequeError> {
+            self.gate().await?;
+            Ok(0)
+        }
+        async fn vacuum_before(&mut self, _: std::time::Duration) -> Result<usize, VecDequeError> {
+            self.gate().await?;
+            Ok(0)
+        }
+    }
+    impl ResumeById for LookupBackend {
+        async fn resume_by_id(&mut self, _: TaskId) -> Result<bool, VecDequeError> {
+            self.gate().await?;
+            Ok(false)
+        }
+    }
+    impl ResumeAbandoned for LookupBackend {
+        async fn resume_abandoned(&mut self) -> Result<usize, VecDequeError> {
+            self.gate().await?;
+            Ok(0)
+        }
+    }
+    impl RegisterWorker for LookupBackend {
+        async fn register_worker(&mut self, _: String) -> Result<(), VecDequeError> {
+            self.gate().await
+        }
+    }
+    impl WaitForCompletion<u32> for LookupBackend {
+        type ResultStream = futures_util::stream::Empty<Result<TaskResult<u32>, VecDequeError>>;
+        fn wait_for(&mut self, _: impl IntoIterator<Item = TaskId>) -> Self::ResultStream {
+            if let Some(mut callback) = self.on_wait_for.take() {
+                callback();
+            }
+            futures_util::stream::empty()
+        }
+        async fn check_status(
+            &mut self,
+            _: impl IntoIterator<Item = TaskId> + Send,
+        ) -> Result<Vec<TaskResult<u32>>, VecDequeError> {
+            self.gate().await?;
+            Ok(vec![])
+        }
+    }
+    fn management<'a>(
+        s: &'a mut Shared<LookupBackend>,
+        id: &'a TaskId,
+        op: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), VecDequeError>> + 'a>> {
+        Box::pin(async move {
+            match op {
+                "fetch_by_id" => s.fetch_by_id(id).await.map(|_| ()),
+                "update" => s.update(Task::new(1)).await,
+                "reschedule" => s.reschedule(Task::new(1), std::time::Duration::ZERO).await,
+                "vacuum" => s.vacuum().await.map(|_| ()),
+                "vacuum_before" => s.vacuum_before(std::time::Duration::ZERO).await.map(|_| ()),
+                "resume_by_id" => s.resume_by_id(id.clone()).await.map(|_| ()),
+                "resume_abandoned" => s.resume_abandoned().await.map(|_| ()),
+                "register_worker" => s.register_worker("test".into()).await,
+                "check_status" => s.check_status([id.clone()]).await.map(|_| ()),
+                _ => unreachable!(),
+            }
+        })
+    }
+    #[derive(Default)]
+    struct Counter(AtomicUsize);
+    impl std::task::Wake for Counter {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    fn counter() -> (Arc<Counter>, std::task::Waker) {
+        let c = Arc::new(Counter::default());
+        (c.clone(), std::task::Waker::from(c))
+    }
+    fn setup() -> (Shared<LookupBackend>, oneshot::Sender<()>) {
+        let (tx, rx) = oneshot::channel();
+        (
+            Shared::new(LookupBackend {
+                queue: VecDequeBackend::new(),
+                lookup_complete: Some(rx),
+                on_wait_for: None,
+            }),
+            tx,
+        )
+    }
+    fn sink_poll(
+        s: &mut Shared<LookupBackend>,
+        cx: &mut Context<'_>,
+        op: &str,
+    ) -> Poll<Result<(), VecDequeError>> {
+        match op {
+            "ready" => s.poll_ready_unpin(cx),
+            "flush" => s.poll_flush_unpin(cx),
+            _ => s.poll_close_unpin(cx),
+        }
+    }
+
+    #[test]
+    fn contended_operations_wake_after_management_releases_lock() {
+        for outcome in ["success", "error", "cancel"] {
+            for op in [
+                "ready",
+                "flush",
+                "close",
+                "worker_ready",
+                "worker_next",
+                "worker_close",
+            ] {
+                let (mut shared, tx) = setup();
+                let mut manager = shared.clone();
+                let (count, waker) = counter();
+                let mut cx = Context::from_waker(&waker);
+                let mut quiet = Context::from_waker(noop_waker_ref());
+                let id = TaskId::from(1_u64);
+                assert!(shared.poll_ready_unpin(&mut cx).is_ready());
+                let mut lookup = Box::pin(manager.fetch_by_id(&id));
+                assert!(lookup.as_mut().poll(&mut quiet).is_pending());
+                shared.start_send_unpin(Task::new(7)).unwrap();
+                let worker = WorkerContext::new("contended");
+                let pending = match op {
+                    "worker_ready" => {
+                        Backend::poll_ready(&mut shared, &mut cx, &worker).is_pending()
+                    }
+                    "worker_next" => shared.poll_next(&mut cx, &worker).is_pending(),
+                    "worker_close" => {
+                        Backend::poll_close(&mut shared, &mut cx, &worker).is_pending()
+                    }
+                    _ => sink_poll(&mut shared, &mut cx, op).is_pending(),
+                };
+                assert!(pending);
+                assert_eq!(count.0.load(Ordering::SeqCst), 0);
+                match outcome {
+                    "success" => {
+                        tx.send(()).unwrap();
+                        assert!(matches!(
+                            lookup.as_mut().poll(&mut quiet),
+                            Poll::Ready(Ok(None))
+                        ));
+                    }
+                    "error" => {
+                        drop(tx);
+                        assert!(matches!(
+                            lookup.as_mut().poll(&mut quiet),
+                            Poll::Ready(Err(_))
+                        ));
+                    }
+                    _ => {}
+                }
+                drop(lookup);
+                assert!(count.0.load(Ordering::SeqCst) > 0, "{op}/{outcome}");
+                assert!(shared.poll_flush_unpin(&mut cx).is_ready());
+                let Poll::Ready(Some(Ok(task))) = shared.poll_next(&mut cx, &worker) else {
+                    panic!("missing buffered task")
+                };
+                assert_eq!(task.args, 7);
+            }
+        }
+    }
+
+    #[test]
+    fn every_management_operation_notifies_lock_waiters() {
+        for method in [
+            "fetch_by_id",
+            "update",
+            "reschedule",
+            "vacuum",
+            "vacuum_before",
+            "resume_by_id",
+            "resume_abandoned",
+            "register_worker",
+            "check_status",
+        ] {
+            for outcome in ["success", "error", "cancel"] {
+                let (mut shared, tx) = setup();
+                let mut manager = shared.clone();
+                let id = TaskId::from(1_u64);
+                let mut quiet = Context::from_waker(noop_waker_ref());
+                let mut operation = management(&mut manager, &id, method);
+                assert!(operation.as_mut().poll(&mut quiet).is_pending());
+                let (count, waker) = counter();
+                let mut cx = Context::from_waker(&waker);
+                assert!(
+                    shared
+                        .poll_next(&mut cx, &WorkerContext::new("management"))
+                        .is_pending()
+                );
+                match outcome {
+                    "success" => {
+                        tx.send(()).unwrap();
+                        assert!(matches!(
+                            operation.as_mut().poll(&mut quiet),
+                            Poll::Ready(Ok(()))
+                        ));
+                    }
+                    "error" => {
+                        drop(tx);
+                        assert!(matches!(
+                            operation.as_mut().poll(&mut quiet),
+                            Poll::Ready(Err(_))
+                        ));
+                    }
+                    _ => {}
+                }
+                drop(operation);
+                assert!(count.0.load(Ordering::SeqCst) > 0, "{method}/{outcome}");
+            }
+        }
+    }
+
+    #[test]
+    fn cancelling_a_sink_operation_does_not_block_other_waiters() {
+        for op in ["ready", "flush", "close"] {
+            let (mut shared, tx) = setup();
+            let mut manager = shared.clone();
+            let mut active = shared.clone();
+            let id = TaskId::from(1_u64);
+            let mut quiet = Context::from_waker(noop_waker_ref());
+            let mut lookup = Box::pin(manager.fetch_by_id(&id));
+            assert!(lookup.as_mut().poll(&mut quiet).is_pending());
+            let (cancelled_count, cancelled_waker) = counter();
+            let mut cancelled = Box::pin(futures_util::future::poll_fn(|cx| {
+                sink_poll(&mut shared, cx, op)
+            }));
+            assert!(
+                cancelled
+                    .as_mut()
+                    .poll(&mut Context::from_waker(&cancelled_waker))
+                    .is_pending()
+            );
+            drop(cancelled);
+            let (count, waker) = counter();
+            let mut result = shared.wait_for([id.clone()]);
+            assert!(
+                result
+                    .poll_next_unpin(&mut Context::from_waker(&waker))
+                    .is_pending()
+            );
+            let (active_count, active_waker) = counter();
+            assert!(
+                active
+                    .poll_flush_unpin(&mut Context::from_waker(&active_waker))
+                    .is_pending()
+            );
+            tx.send(()).unwrap();
+            assert!(lookup.as_mut().poll(&mut quiet).is_ready());
+            drop(lookup);
+            assert!(count.0.load(Ordering::SeqCst) > 0);
+            assert!(active_count.0.load(Ordering::SeqCst) > 0);
+            assert!(
+                result
+                    .poll_next_unpin(&mut Context::from_waker(&waker))
+                    .is_ready()
+            );
+            assert!(
+                active
+                    .poll_flush_unpin(&mut Context::from_waker(&active_waker))
+                    .is_ready()
+            );
+            assert!(shared.poll_ready_unpin(&mut quiet).is_ready());
+            assert_eq!(Arc::strong_count(&cancelled_count), 2);
+        }
+    }
+
+    #[test]
+    fn cancelled_lock_acquisition_does_not_notify_before_unlock() {
+        let (mut shared, tx) = setup();
+        let mut holder = shared.clone();
+        let mut manager = shared.clone();
+        let id = TaskId::from(1_u64);
+        let mut quiet = Context::from_waker(noop_waker_ref());
+        let mut lookup = Box::pin(holder.fetch_by_id(&id));
+        assert!(lookup.as_mut().poll(&mut quiet).is_pending());
+        let (count, waker) = counter();
+        assert!(
+            shared
+                .poll_flush_unpin(&mut Context::from_waker(&waker))
+                .is_pending()
+        );
+        let mut pending = Box::pin(manager.fetch_by_id(&id));
+        assert!(pending.as_mut().poll(&mut quiet).is_pending());
+        drop(pending);
+        assert_eq!(count.0.load(Ordering::SeqCst), 0);
+        tx.send(()).unwrap();
+        assert!(lookup.as_mut().poll(&mut quiet).is_ready());
+        drop(lookup);
+        assert!(count.0.load(Ordering::SeqCst) > 0);
+    }
+
+    #[test]
+    fn consumed_wait_registrations_do_not_keep_idle_workers_running() {
+        let (mut first, tx) = setup();
+        let _unused = first.clone();
+        let mut second = first.clone();
+        let mut manager = first.clone();
+        let mut trigger = first.clone();
+        let id = TaskId::from(1_u64);
+        let mut quiet = Context::from_waker(noop_waker_ref());
+        let mut lookup = Box::pin(manager.fetch_by_id(&id));
+        assert!(lookup.as_mut().poll(&mut quiet).is_pending());
+        let (a, aw) = counter();
+        let (b, bw) = counter();
+        let worker = WorkerContext::new("idle");
+        assert!(
+            first
+                .poll_next(&mut Context::from_waker(&aw), &worker)
+                .is_pending()
+        );
+        assert!(
+            second
+                .poll_next(&mut Context::from_waker(&bw), &worker)
+                .is_pending()
+        );
+        tx.send(()).unwrap();
+        assert!(lookup.as_mut().poll(&mut quiet).is_ready());
+        drop(lookup);
+        assert!(Backend::poll_close(&mut trigger, &mut quiet, &worker).is_ready());
+        assert!(
+            first
+                .poll_next(&mut Context::from_waker(&aw), &worker)
+                .is_pending()
+        );
+        assert!(
+            second
+                .poll_next(&mut Context::from_waker(&bw), &worker)
+                .is_pending()
+        );
+        a.0.store(0, Ordering::SeqCst);
+        b.0.store(0, Ordering::SeqCst);
+        assert!(Backend::poll_close(&mut trigger, &mut quiet, &worker).is_ready());
+        assert_eq!(a.0.load(Ordering::SeqCst), 0);
+        assert_eq!(b.0.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn detached_wait_for_notifies_its_parent_handle() {
+        let (mut shared, _tx) = setup();
+        let inner = shared.inner.clone();
+        let mut result = shared.wait_for([TaskId::from(1_u64)]);
+        let parent = Arc::new(std::sync::Mutex::new(shared));
+        let (count, waker) = counter();
+        let callback_parent = parent.clone();
+        let callback_waker = waker.clone();
+        inner.backend.try_lock().unwrap().on_wait_for = Some(Box::new(move || {
+            // Stream construction holds the backend lock while the parent is reused.
+            assert!(
+                callback_parent
+                    .lock()
+                    .unwrap()
+                    .poll_flush_unpin(&mut Context::from_waker(&callback_waker))
+                    .is_pending()
+            );
+        }));
+        assert!(matches!(
+            result.poll_next_unpin(&mut Context::from_waker(noop_waker_ref())),
+            Poll::Ready(None)
+        ));
+        assert!(count.0.load(Ordering::SeqCst) > 0);
+        assert!(
+            parent
+                .lock()
+                .unwrap()
+                .poll_flush_unpin(&mut Context::from_waker(&waker))
+                .is_ready()
+        );
+    }
+
+    struct LockCheckingWake<B> {
+        inner: Arc<Inner<B>>,
+        count: AtomicUsize,
+    }
+
+    impl<B: Send> std::task::Wake for LockCheckingWake<B> {
+        fn wake(self: Arc<Self>) {
+            assert!(
+                self.inner.backend.try_lock().is_some(),
+                "notified before unlocking"
+            );
+            // Reenter the registration table as well as the backend.
+            self.inner
+                .wakers
+                .insert(usize::MAX, noop_waker_ref().clone());
+            self.inner.wakers.remove(&usize::MAX);
+            self.count.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn notifications_follow_unlock_on_pending_errors_and_cancellation() {
+        for outcome in ["success", "error", "cancel"] {
+            let (mut shared, tx) = setup();
+            let mut manager = shared.clone();
+            let count = Arc::new(LockCheckingWake {
+                inner: shared.inner.clone(),
+                count: AtomicUsize::new(0),
+            });
+            let waker = Waker::from(count.clone());
+            let id = TaskId::from(1_u64);
+            let mut quiet = Context::from_waker(noop_waker_ref());
+            let mut lookup = Box::pin(manager.fetch_by_id(&id));
+            assert!(lookup.as_mut().poll(&mut quiet).is_pending());
+            assert!(
+                shared
+                    .poll_flush_unpin(&mut Context::from_waker(&waker))
+                    .is_pending()
+            );
+            match outcome {
+                "success" => {
+                    tx.send(()).unwrap();
+                    assert!(lookup.as_mut().poll(&mut quiet).is_ready());
+                }
+                "error" => {
+                    drop(tx);
+                    assert!(lookup.as_mut().poll(&mut quiet).is_ready());
+                }
+                _ => {}
+            }
+            drop(lookup);
+            assert_eq!(count.count.load(Ordering::SeqCst), 1);
+        }
+        for fail in [false, true] {
+            let (mut shared, receiver) = channel_backend();
+            let mut waiting = shared.clone();
+            let inner = shared.inner.clone();
+            let count = Arc::new(LockCheckingWake {
+                inner: inner.clone(),
+                count: AtomicUsize::new(0),
+            });
+            let waker = Waker::from(count.clone());
+            let mut quiet = Context::from_waker(noop_waker_ref());
+            assert!(shared.poll_ready_unpin(&mut quiet).is_ready());
+            shared.start_send_unpin(Task::new(1)).unwrap();
+            let mut receiver = Some(receiver);
+            if fail {
+                receiver.take();
+            }
+            let guard = inner.backend.try_lock().unwrap();
+            assert!(
+                waiting
+                    .poll_flush_unpin(&mut Context::from_waker(&waker))
+                    .is_pending()
+            );
+            drop(guard);
+            let result = shared.poll_ready_unpin(&mut quiet);
+            if fail {
+                assert!(matches!(result, Poll::Ready(Err(_))));
+            } else {
+                assert!(result.is_pending());
+            }
+            assert_eq!(count.count.load(Ordering::SeqCst), 1);
+        }
+    }
+
+    #[test]
+    fn waiters_update_clean_up_and_do_not_spin_while_locked() {
+        let (mut shared, tx) = setup();
+        let mut manager = shared.clone();
+        let mut dropped = shared.clone();
+        let (old_count, old_waker) = counter();
+        let (count, waker) = counter();
+        let id = TaskId::from(1_u64);
+        let mut quiet = Context::from_waker(noop_waker_ref());
+        let mut lookup = Box::pin(manager.fetch_by_id(&id));
+        assert!(lookup.as_mut().poll(&mut quiet).is_pending());
+        assert!(
+            shared
+                .poll_ready_unpin(&mut Context::from_waker(&old_waker))
+                .is_pending()
+        );
+        assert!(
+            shared
+                .poll_ready_unpin(&mut Context::from_waker(&waker))
+                .is_pending()
+        );
+        assert!(
+            dropped
+                .poll_ready_unpin(&mut Context::from_waker(&old_waker))
+                .is_pending()
+        );
+        drop(dropped);
+        old_count.0.store(0, Ordering::SeqCst);
+        for _ in 0..3 {
+            assert!(
+                shared
+                    .poll_flush_unpin(&mut Context::from_waker(&waker))
+                    .is_pending()
+            );
+        }
+        assert_eq!(count.0.load(Ordering::SeqCst), 0);
+        tx.send(()).unwrap();
+        assert!(lookup.as_mut().poll(&mut quiet).is_ready());
+        drop(lookup);
+        assert_eq!(old_count.0.load(Ordering::SeqCst), 0);
+        assert!(count.0.load(Ordering::SeqCst) > 0);
+        assert!(shared.inner.wakers.is_empty());
+        assert_eq!(Arc::strong_count(&count), 2);
+    }
+
+    #[test]
+    fn registering_against_a_concurrent_unlock_preserves_progress() {
+        for _ in 0..200 {
+            let (mut shared, tx) = setup();
+            let mut manager = shared.clone();
+            let id = TaskId::from(1_u64);
+            let mut lookup = Box::pin(manager.fetch_by_id(&id));
+            assert!(
+                lookup
+                    .as_mut()
+                    .poll(&mut Context::from_waker(noop_waker_ref()))
+                    .is_pending()
+            );
+            let (count, waker) = counter();
+            let barrier = std::sync::Barrier::new(2);
+            std::thread::scope(|scope| {
+                let barrier = &barrier;
+                let unlock = scope.spawn(move || {
+                    barrier.wait();
+                    tx.send(()).unwrap();
+                    assert!(
+                        lookup
+                            .as_mut()
+                            .poll(&mut Context::from_waker(noop_waker_ref()))
+                            .is_ready()
+                    );
+                });
+                barrier.wait();
+                let result = shared.poll_flush_unpin(&mut Context::from_waker(&waker));
+                unlock.join().unwrap();
+                if result.is_pending() {
+                    assert!(count.0.load(Ordering::SeqCst) > 0);
+                    assert!(
+                        shared
+                            .poll_flush_unpin(&mut Context::from_waker(&waker))
+                            .is_ready()
+                    );
+                }
+            });
+            assert!(shared.inner.wakers.is_empty());
+        }
+    }
+
+    #[test]
+    fn reentrant_notifications_do_not_recurse_through_the_remaining_batch() {
+        struct Reenter {
+            shared: std::sync::Mutex<Shared<WithCodec<VecDequeBackend<u32>, IdentityCodec>>>,
+            depth: Arc<AtomicUsize>,
+            maximum: Arc<AtomicUsize>,
+        }
+        impl std::task::Wake for Reenter {
+            fn wake(self: Arc<Self>) {
+                let depth = self.depth.fetch_add(1, Ordering::SeqCst) + 1;
+                self.maximum.fetch_max(depth, Ordering::SeqCst);
+                self.shared
+                    .lock()
+                    .unwrap()
+                    .middleware(&mut WorkerContext::new("reentrant"));
+                self.depth.fetch_sub(1, Ordering::SeqCst);
+            }
+        }
+        let mut trigger = VecDequeBackend::<u32>::new()
+            .with_codec(IdentityCodec)
+            .shared();
+        let inner = trigger.inner.clone();
+        let depth = Arc::new(AtomicUsize::new(0));
+        let maximum = Arc::new(AtomicUsize::new(0));
+        let guard = inner.backend.try_lock().unwrap();
+        let mut waiters = Vec::new();
+        for _ in 0..64 {
+            let mut waiter = trigger.clone();
+            let waker = Waker::from(Arc::new(Reenter {
+                shared: std::sync::Mutex::new(trigger.clone()),
+                depth: depth.clone(),
+                maximum: maximum.clone(),
+            }));
+            assert!(
+                waiter
+                    .poll_flush_unpin(&mut Context::from_waker(&waker))
+                    .is_pending()
+            );
+            waiters.push(waiter);
+        }
+        drop(guard);
+        trigger.middleware(&mut WorkerContext::new("trigger"));
+        assert_eq!(maximum.load(Ordering::SeqCst), 1);
+        assert!(inner.wakers.is_empty());
     }
 }
