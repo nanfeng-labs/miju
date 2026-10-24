@@ -583,8 +583,13 @@ mod composition_tests {
         let mut backend = source.pipe_to(destination);
         let worker = WorkerContext::new("pipe");
         let mut cx = Context::from_waker(noop_waker_ref());
-        assert!(Backend::poll_ready(&mut backend, &mut cx, &worker).is_pending());
+        assert!(matches!(
+            Backend::poll_ready(&mut backend, &mut cx, &worker),
+            Poll::Ready(Ok(()))
+        ));
         assert_eq!(*source_events.lock().unwrap(), ["ready"]);
+        assert_eq!(*backend.events.lock().unwrap(), ["ready"]);
+        assert!(backend.poll_next(&mut cx, &worker).is_pending());
         backend.pending = Some("flush");
         let Poll::Ready(Some(Ok(task))) = backend.poll_next(&mut cx, &worker) else {
             panic!("missing piped task")
