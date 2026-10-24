@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- fix(core): restore shared backend wakeups under contention ([#20](https://github.com/nanfeng-labs/miju/pull/20))
 - fix(core): drain shared buffers before flush and close ([#19](https://github.com/nanfeng-labs/miju/pull/19))
 
 ## [0.1.0](https://github.com/nanfeng-labs/miju/releases/tag/v0.1.0)
