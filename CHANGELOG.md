@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- fix(core): honor destination readiness when polling pipes ([#21](https://github.com/nanfeng-labs/miju/pull/21))
 - fix(core): restore shared backend wakeups under contention ([#20](https://github.com/nanfeng-labs/miju/pull/20))
 - fix(core): drain shared buffers before flush and close ([#19](https://github.com/nanfeng-labs/miju/pull/19))
 
