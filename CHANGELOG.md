@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- fix(core): notify every task execution waiter ([#46](https://github.com/nanfeng-labs/miju/pull/46))
 - fix(sentry): preserve the task error source chain ([#37](https://github.com/nanfeng-labs/miju/pull/37))
 - fix(sentry): preserve the full task attempt count ([#34](https://github.com/nanfeng-labs/miju/pull/34))
 - fix(retry): stop retries for boxed abort errors ([#27](https://github.com/nanfeng-labs/miju/pull/27))
