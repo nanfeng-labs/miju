@@ -50,7 +50,7 @@
 //! Calling the service requires a task ID and converts it with
 //! [`TaskId::to_uuid`](miju_core::task::task_id::TaskId::to_uuid). Integer and
 //! string IDs receive deterministic UUIDs; existing UUID IDs are retained.
-//! The attempt count is read at call time and cast to `i32` without clamping.
+//! The attempt count is read at call time and reported without narrowing.
 //!
 //! On the first poll, the layer sets the `queue` tag to the Rust argument type,
 //! adds a `task` context containing `task_id` and `current_attempt`, and installs
@@ -131,7 +131,7 @@ impl<S> Layer<S> for SentryLayer {
 
 struct Request {
     id: uuid::Uuid,
-    current_attempt: i32,
+    current_attempt: usize,
     queue: String,
 }
 
@@ -259,7 +259,7 @@ where
 
     fn call(&mut self, task: Task<Args>) -> Self::Future {
         let task_type = std::any::type_name::<Args>().to_owned();
-        let attempt = task.attempt() as i32;
+        let attempt = task.attempt();
         let task_id = task.task_id().expect("Task ID is missing").to_uuid();
         let trx_ctx =
             sentry_core::TransactionContext::new(std::any::type_name::<Args>(), "miju.task");
