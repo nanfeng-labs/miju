@@ -239,9 +239,10 @@ errors. Put `.retry(...)` before a layer whose errors should be retried. The
 total attempt count, including the first execution, and also applies the inner
 policy's limit. Missing or invalid metadata uses the inner policy unchanged.
 
-When combining retries with panic handling, use `.retry_if(...)` to explicitly
-exclude the boxed errors that should stop retries. The panic module includes
-a custom-handler example. A shutdown request during an existing backoff can
+The default panic handler returns an `AbortError`, which both retry policies
+recognize even when boxed. Use `.retry_if(...)` to exclude custom panic errors
+that should stop retries; the panic module includes a custom-handler example.
+A shutdown request during an existing backoff can
 leave a retry waiting for readiness; bound worker execution when shutdown must
 finish within a deadline.
 
