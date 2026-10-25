@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- fix(core): finish worker shutdown after source exhaustion ([#29](https://github.com/nanfeng-labs/miju/pull/29))
 - fix(core): wake pending tasks on cancellation ([#62](https://github.com/nanfeng-labs/miju/pull/62))
 - fix(core): wake subtasks when their parent finishes ([#60](https://github.com/nanfeng-labs/miju/pull/60))
 - fix(core): honor configured circuit breaker thresholds ([#63](https://github.com/nanfeng-labs/miju/pull/63))
