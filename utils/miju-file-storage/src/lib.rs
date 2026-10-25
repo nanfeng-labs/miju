@@ -818,7 +818,11 @@ where
                         return Some((
                             Ok(TaskResult {
                                 task_id,
-                                status: Status::Done,
+                                status: if result.is_ok() {
+                                    Status::Done
+                                } else {
+                                    Status::Failed
+                                },
                                 result,
                                 attempt,
                             }),
@@ -869,7 +873,11 @@ where
                 ) {
                     Ok(result) => TaskResult {
                         task_id: task_id.clone(),
-                        status: Status::Done,
+                        status: if result.is_ok() {
+                            Status::Done
+                        } else {
+                            Status::Failed
+                        },
                         result,
                         attempt,
                     },
@@ -1358,6 +1366,48 @@ mod tests {
             store.set_result(10, Value::Null),
             Err(FileStorageError::JobNotFound { line_id: 10 })
         ));
+    }
+
+    #[tokio::test]
+    async fn completion_status_matches_the_stored_result() {
+        for (expected, status) in [
+            (Ok(14_u32), Status::Done),
+            (Err("handler failed".to_owned()), Status::Failed),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("tasks.json");
+            let mut store = JsonStorage::<u32>::new(&path).unwrap();
+            let id = TaskId::from_string(RandomId::default());
+            store
+                .push_task(TaskBuilder::new(7_u32).task_id(id.clone()).build())
+                .await
+                .unwrap();
+            store
+                .set_result(0, serde_json::to_value(&expected).unwrap())
+                .unwrap();
+
+            for mut observer in [store.clone(), JsonStorage::<u32>::new(&path).unwrap()] {
+                let snapshot = <JsonStorage<u32> as WaitForCompletion<u32>>::check_status(
+                    &mut observer,
+                    [id.clone()],
+                )
+                .await
+                .unwrap();
+                let mut results = <JsonStorage<u32> as WaitForCompletion<u32>>::wait_for(
+                    &mut observer,
+                    [id.clone()],
+                );
+                let result = results.next().await.unwrap().unwrap();
+                assert_eq!(snapshot.len(), 1);
+                assert_eq!(snapshot[0].status, status);
+                assert_eq!(result.status, status);
+                assert_eq!(snapshot[0].task_id, id);
+                assert_eq!(result.task_id, id);
+                assert_eq!(snapshot[0].result, expected);
+                assert_eq!(result.result, expected);
+                assert!(results.next().await.is_none());
+            }
+        }
     }
 
     #[test]
