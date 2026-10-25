@@ -5,6 +5,7 @@ use std::sync::RwLock;
 use std::task::{Context, Poll};
 use std::time::Instant;
 
+use futures_timer::Delay;
 use tower_layer::Layer;
 use tower_service::Service;
 
@@ -59,11 +60,24 @@ impl<S> Layer<S> for CircuitBreakerLayer {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct CircuitBreakerService<S> {
     inner: S,
     config: CircuitBreakerConfig,
     stats: Arc<RwLock<CircuitBreakerStats>>,
+    recovery_delay: Option<Delay>,
+}
+
+impl<S: Clone> Clone for CircuitBreakerService<S> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            config: self.config.clone(),
+            stats: self.stats.clone(),
+            // Each service clone can wait with a different waker.
+            recovery_delay: None,
+        }
+    }
 }
 
 impl<S> CircuitBreakerService<S> {
@@ -72,6 +86,7 @@ impl<S> CircuitBreakerService<S> {
             inner: service,
             config,
             stats: Arc::new(RwLock::new(CircuitBreakerStats::default())),
+            recovery_delay: None,
         }
     }
 
@@ -154,7 +169,7 @@ impl<S> CircuitBreakerService<S> {
         }
     }
 
-    fn can_make_request(&self) -> bool {
+    fn can_make_request(&mut self, cx: &mut Context<'_>) -> bool {
         let Ok(stats) = self.stats.read() else {
             return false; // If poisoned, reject request
         };
@@ -163,7 +178,24 @@ impl<S> CircuitBreakerService<S> {
             CircuitState::Closed => true,
             CircuitState::Open => {
                 if let Some(last_failure) = stats.last_failure_time {
-                    last_failure.elapsed() >= self.config.recovery_timeout
+                    let elapsed = last_failure.elapsed();
+                    if elapsed >= self.config.recovery_timeout {
+                        true
+                    } else {
+                        let remaining = self.config.recovery_timeout - elapsed;
+                        // Registering a waker can reenter the service through user callbacks.
+                        drop(stats);
+                        if let Some(delay) = &mut self.recovery_delay {
+                            delay.reset(remaining);
+                        }
+                        let delay = self
+                            .recovery_delay
+                            .get_or_insert_with(|| Delay::new(remaining));
+                        if Pin::new(delay).poll(cx).is_ready() {
+                            cx.waker().wake_by_ref();
+                        }
+                        false
+                    }
                 } else {
                     false
                 }
@@ -201,10 +233,11 @@ where
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         // Check if circuit allows requests
-        if !self.can_make_request() {
+        if !self.can_make_request(cx) {
             return Poll::Pending;
         }
 
+        self.recovery_delay = None;
         // Check inner service readiness
         self.inner.poll_ready(cx).map_err(|e| e.into())
     }
