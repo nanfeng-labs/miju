@@ -258,6 +258,8 @@ where
 
         let future = self.inner.call(req);
         let stats = self.stats.clone();
+        let failure_threshold = self.config.failure_threshold;
+        let success_threshold = self.config.success_threshold;
 
         Box::pin(async move {
             match future.await {
@@ -269,8 +271,7 @@ where
                             let total_calls = s.success_count + s.failure_count;
                             let success_rate = s.success_count as f32 / total_calls as f32;
 
-                            if success_rate >= 0.5 {
-                                // Use default threshold here
+                            if success_rate >= success_threshold {
                                 s.state = CircuitState::Closed;
                                 s.failure_count = 0;
                                 s.success_count = 0;
@@ -288,8 +289,7 @@ where
 
                         match s.state {
                             CircuitState::Closed => {
-                                if s.failure_count >= 5 {
-                                    // Use default threshold here
+                                if s.failure_count >= failure_threshold {
                                     s.state = CircuitState::Open;
                                 }
                             }
