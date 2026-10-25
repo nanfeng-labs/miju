@@ -15,8 +15,8 @@ use rand::RngExt;
 
 async fn deliver(_: Email, task: TaskContext) -> Result<(), BoxDynError> {
     let millis = rand::rng().random_range(1_000..=20_000);
-    // The wrapper checks execution state when polled. A sleeping sub-task
-    // may therefore remain allocated until its timer next wakes it.
+    // Parent completion or cancellation wakes this spawned task, so it can
+    // finish without waiting for the sleep timer.
     tokio::spawn(task.run_until_executed(tokio::time::sleep(Duration::from_secs(12))));
     if millis > 7_000 {
         task.cancel()?;
