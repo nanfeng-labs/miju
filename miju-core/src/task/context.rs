@@ -252,7 +252,7 @@ impl TaskContext {
     {
         self.start_task();
         SubTaskFuture {
-            parent: self.clone(),
+            parent: self.executed(),
             future: fut,
         }
     }
@@ -353,7 +353,7 @@ impl Drop for WaitForExecutionFuture {
 #[pin_project::pin_project(PinnedDrop)]
 #[derive(Debug)]
 pub struct SubTaskFuture<F: Future> {
-    parent: TaskContext,
+    parent: WaitForExecutionFuture,
     #[pin]
     future: F,
 }
@@ -361,7 +361,7 @@ pub struct SubTaskFuture<F: Future> {
 #[pin_project::pinned_drop]
 impl<F: Future> PinnedDrop for SubTaskFuture<F> {
     fn drop(self: Pin<&mut Self>) {
-        self.parent.end_task();
+        self.parent.inner.end_task();
     }
 }
 
@@ -372,7 +372,7 @@ impl<F: Future> Future for SubTaskFuture<F> {
         let this = self.project();
         if let Poll::Ready(res) = this.future.poll(cx) {
             Poll::Ready(Some(res))
-        } else if this.parent.is_executed() {
+        } else if Pin::new(this.parent).poll(cx).is_ready() {
             Poll::Ready(None)
         } else {
             Poll::Pending
