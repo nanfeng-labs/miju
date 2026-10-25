@@ -255,7 +255,9 @@ where
         let worker = self.run();
         futures_util::try_join!(
             worker,
-            terminator.map_ok(|_| c.stop()).map_err(|e| e.into()),
+            terminator
+                .map_ok(|_| if c.is_terminated() { Ok(()) } else { c.stop() })
+                .map_err(|e| e.into()),
         )
         .map(|_| ())
     }
@@ -426,7 +428,7 @@ mod tests {
     };
     use futures_channel::mpsc::SendError;
     use futures_core::future::BoxFuture;
-    use tokio::sync::Notify;
+    use tokio::sync::{Notify, oneshot};
 
     #[cfg(feature = "task-context")]
     use crate::task::context::TaskContext;
@@ -577,6 +579,29 @@ mod tests {
             }
             _ => panic!("Expected graceful exit error"),
         }
+    }
+
+    #[tokio::test]
+    async fn run_until_preserves_termination_after_eof_and_late_signal() {
+        let ctx = WorkerContext::new("eof-and-late-signal");
+        let (send, receive) = oneshot::channel::<()>();
+        let worker = WorkerBuilder::new(&ctx)
+            .backend(futures_util::stream::empty::<Result<u32, std::io::Error>>().boxed())
+            .build(|_: u32| async {});
+        let run = worker.run_until(async move {
+            receive.await.unwrap();
+            Ok::<(), WorkerError>(())
+        });
+        tokio::pin!(run);
+
+        assert!(run.as_mut().now_or_never().is_none());
+        assert!(ctx.is_terminated());
+        send.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(1), run)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(ctx.is_terminated());
     }
 
     #[tokio::test]
