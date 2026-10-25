@@ -11,12 +11,32 @@ use miju_core::{
     },
 };
 use std::{
+    panic::catch_unwind,
     sync::{Arc, mpsc},
     task::{Context, Poll, Wake, Waker},
     time::{Duration, Instant},
 };
 use tower::{Service, service_fn};
 use tower_layer::Layer;
+
+#[test]
+fn service_preserves_shared_and_owned_unwind_bounds() {
+    let _builder = WorkerBuilder::new("unwind-boundaries")
+        .backend(MemoryStorage::<bool>::new())
+        .break_circuit()
+        .chain(|layer| {
+            let service = layer.layer(service_fn(|_: bool| async { Ok::<(), BoxDynError>(()) }));
+            let cloned = catch_unwind(|| service.clone()).unwrap();
+            let failures = catch_unwind(move || {
+                cloned.record_failure();
+                cloned.get_stats().failure_count
+            })
+            .unwrap();
+            assert_eq!(failures, 1);
+            assert_eq!(service.get_stats().failure_count, 1);
+            layer
+        });
+}
 
 struct Notify(mpsc::Sender<()>);
 

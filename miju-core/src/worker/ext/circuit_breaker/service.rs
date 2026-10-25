@@ -1,4 +1,5 @@
 use std::future::Future;
+use std::panic::{RefUnwindSafe, UnwindSafe};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::RwLock;
@@ -79,6 +80,11 @@ impl<S: Clone> Clone for CircuitBreakerService<S> {
         }
     }
 }
+
+// The private timer is only accessed through &mut self and is not shared by clones.
+// Shared access retains the existing lock-protected statistics and inner-service bounds.
+impl<S: UnwindSafe> UnwindSafe for CircuitBreakerService<S> {}
+impl<S: RefUnwindSafe> RefUnwindSafe for CircuitBreakerService<S> {}
 
 impl<S> CircuitBreakerService<S> {
     pub fn new(service: S, config: CircuitBreakerConfig) -> Self {
