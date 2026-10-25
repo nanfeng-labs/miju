@@ -159,7 +159,7 @@ pub struct SentryHttpFuture<F> {
 pub enum SentryTaskError {
     /// Error occurred in the inner service.
     #[error("Inner service error: {0}")]
-    Inner(BoxDynError),
+    Inner(#[source] BoxDynError),
 }
 
 impl<F> fmt::Debug for SentryHttpFuture<F>
