@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- fix(core): wake pending tasks on cancellation ([#62](https://github.com/nanfeng-labs/miju/pull/62))
 - fix(core): wake subtasks when their parent finishes ([#60](https://github.com/nanfeng-labs/miju/pull/60))
 - fix(core): honor configured circuit breaker thresholds ([#63](https://github.com/nanfeng-labs/miju/pull/63))
 - fix(core): wake circuit readiness after recovery timeout ([#61](https://github.com/nanfeng-labs/miju/pull/61))
