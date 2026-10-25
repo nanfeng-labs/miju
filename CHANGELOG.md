@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- fix(sentry): preserve the full task attempt count ([#34](https://github.com/nanfeng-labs/miju/pull/34))
 - fix(retry): stop retries for boxed abort errors ([#27](https://github.com/nanfeng-labs/miju/pull/27))
 - fix(file-storage): return completion decode errors ([#56](https://github.com/nanfeng-labs/miju/pull/56))
 - fix(file-storage): preserve completion queries during contention ([#55](https://github.com/nanfeng-labs/miju/pull/55))
