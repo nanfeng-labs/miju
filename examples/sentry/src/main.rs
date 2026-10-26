@@ -123,8 +123,12 @@ async fn main() -> Result<(), BoxDynError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sentry::{SentryFutureExt, protocol::EnvelopeItem};
-    use std::sync::Arc;
+    use sentry::{
+        SentryFutureExt,
+        protocol::{Context as SentryContext, EnvelopeItem},
+        test::with_captured_events,
+    };
+    use std::{future::poll_fn, io, sync::Arc};
     use tracing::instrument::WithSubscriber;
 
     #[tokio::test]
@@ -211,6 +215,44 @@ mod tests {
                 .filter(|span| span.parent_span_id == Some(user.span_id))
                 .collect();
             assert_eq!(nested.len(), 2);
+        }
+    }
+
+    #[test]
+    fn emitted_attempt_count_preserves_the_full_task_count() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        for attempt in [
+            0,
+            1,
+            i32::MAX as usize,
+            i32::MAX as usize + 1,
+            u32::MAX as usize,
+            usize::MAX,
+        ] {
+            let events = with_captured_events(|| {
+                runtime.block_on(async {
+                    let mut service = SentryLayer::new().layer(task_fn(|_: ()| async {
+                        Err::<(), BoxDynError>(io::Error::other("task failed").into())
+                    }));
+                    let task = TaskBuilder::new(())
+                        .task_id(7u64.into())
+                        .attempt(attempt)
+                        .build();
+                    poll_fn(|cx| service.poll_ready(cx)).await.unwrap();
+                    assert!(service.call(task).await.is_err());
+                });
+            });
+            assert_eq!(events.len(), 1);
+            let SentryContext::Other(details) = events[0].contexts.get("task").unwrap() else {
+                panic!("missing task context");
+            };
+            assert_eq!(
+                details["current_attempt"].as_u64(),
+                Some(attempt as u64),
+                "the reported count must match task attempt {attempt}"
+            );
         }
     }
 }
