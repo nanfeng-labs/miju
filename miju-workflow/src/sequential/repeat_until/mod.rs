@@ -67,6 +67,8 @@ impl<Start, L, Input, B: Backend> SteppedFlow<Start, Input, B, L> {
     /// The initial iteration count is zero. Repetition has no built-in limit or
     /// delay, so the handler must eventually return `Some` or an error. Handler
     /// and decoding errors propagate without scheduling another task.
+    /// If another iteration would overflow the count, the step returns an error
+    /// without scheduling another task.
     ///
     /// ```rust
     /// use miju_core::{backend::ext::shared::Shared, task::metadata::Meta};
@@ -201,6 +203,10 @@ where
                     next_task_id: None,
                 }),
                 None => {
+                    let iterations = state
+                        .iterations
+                        .checked_add(1)
+                        .ok_or("Repeat iteration count overflow")?;
                     let task_id = B::Id::generate();
                     let next_step =
                         TaskBuilder::new(compact.take().expect("Compact args should be set"))
@@ -209,7 +215,7 @@ where
                                 step_index: ctx.current_step,
                             })
                             .metadata(&RepeaterState {
-                                iterations: state.iterations + 1,
+                                iterations,
                                 prev_task_id,
                             })
                             .build();
