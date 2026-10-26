@@ -51,7 +51,7 @@ use std::{
     hash::{Hash, Hasher},
     pin::Pin,
     sync::{
-        Arc, Weak,
+        Arc, Mutex, Weak,
         atomic::{AtomicUsize, Ordering},
     },
     task::{Context, Poll},
@@ -78,7 +78,7 @@ pub struct TaskContext {
     task_id: Arc<str>,
     state: Arc<AtomicUsize>,
     /// Wakes any pending [`WaitForExecutionFuture`] future when `complete() or cancel()` is called.
-    waker: Arc<AtomicWaker>,
+    waiters: Arc<Mutex<Vec<Arc<AtomicWaker>>>>,
     instant: Instant,
     inner: Weak<ExecutionContext>,
     /// The number of sub-tasks currently spawned by this task context.
@@ -102,11 +102,15 @@ impl TaskContext {
                 .to_string()
                 .into(),
             state: Arc::new(AtomicUsize::new(RUNNING)),
-            waker: Arc::new(AtomicWaker::new()),
+            waiters: Arc::new(Mutex::new(Vec::new())),
             instant: Instant::now(),
             inner: Arc::downgrade(ctx),
             sub_tasks_count: Arc::new(AtomicUsize::new(0)),
         }
+    }
+
+    pub(crate) fn same_execution(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.state, &other.state)
     }
 
     /// Requests cancellation of the task.
@@ -127,7 +131,7 @@ impl TaskContext {
                     other => unreachable!("unexpected task state: {other}"),
                 })
             })?;
-        self.waker.wake();
+        self.wake_waiters();
         Ok(())
     }
 
@@ -149,8 +153,16 @@ impl TaskContext {
                     other => unreachable!("unexpected task state: {other}"),
                 })
             })?;
-        self.waker.wake();
+        self.wake_waiters();
         Ok(())
+    }
+
+    fn wake_waiters(&self) {
+        let waiters = std::mem::take(&mut *self.waiters.lock().unwrap());
+        // Waking can drop other waiters, so release the registry lock first.
+        for waker in waiters {
+            waker.wake();
+        }
     }
 
     /// Returns whether the task has been completed.
@@ -187,6 +199,7 @@ impl TaskContext {
     pub fn executed(&self) -> WaitForExecutionFuture {
         WaitForExecutionFuture {
             inner: self.clone(),
+            waker: None,
         }
     }
 
@@ -243,7 +256,7 @@ impl TaskContext {
     {
         self.start_task();
         SubTaskFuture {
-            parent: self.clone(),
+            parent: self.executed(),
             future: fut,
         }
     }
@@ -297,20 +310,39 @@ impl fmt::Display for TerminalState {
 #[derive(Debug)]
 pub struct WaitForExecutionFuture {
     inner: TaskContext,
+    waker: Option<Arc<AtomicWaker>>,
 }
 
 impl Future for WaitForExecutionFuture {
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        if self.inner.is_executed() {
+        let this = self.get_mut();
+        if this.inner.is_executed() {
             return Poll::Ready(());
         }
-        self.inner.waker.register(cx.waker());
-        if self.inner.is_executed() {
+        let waker = this.waker.get_or_insert_with(|| {
+            let waker = Arc::new(AtomicWaker::new());
+            this.inner.waiters.lock().unwrap().push(waker.clone());
+            waker
+        });
+        waker.register(cx.waker());
+        if this.inner.is_executed() {
             Poll::Ready(())
         } else {
             Poll::Pending
+        }
+    }
+}
+
+impl Drop for WaitForExecutionFuture {
+    fn drop(&mut self) {
+        if let Some(waker) = &self.waker {
+            self.inner
+                .waiters
+                .lock()
+                .unwrap()
+                .retain(|registered| !Arc::ptr_eq(registered, waker));
         }
     }
 }
@@ -325,7 +357,7 @@ impl Future for WaitForExecutionFuture {
 #[pin_project::pin_project(PinnedDrop)]
 #[derive(Debug)]
 pub struct SubTaskFuture<F: Future> {
-    parent: TaskContext,
+    parent: WaitForExecutionFuture,
     #[pin]
     future: F,
 }
@@ -333,7 +365,7 @@ pub struct SubTaskFuture<F: Future> {
 #[pin_project::pinned_drop]
 impl<F: Future> PinnedDrop for SubTaskFuture<F> {
     fn drop(self: Pin<&mut Self>) {
-        self.parent.end_task();
+        self.parent.inner.end_task();
     }
 }
 
@@ -344,7 +376,7 @@ impl<F: Future> Future for SubTaskFuture<F> {
         let this = self.project();
         if let Poll::Ready(res) = this.future.poll(cx) {
             Poll::Ready(Some(res))
-        } else if this.parent.is_executed() {
+        } else if Pin::new(this.parent).poll(cx).is_ready() {
             Poll::Ready(None)
         } else {
             Poll::Pending

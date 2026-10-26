@@ -2,6 +2,7 @@
 
 use std::{
     collections::HashSet,
+    panic::AssertUnwindSafe,
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -10,7 +11,7 @@ use std::{
     time::Duration,
 };
 
-use futures_util::{future::poll_fn, task::noop_waker_ref};
+use futures_util::{FutureExt, future::poll_fn, task::noop_waker_ref};
 use miju_core::{
     backend::{Backend, BackendConfig, TaskSink, ext::shared::Shared},
     task::{
@@ -273,6 +274,52 @@ async fn invalid_collection_context_and_element_failures_are_reported() {
         .unwrap_err();
     assert!(result.to_string().contains(&error.to_string()));
     assert_queue_empty(&mut reader);
+}
+
+#[tokio::test]
+async fn element_decode_failures_are_returned_without_running_the_handler() {
+    for payload in [b"not-json".to_vec(), b"\"not-a-number\"".to_vec()] {
+        let mut backend = InMemoryWorkflow::<Vec<u32>>::create();
+        let mut reader = backend.clone();
+        let layer = backend.middleware(&mut WorkerContext::new("decode-error"));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = calls.clone();
+        let flow = SteppedFlow::new("decode-error")
+            .filter_map(move |n: u32| {
+                observed.fetch_add(1, Ordering::SeqCst);
+                async move { Some(n) }
+            })
+            .and_then(async |values: Vec<u32>| values.len());
+        let service = layer.layer(flow.into_service(backend).service);
+        service
+            .clone()
+            .oneshot(
+                TaskBuilder::new(b"[7]".to_vec())
+                    .task_id(RandomId::generate())
+                    .build(),
+            )
+            .await
+            .unwrap();
+        let element = next_task(&mut reader).await.map_args(|_| payload);
+        let collector = next_task(&mut reader).await;
+        let result = AssertUnwindSafe(service.clone().oneshot(element))
+            .catch_unwind()
+            .await;
+        assert!(result.is_ok(), "an element decode failure must not panic");
+        let error = result.unwrap().unwrap_err();
+        assert!(error.downcast_ref::<serde_json::Error>().is_some());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        let error_from_collector = tokio::time::timeout(DEADLINE, service.oneshot(collector))
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert!(
+            error_from_collector
+                .to_string()
+                .contains(&error.to_string())
+        );
+        assert_queue_empty(&mut reader);
+    }
 }
 
 #[test]

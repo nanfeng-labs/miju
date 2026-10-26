@@ -235,19 +235,22 @@ where
                 let task_id = B::Id::generate();
                 let steps: Task<I> = task.try_map_args(|arg| B::Codec::decode(&codec, &arg))?;
                 let steps = steps.args.into_iter().collect::<Vec<_>>();
-                let task = TaskBuilder::new(B::Codec::encode(&codec, &(Init::default(), steps))?)
+                let steps = (Init::default(), steps);
+                let task = TaskBuilder::new(B::Codec::encode(&codec, &steps)?)
                     .metadata(&WorkflowContext {
                         step_index: ctx.current_step,
                     })
                     .task_id(task_id.clone())
                     .metadata(&FoldState::Collection)
                     .build();
+                let (initial, items) = steps;
+                drop(items);
                 ctx.backend
                     .send(task)
                     .await
                     .map_err(TaskSinkError::PushError)?;
                 Ok(GoTo::Next(StepResponse {
-                    result: to_value(Init::default())?,
+                    result: to_value(initial)?,
                     next_task_id: Some(task_id),
                 }))
             }
