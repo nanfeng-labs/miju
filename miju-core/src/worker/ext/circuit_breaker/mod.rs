@@ -115,8 +115,9 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::{task::Poll, time::Duration};
 
+    use futures_util::{StreamExt, poll};
     use tower::limit::ConcurrencyLimitLayer;
 
     use crate::{
@@ -125,6 +126,7 @@ mod tests {
         worker::{
             builder::WorkerBuilder,
             context::WorkerContext,
+            event::Event,
             ext::{circuit_breaker::CircuitBreaker, event_listener::EventListenerExt},
         },
     };
@@ -132,6 +134,71 @@ mod tests {
     use super::*;
 
     const ITEMS: u32 = 10;
+
+    #[tokio::test]
+    async fn worker_uses_configured_failure_threshold() {
+        for failure_threshold in [1, 7, 50] {
+            let mut backend = MemoryStorage::new();
+            for _ in 0..=failure_threshold {
+                backend.push(()).await.unwrap();
+            }
+            let config = CircuitBreakerConfig::default()
+                .failure_threshold(failure_threshold)
+                .recovery_timeout(Duration::from_secs(60));
+            let mut events = WorkerBuilder::new("configured-failure-threshold")
+                .backend(backend)
+                .break_circuit_with(config)
+                .build(|_: ()| async { Err::<(), _>("expected failure") })
+                .stream();
+
+            assert!(matches!(events.next().await, Some(Ok(Event::Start))));
+            for _ in 0..failure_threshold {
+                assert!(matches!(
+                    poll!(events.next()),
+                    Poll::Ready(Some(Ok(Event::Error(_))))
+                ));
+            }
+            assert!(poll!(events.next()).is_pending());
+        }
+    }
+
+    #[tokio::test]
+    async fn worker_uses_configured_success_threshold() {
+        let mut backend = MemoryStorage::new();
+        for succeeds in [false, false, false, false, false, true, true, true] {
+            backend.push(succeeds).await.unwrap();
+        }
+        let config = CircuitBreakerConfig::default()
+            .failure_threshold(5)
+            .recovery_timeout(Duration::ZERO)
+            .success_threshold(0.125)
+            .half_open_max_calls(1);
+        let mut events = WorkerBuilder::new("configured-success-threshold")
+            .backend(backend)
+            .break_circuit_with(config)
+            .build(|succeeds: bool| async move {
+                if succeeds {
+                    Ok(())
+                } else {
+                    Err("expected failure")
+                }
+            })
+            .stream();
+
+        assert!(matches!(events.next().await, Some(Ok(Event::Start))));
+        for _ in 0..5 {
+            assert!(matches!(
+                poll!(events.next()),
+                Poll::Ready(Some(Ok(Event::Error(_))))
+            ));
+        }
+        for _ in 0..3 {
+            assert!(matches!(
+                poll!(events.next()),
+                Poll::Ready(Some(Ok(Event::Success(_))))
+            ));
+        }
+    }
 
     #[tokio::test]
     async fn basic_worker() {

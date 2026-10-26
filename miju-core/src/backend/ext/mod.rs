@@ -283,7 +283,7 @@ mod composition_tests {
     use crate::backend::{FetchById, finalize::Ephemeral};
     use crate::task::task_id::TaskId;
     use futures_sink::Sink;
-    use futures_util::{SinkExt, StreamExt, stream, task::noop_waker_ref};
+    use futures_util::{SinkExt, StreamExt, poll, stream, task::noop_waker_ref};
     use std::{
         collections::VecDeque,
         io,
@@ -553,20 +553,84 @@ mod composition_tests {
     }
 
     #[test]
-    fn first_sink_readiness_completes_before_start_hook_without_polling_sink() {
+    fn first_sink_readiness_waits_for_inner_sink_after_before_start() {
         let mut backend = Probe {
             pending: Some("sink_ready"),
             ..Probe::default()
         }
-        .before_start(|_| std::future::ready(Ok(())));
+        .before_start(|b| std::future::ready(b.record("before_start")));
         let mut cx = Context::from_waker(noop_waker_ref());
+        assert!(backend.poll_ready_unpin(&mut cx).is_pending());
+        assert_eq!(
+            *backend.events.lock().unwrap(),
+            ["before_start", "sink_ready"]
+        );
+        backend.pending = None;
         assert!(matches!(
             backend.poll_ready_unpin(&mut cx),
             Poll::Ready(Ok(()))
         ));
-        assert!(backend.events.lock().unwrap().is_empty());
-        assert!(backend.poll_ready_unpin(&mut cx).is_pending());
-        assert_eq!(*backend.events.lock().unwrap(), ["sink_ready"]);
+        assert_eq!(
+            *backend.events.lock().unwrap(),
+            ["before_start", "sink_ready", "sink_ready"]
+        );
+    }
+
+    #[test]
+    fn before_start_sink_propagates_hook_and_readiness_errors() {
+        for fail in ["before_start", "sink_ready"] {
+            let mut backend = Probe {
+                fail: Some(fail),
+                ..Probe::default()
+            }
+            .before_start(|b| std::future::ready(b.record("before_start")));
+            let mut cx = Context::from_waker(noop_waker_ref());
+            let Poll::Ready(Err(error)) = backend.poll_ready_unpin(&mut cx) else {
+                panic!("expected {fail} error")
+            };
+            assert_eq!(error.to_string(), fail);
+            let expected = if fail == "before_start" {
+                vec!["before_start"]
+            } else {
+                vec!["before_start", "sink_ready"]
+            };
+            assert_eq!(*backend.events.lock().unwrap(), expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn before_start_feed_waits_for_delayed_hook() {
+        let mut backend = Probe::default().before_start(|b| {
+            let result = b.record("before_start");
+            async move {
+                tokio::task::yield_now().await;
+                result
+            }
+        });
+        let events = backend.events.clone();
+        let mut feed = Box::pin(backend.feed(Task::new(7)));
+        assert!(poll!(&mut feed).is_pending());
+        assert_eq!(*events.lock().unwrap(), ["before_start"]);
+        feed.await.unwrap();
+        assert_eq!(
+            *events.lock().unwrap(),
+            ["before_start", "sink_ready", "send"]
+        );
+
+        let worker = WorkerContext::new("before-start-feed");
+        let mut cx = Context::from_waker(noop_waker_ref());
+        assert!(matches!(
+            Backend::poll_ready(&mut backend, &mut cx, &worker),
+            Poll::Ready(Ok(()))
+        ));
+        let Poll::Ready(Some(Ok(task))) = backend.poll_next(&mut cx, &worker) else {
+            panic!("missing task")
+        };
+        assert_eq!(task.args, 7);
+        assert!(matches!(
+            backend.poll_next(&mut cx, &worker),
+            Poll::Ready(None)
+        ));
     }
 
     #[test]

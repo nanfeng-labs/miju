@@ -105,3 +105,71 @@ delegate_expose!(
     }
     => backend
 );
+
+#[cfg(all(test, feature = "sleep"))]
+mod tests {
+    use std::{
+        sync::{Arc, mpsc},
+        task::{Context, Poll, Wake, Waker},
+        time::Duration,
+    };
+
+    use futures_util::SinkExt;
+
+    use crate::{
+        backend::{
+            Backend,
+            ext::poll_strategy::{IntervalStrategy, PollStrategy, PollWith},
+            memory::MemoryStorage,
+        },
+        task::Task,
+        worker::context::WorkerContext,
+    };
+
+    struct Notify(mpsc::Sender<()>);
+
+    impl Wake for Notify {
+        fn wake(self: Arc<Self>) {
+            let _ = self.0.send(());
+        }
+
+        fn wake_by_ref(self: &Arc<Self>) {
+            let _ = self.0.send(());
+        }
+    }
+
+    fn assert_idle_backend_keeps_waking(strategy: impl PollStrategy) {
+        let mut backend = PollWith::new(MemoryStorage::<u32>::new(), strategy);
+        let worker = WorkerContext::new("idle-polling");
+        let (tx, rx) = mpsc::channel();
+        let waker = Waker::from(Arc::new(Notify(tx)));
+        let mut cx = Context::from_waker(&waker);
+        assert!(backend.poll_ready(&mut cx, &worker).is_ready());
+
+        for tick in 1..=3 {
+            assert!(backend.poll_next(&mut cx, &worker).is_pending());
+            assert!(
+                rx.recv_timeout(Duration::from_secs(2)).is_ok(),
+                "idle backend did not receive wake {tick}"
+            );
+        }
+
+        assert!(backend.poll_ready_unpin(&mut cx).is_ready());
+        backend.start_send_unpin(Task::new(42)).unwrap();
+        let Poll::Ready(Some(Ok(task))) = backend.poll_next(&mut cx, &worker) else {
+            panic!("queued task was not returned");
+        };
+        assert_eq!(task.args, 42);
+    }
+
+    #[test]
+    fn interval_keeps_waking_an_idle_backend() {
+        let interval = Duration::from_millis(10);
+        assert_idle_backend_keeps_waking(IntervalStrategy::new(interval));
+    }
+
+    #[test]
+    fn zero_interval_keeps_waking_an_idle_backend() {
+        assert_idle_backend_keeps_waking(IntervalStrategy::new(Duration::ZERO));
+    }
+}
