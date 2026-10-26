@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- fix(workflow): return duplicate graph flag errors ([#49](https://github.com/nanfeng-labs/miju/pull/49))
 - fix(workflow): handle maximum registered step indices ([#48](https://github.com/nanfeng-labs/miju/pull/48))
 - fix(core): allow pipes to fill empty destinations ([#47](https://github.com/nanfeng-labs/miju/pull/47))
 - fix(core): discard completed futures after close errors ([#45](https://github.com/nanfeng-labs/miju/pull/45))
