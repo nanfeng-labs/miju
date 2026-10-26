@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- fix(core): serialize memory idempotency checks ([#66](https://github.com/nanfeng-labs/miju/pull/66))
 - fix(workflow): start fresh graphs at their actual entry node ([#32](https://github.com/nanfeng-labs/miju/pull/32))
 - fix(workflow): finish terminal delays without scheduling a successor ([#31](https://github.com/nanfeng-labs/miju/pull/31))
 - fix(workflow): release canceled result waiter registrations ([#30](https://github.com/nanfeng-labs/miju/pull/30))
