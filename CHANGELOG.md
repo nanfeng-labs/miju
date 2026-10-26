@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- fix(workflow): reuse the queued fold accumulator ([#36](https://github.com/nanfeng-labs/miju/pull/36))
 - fix(workflow): retain fresh task IDs after fan-out ([#35](https://github.com/nanfeng-labs/miju/pull/35))
 - fix(workflow): await selected graph node readiness ([#33](https://github.com/nanfeng-labs/miju/pull/33))
 - fix(workflow): start fresh graphs at their actual entry node ([#32](https://github.com/nanfeng-labs/miju/pull/32))

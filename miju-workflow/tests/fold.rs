@@ -290,3 +290,41 @@ fn fold_metadata_round_trips_and_preserves_initialization_fallback() {
         assert_eq!(FoldState::extract(&metadata).unwrap(), FoldState::Init);
     }
 }
+
+#[tokio::test]
+async fn fold_reports_the_same_default_accumulator_that_it_queues() {
+    #[derive(Clone, Debug, Deserialize, Serialize)]
+    struct Seed(usize);
+
+    impl Default for Seed {
+        fn default() -> Self {
+            static NEXT: AtomicUsize = AtomicUsize::new(1);
+            Self(NEXT.fetch_add(1, Ordering::SeqCst))
+        }
+    }
+
+    let backend = InMemoryWorkflow::<Vec<u32>>::create();
+    let mut reader = backend.clone();
+    let flow = SteppedFlow::new("default-identity")
+        .fold(async |(seed, item): (Seed, u32)| Ok::<_, BoxDynError>(Seed(seed.0 + item as usize)));
+    let service: WorkflowService<_, _, Vec<u32>> = flow.into_service(backend).service;
+    let GoTo::Next(initial) = service
+        .clone()
+        .oneshot(Task::new(b"[7]".to_vec()))
+        .await
+        .unwrap()
+    else {
+        panic!("expected initialization")
+    };
+    let task = next_task(&mut reader).await;
+    assert_eq!(task.task_id(), initial.next_task_id.as_ref());
+    let (seed, items): (Seed, Vec<u32>) = serde_json::from_slice(&task.args).unwrap();
+    assert_eq!(items, vec![7]);
+    assert_eq!(initial.result, json!(seed.0));
+    let GoTo::Break(result) = service.oneshot(task).await.unwrap() else {
+        panic!("expected terminal accumulator")
+    };
+    assert_eq!(result.result, json!(seed.0 + 7));
+    assert!(result.next_task_id.is_none());
+    assert_queue_empty(&mut reader);
+}
