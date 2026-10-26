@@ -73,11 +73,13 @@ where
         let future = self.service.call(task);
 
         Box::pin(async move {
-            let res = future.await;
+            let res: Result<_, BoxDynError> = future.await.map_err(Into::into).and_then(|o| {
+                let value = serde_json::to_value(&o)?;
+                Ok((o, value))
+            });
 
             match res {
-                Ok(o) => {
-                    let value = serde_json::to_value(&o)?;
+                Ok((o, value)) => {
                     store.insert(
                         task_id.clone(),
                         TaskResult {
@@ -96,8 +98,7 @@ where
                     );
                     Ok(o)
                 }
-                Err(e) => {
-                    let error = e.into();
+                Err(error) => {
                     let value = error.to_string();
                     store.insert(
                         task_id.clone(),
