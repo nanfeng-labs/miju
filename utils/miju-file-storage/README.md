@@ -75,8 +75,6 @@ File operations are synchronous, including those invoked through async traits.
   representation does not preserve all JSON types, keys, or changing schemas.
   Prefer JSON for structured data. CSV is not a general-purpose interchange
   format in this implementation.
-- Completion queries can report `Done` even when the stored handler result is
-  `Err`; inspect the returned result as well as its status.
 - Some completion and shared-store error paths can panic or terminate a stream.
   Inputs and stored result types must match the expected task types.
 
