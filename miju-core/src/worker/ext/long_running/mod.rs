@@ -131,6 +131,8 @@ impl<T: Send + 'static> TaskRunner<T> {
             future,
             #[cfg(feature = "task-context")]
             task: self.task.clone(),
+            #[cfg(feature = "task-context")]
+            task_execution: self.task.executed(),
             #[cfg(feature = "sleep")]
             timeout: self.config.max_duration.map(futures_timer::Delay::new),
             max_duration: self.config.max_duration,
