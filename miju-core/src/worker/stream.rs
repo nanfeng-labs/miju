@@ -90,6 +90,9 @@ where
                         return Poll::Ready(Some(event));
                     }
                     Poll::Ready(None) => {
+                        if !this.handle.inner.is_shutting_down() {
+                            this.handle.inner.stop()?;
+                        }
                         *this.phase = WorkerPhase::ShuttingDown;
                     }
                     Poll::Pending => return Poll::Pending,
