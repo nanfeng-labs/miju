@@ -109,6 +109,10 @@ impl TaskContext {
         }
     }
 
+    pub(crate) fn same_execution(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.state, &other.state)
+    }
+
     /// Requests cancellation of the task.
     ///
     /// Wakes any pending [WaitForExecutionFuture] futures waiting for execution to complete
