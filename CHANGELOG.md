@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- fix(core): keep interval polling timers registered ([#25](https://github.com/nanfeng-labs/miju/pull/25))
 - fix(core): honor inner sink readiness after startup hook ([#23](https://github.com/nanfeng-labs/miju/pull/23))
 - fix(core): wake contended memory sink operations ([#64](https://github.com/nanfeng-labs/miju/pull/64))
 - fix(core): drain accepted tasks before persisted flush completes ([#39](https://github.com/nanfeng-labs/miju/pull/39))
