@@ -3,9 +3,9 @@
 //! A [`GraphFlow`] becomes a [`RootGraphService`] through [`IntoWorkerService`].
 //! Requests carry the backend's compact arguments and [`GraphFlowContext`]
 //! metadata. The service injects the codec before invoking a node adapter.
-//! A request without readable context starts a new execution; a single entry
-//! currently assumes node zero. Multiple entries require a codec-encoded list of
-//! compact inputs in ascending entry-node index order.
+//! A request without readable context starts a new execution at the sole entry
+//! node. Multiple entries require a codec-encoded list of compact inputs in
+//! ascending entry-node index order.
 //!
 //! Fan-in is handled by the predecessor with the greatest node index. It waits
 //! for stored [`GraphNodeResponse`] results and presents their values in incoming
@@ -441,7 +441,8 @@ where
                 if start_nodes.len() == 1 {
                     #[cfg(feature = "tracing")]
                     tracing::debug!("Single start node detected, proceeding with execution");
-                    let context = GraphFlowContext::new(req.task_id().cloned());
+                    let mut context = GraphFlowContext::new(req.task_id().cloned());
+                    context.current_node = start_nodes[0];
                     req.inject_metadata(&context)?;
                     let response = Self::handle_task(&mut graph, req).await?;
                     #[cfg(feature = "tracing")]
