@@ -9,7 +9,7 @@ use std::time::Duration;
 use crate::error::BoxDynError;
 
 #[cfg(feature = "task-context")]
-use crate::task::context::TaskContext;
+use crate::task::context::{TaskContext, WaitForExecutionFuture};
 
 /// A future that is tracked as a task by a [`TaskRunner`].
 ///
@@ -30,6 +30,8 @@ where
     pub(super) max_duration: Option<Duration>,
     #[cfg(feature = "task-context")]
     pub(super) task: TaskContext,
+    #[cfg(feature = "task-context")]
+    pub(super) task_execution: WaitForExecutionFuture,
 }
 
 /// An error encountered during a long running task
@@ -73,6 +75,9 @@ where
                 return Poll::Ready(Err(error));
             }
         }
+        #[cfg(feature = "task-context")]
+        let _ = Pin::new(this.task_execution).poll(cx);
+
         #[cfg(feature = "task-context")]
         if this.task.is_cancelled() {
             return Poll::Ready(Err(LongRunningError::Cancelled));

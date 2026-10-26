@@ -28,7 +28,7 @@ use crate::{
 };
 
 #[cfg(feature = "task-context")]
-use crate::task::context::{TaskContext, TaskStateError};
+use crate::task::context::{TaskContext, TaskStateError, WaitForExecutionFuture};
 
 /// A layer that tracks the lifecycle of tasks processed by a worker.
 ///
@@ -117,6 +117,8 @@ where
             fut,
             worker,
             #[cfg(feature = "task-context")]
+            task_execution: task_ctx.executed(),
+            #[cfg(feature = "task-context")]
             task_ctx,
             #[cfg(not(feature = "task-context"))]
             task_ctx: (),
@@ -158,6 +160,8 @@ pub struct LifecycleFuture<Fut> {
     fut: Fut,
     #[cfg(feature = "task-context")]
     task_ctx: TaskContext,
+    #[cfg(feature = "task-context")]
+    task_execution: WaitForExecutionFuture,
     #[cfg(not(feature = "task-context"))]
     task_ctx: (),
     worker: WorkerContext,
@@ -217,6 +221,9 @@ where
             this.task_status.store(Status::Running);
             trace!("task started with prev attempts: {}", _current);
         }
+
+        #[cfg(feature = "task-context")]
+        let _ = this.task_execution.poll_unpin(cx);
 
         #[cfg(feature = "task-context")]
         if this.task_ctx.is_cancelled() {
