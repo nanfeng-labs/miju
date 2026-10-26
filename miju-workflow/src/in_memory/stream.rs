@@ -91,10 +91,20 @@ where
             }
         }
 
-        if this.completed.len() == this.task_ids.len() {
+        if this
+            .task_ids
+            .iter()
+            .all(|task_id| this.completed.contains(task_id))
+        {
             return Poll::Ready(None);
         }
         this.store.register_waker(this.id, cx.waker());
+        // A result may arrive between the first scan and registering the waker.
+        if this.task_ids.iter().any(|task_id| {
+            !this.completed.contains(task_id) && this.store.results.contains_key(task_id)
+        }) {
+            cx.waker().wake_by_ref();
+        }
         Poll::Pending
     }
 }
