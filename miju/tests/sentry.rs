@@ -90,3 +90,33 @@ fn missing_task_id_panics_before_calling_the_inner_service() {
     );
     assert_eq!(calls.load(Ordering::SeqCst), 0);
 }
+
+#[tokio::test]
+async fn task_errors_preserve_the_inner_source_chain() {
+    #[derive(Debug, thiserror::Error)]
+    #[error("save failed")]
+    struct SaveError(#[source] io::Error);
+
+    let service = SentryLayer::new().layer(service_fn(|_: Task<()>| async {
+        Err::<(), BoxDynError>(SaveError(io::Error::other("storage unavailable")).into())
+    }));
+    let error = service
+        .oneshot(TaskBuilder::new(()).task_id(1u64.into()).build())
+        .await
+        .unwrap_err();
+    assert_eq!(error.to_string(), "Inner service error: save failed");
+    assert_eq!(
+        error.source().map(ToString::to_string),
+        Some("save failed".to_owned())
+    );
+    let source = error.source().unwrap();
+    assert!(source.downcast_ref::<SaveError>().is_some());
+    let cause = source
+        .source()
+        .unwrap()
+        .downcast_ref::<io::Error>()
+        .unwrap();
+    assert_eq!(cause.kind(), io::ErrorKind::Other);
+    assert_eq!(cause.to_string(), "storage unavailable");
+    assert!(source.source().unwrap().source().is_none());
+}
