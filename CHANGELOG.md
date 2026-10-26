@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- fix(core): wake contended memory sink operations ([#64](https://github.com/nanfeng-labs/miju/pull/64))
 - fix(core): drain accepted tasks before persisted flush completes ([#39](https://github.com/nanfeng-labs/miju/pull/39))
 - fix(core): finish worker shutdown after source exhaustion ([#29](https://github.com/nanfeng-labs/miju/pull/29))
 - fix(core): wake pending tasks on cancellation ([#62](https://github.com/nanfeng-labs/miju/pull/62))
