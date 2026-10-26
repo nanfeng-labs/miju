@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- fix(core): discard completed futures after close errors ([#45](https://github.com/nanfeng-labs/miju/pull/45))
 - fix(core): preserve readiness errors during pause and stop ([#44](https://github.com/nanfeng-labs/miju/pull/44))
 - fix(workflow): store output serialization failures ([#43](https://github.com/nanfeng-labs/miju/pull/43))
 - fix(core): scope task cancellation to its execution ([#42](https://github.com/nanfeng-labs/miju/pull/42))
