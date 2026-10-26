@@ -79,6 +79,10 @@ where
 
     fn poll_ready(&mut self, cx: &mut std::task::Context<'_>) -> Poll<Result<(), Self::Error>> {
         let result = self.service.poll_ready(cx).map_err(Into::into);
+        if let Poll::Ready(Err(error)) = result {
+            self.worker.is_ready.store(false, Ordering::SeqCst);
+            return Poll::Ready(Err(error));
+        }
         if self.worker.is_shutting_down() || self.worker.is_paused() || result.is_pending() {
             self.worker.is_ready.store(false, Ordering::SeqCst);
             return Poll::Pending;
@@ -278,9 +282,15 @@ mod tests {
     use super::*;
     #[cfg(feature = "task-context")]
     use crate::task::context::TerminalState;
-    use crate::task::{builder::TaskBuilder, task_fn::task_fn};
+    use crate::{
+        backend::memory::MemoryStorage,
+        task::{builder::TaskBuilder, task_fn::task_fn},
+        worker::{builder::WorkerBuilder, event::Event},
+    };
+    use futures_util::StreamExt;
     use std::{
         future::{Future, Ready, pending, ready},
+        io,
         panic::{AssertUnwindSafe, catch_unwind},
         sync::{Arc, atomic::AtomicUsize},
         task::{Wake, Waker},
@@ -299,6 +309,68 @@ mod tests {
         TaskBuilder::new(7)
             .task_id("tracked".to_owned().into())
             .build()
+    }
+
+    struct ReadinessFailure {
+        worker: WorkerContext,
+        before_error: fn(&WorkerContext),
+        error: Option<io::Error>,
+    }
+
+    impl Service<Task<u32>> for ReadinessFailure {
+        type Response = ();
+        type Error = io::Error;
+        type Future = Ready<Result<(), io::Error>>;
+
+        fn poll_ready(&mut self, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            (self.before_error)(&self.worker);
+            Poll::Ready(Err(self.error.take().expect("failed service polled again")))
+        }
+
+        fn call(&mut self, _: Task<u32>) -> Self::Future {
+            panic!("service with failed readiness must not receive tasks");
+        }
+    }
+
+    #[tokio::test]
+    async fn readiness_errors_survive_pause_and_stop() {
+        let cases: [(bool, fn(&WorkerContext)); 3] = [
+            (true, |_| {}),
+            (false, |worker| worker.pause().unwrap()),
+            (false, |worker| worker.stop().unwrap()),
+        ];
+        for (paused_before, before_error) in cases {
+            let ctx = WorkerContext::new("readiness-error");
+            let service = ReadinessFailure {
+                worker: ctx.clone(),
+                before_error,
+                error: Some(io::Error::new(io::ErrorKind::PermissionDenied, "readiness")),
+            };
+            let mut events = WorkerBuilder::new(&ctx)
+                .backend(MemoryStorage::new())
+                .build(service)
+                .stream();
+            assert!(matches!(events.next().await, Some(Ok(Event::Start))));
+            if paused_before {
+                ctx.pause().unwrap();
+            }
+            let Poll::Ready(Some(Ok(Event::Error(error)))) =
+                events.poll_next_unpin(&mut Context::from_waker(Waker::noop()))
+            else {
+                panic!("worker must report the readiness error");
+            };
+            let error = error.downcast_ref::<io::Error>().unwrap();
+            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+            assert_eq!(error.to_string(), "readiness");
+            assert!(!ctx.is_ready());
+            assert_eq!(ctx.task_count(), 0);
+            if ctx.is_paused() {
+                ctx.resume().unwrap();
+            }
+            ctx.stop().unwrap();
+            assert!(matches!(events.next().await, Some(Ok(Event::Exit))));
+            assert!(events.next().await.is_none());
+        }
     }
 
     #[test]
