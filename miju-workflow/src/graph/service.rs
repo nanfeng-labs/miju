@@ -68,10 +68,11 @@ use crate::graph::response::GraphNodeResponse;
 /// ready before dispatching on that same instance.
 ///
 /// Missing dependency IDs can produce a waiting response with no rescheduling.
-/// Fan-out retains earlier ID mappings even when they conflict with fresh IDs;
-/// single-edge continuations do not update those mappings. These behaviors limit
-/// joins across longer or repeated branches. Progress positions are counters,
-/// not a reliable topological cursor, and completed-node sets are not advanced.
+/// Fan-out records fresh IDs for newly enqueued nodes and retains other mappings.
+/// Single-edge continuations do not update mappings, and independently extended
+/// branches do not merge them. These behaviors limit joins across longer branches.
+/// Progress positions are counters, not a reliable topological cursor, and
+/// completed-node sets are not advanced.
 pub struct RootGraphService<B>
 where
     B: Backend + WireFormatBackend,
@@ -548,8 +549,8 @@ where
         .iter()
         .map(|node| (*node, B::Id::generate()))
         .collect::<HashMap<NodeIndex, TaskId>>();
-    let mut node_task_ids = next_nodes.clone();
-    node_task_ids.extend(context.node_task_ids.clone());
+    let mut node_task_ids = context.node_task_ids.clone();
+    node_task_ids.extend(next_nodes.clone());
     for outgoing_node in outgoing_nodes.into_iter() {
         let task_id = next_nodes
             .get(&outgoing_node)

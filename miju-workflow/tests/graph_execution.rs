@@ -311,7 +311,7 @@ async fn explicit_context_preserves_target_with_a_nonzero_entry() {
 }
 
 #[tokio::test]
-async fn fan_out_retains_double_position_increment_and_stale_dependency_ids() {
+async fn fan_out_uses_fresh_dependency_ids_and_preserves_history() {
     let graph = GraphFlow::new("metadata");
     let entry = graph.add_task(|value: u32| async move { value });
     let _left = graph
@@ -327,6 +327,7 @@ async fn fan_out_retains_double_position_increment_and_stale_dependency_ids() {
     context.node_task_ids = HashMap::from([
         (NodeIndex::new(1), TaskId::from_string("old-left")),
         (NodeIndex::new(2), TaskId::from_string("old-right")),
+        (NodeIndex::new(99), TaskId::from_string("unrelated")),
     ]);
     let GraphNodeResponse::FanOut { node_task_ids, .. } =
         service.oneshot(request(b"7", &context)).await.unwrap()
@@ -339,10 +340,78 @@ async fn fan_out_retains_double_position_increment_and_stale_dependency_ids() {
         assert_eq!(next.current_position, 2);
         assert_eq!(next.prev_node, Some(NodeIndex::new(0)));
         assert!(!next.is_initial);
-        assert_eq!(next.node_task_ids, context.node_task_ids);
+        assert_eq!(next.node_task_ids.len(), 3);
+        assert_eq!(
+            next.node_task_ids.get(&NodeIndex::new(99)),
+            context.node_task_ids.get(&NodeIndex::new(99))
+        );
+        for (node, id) in &node_task_ids {
+            assert_eq!(next.node_task_ids.get(node), Some(id));
+        }
         assert_eq!(task.task_id(), node_task_ids.get(&next.current_node));
-        assert_ne!(task.task_id(), next.node_task_ids.get(&next.current_node));
+        assert_eq!(task.task_id(), next.node_task_ids.get(&next.current_node));
     }
+}
+
+#[tokio::test]
+async fn repeated_fan_out_joins_use_their_own_results() {
+    let graph = GraphFlow::new("repeated-fan-out");
+    let entry = graph.add_task(|value: u32| async move { value });
+    let left = graph
+        .add_task(|value: u32| async move { value * 2 })
+        .depends_on(&entry);
+    let right = graph
+        .add_task(|value: u32| async move { value + 3 })
+        .depends_on(&entry);
+    let _join = graph
+        .add_task(|(left, right): (u32, u32)| async move { left * 100 + right })
+        .depends_on((&left, &right));
+    let mut backend = InMemoryWorkflow::<u32>::create();
+    let store = backend
+        .middleware(&mut WorkerContext::new("results"))
+        .store();
+    let mut queue = backend.clone();
+    let service = graph.into_service(backend).service;
+    let mut context = GraphFlowContext::new(Some(TaskId::from_string("root")));
+    let mut joins = Vec::new();
+    for input in [b"7", b"9"] {
+        let GraphNodeResponse::FanOut { node_task_ids, .. } = service
+            .clone()
+            .oneshot(request(input, &context))
+            .await
+            .unwrap()
+        else {
+            panic!("expected fan-out")
+        };
+        for _ in 0..2 {
+            let task = next_task(&mut queue).await;
+            let id = task.task_id().unwrap().to_string();
+            let response = service.clone().oneshot(task).await.unwrap();
+            store_result(
+                &store,
+                &id,
+                Status::Done,
+                Ok(serde_json::to_value(response).unwrap()),
+            );
+        }
+        joins.push([next_task(&mut queue).await, next_task(&mut queue).await]);
+        context.node_task_ids = node_task_ids;
+    }
+    // Both executions finish their branches before any join selects results.
+    for (tasks, expected) in joins.into_iter().zip([1410, 1812]) {
+        let mut complete = Vec::new();
+        for task in tasks {
+            let response = tokio::time::timeout(DEADLINE, service.clone().oneshot(task))
+                .await
+                .unwrap()
+                .unwrap();
+            if let GraphNodeResponse::Complete { result } = response {
+                complete.push(result);
+            }
+        }
+        assert_eq!(complete, vec![json!(expected)]);
+    }
+    assert_empty(&mut queue);
 }
 
 fn fan_in_fixture() -> (RootService, Arc<ResultStore>, GraphFlowContext) {
