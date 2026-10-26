@@ -2,21 +2,22 @@
 
 use std::{
     sync::{
-        Arc,
+        Arc, Barrier,
         atomic::{AtomicUsize, Ordering},
     },
-    task::{Context, Wake, Waker},
+    task::{Context, Poll, Wake, Waker},
     time::Duration,
 };
 
 use futures_util::StreamExt;
 use miju_core::{
-    backend::{BackendConfig, TaskSink, WaitForCompletion},
+    backend::{BackendConfig, TaskResult, TaskSink, WaitForCompletion},
     error::BoxDynError,
     task::{
         Task,
         builder::TaskBuilder,
-        task_id::{GenerateId, RandomId},
+        status::Status,
+        task_id::{GenerateId, RandomId, TaskId},
     },
     worker::{builder::WorkerBuilder, context::WorkerContext},
 };
@@ -25,6 +26,7 @@ use miju_workflow::{
     in_memory::InMemoryWorkflow,
     sequential::{GoTo, StepResponse},
 };
+use serde::{Serialize, Serializer};
 use serde_json::json;
 use tower::{Layer, ServiceExt, service_fn};
 
@@ -129,6 +131,112 @@ async fn result_insertion_wakes_a_pending_waiter_and_decodes_the_result() {
     assert_eq!(snapshot[0].result, Ok(9));
 }
 
+#[test]
+fn concurrent_result_insertion_does_not_leave_a_waiter_without_a_wakeup() {
+    const ROUNDS: usize = 512;
+    let mut backend = InMemoryWorkflow::<u32>::create();
+    let store = backend.middleware(&mut WorkerContext::new("race")).store();
+    let barrier = Arc::new(Barrier::new(2));
+    let pending_ids: Vec<_> = (0..256)
+        .map(|i| TaskId::from_string(format!("pending-{i}")))
+        .collect();
+    let mut missed_wakeups = 0;
+
+    std::thread::scope(|scope| {
+        let writer_barrier = barrier.clone();
+        let writer_store = store.clone();
+        scope.spawn(move || {
+            for i in 0..ROUNDS {
+                let id = TaskId::from_string(format!("result-{i}"));
+                writer_barrier.wait();
+                std::thread::yield_now();
+                writer_store.insert(
+                    id.clone(),
+                    TaskResult {
+                        task_id: id,
+                        attempt: 0,
+                        status: Status::Done,
+                        result: Ok(json!(7)),
+                    },
+                );
+                writer_barrier.wait();
+            }
+        });
+
+        for i in 0..ROUNDS {
+            let id = TaskId::from_string(format!("result-{i}"));
+            let ids = std::iter::once(id).chain(pending_ids.iter().cloned());
+            let mut results = WaitForCompletion::<u32>::wait_for(&mut backend, ids);
+            let counter = Arc::new(WakeCounter::default());
+            let waker = Waker::from(counter.clone());
+            barrier.wait();
+            let polled = results.poll_next_unpin(&mut Context::from_waker(&waker));
+            barrier.wait();
+            if polled.is_pending() && counter.0.load(Ordering::SeqCst) == 0 {
+                missed_wakeups += 1;
+            }
+        }
+    });
+
+    assert_eq!(
+        missed_wakeups, 0,
+        "a completed result must be returned or wake its pending observer"
+    );
+}
+
+#[test]
+fn result_waiting_replaces_the_waker_and_does_not_rewake_for_completed_ids() {
+    let mut backend = InMemoryWorkflow::<u32>::create();
+    let store = backend
+        .middleware(&mut WorkerContext::new("results"))
+        .store();
+    let ids = [RandomId::generate(), RandomId::generate()];
+    let mut results = WaitForCompletion::<u32>::wait_for(&mut backend, ids.clone());
+    let old_counter = Arc::new(WakeCounter::default());
+    let old_waker = Waker::from(old_counter.clone());
+    let counter = Arc::new(WakeCounter::default());
+    let waker = Waker::from(counter.clone());
+    assert!(
+        results
+            .poll_next_unpin(&mut Context::from_waker(&old_waker))
+            .is_pending()
+    );
+    assert!(
+        results
+            .poll_next_unpin(&mut Context::from_waker(&waker))
+            .is_pending()
+    );
+
+    for (index, id) in ids.into_iter().enumerate() {
+        store.insert(
+            id.clone(),
+            TaskResult {
+                task_id: id.clone(),
+                attempt: 0,
+                status: Status::Done,
+                result: Ok(json!(7)),
+            },
+        );
+        assert_eq!(old_counter.0.load(Ordering::SeqCst), 0);
+        assert!(counter.0.swap(0, Ordering::SeqCst) > 0);
+        assert!(matches!(
+            results.poll_next_unpin(&mut Context::from_waker(&waker)),
+            Poll::Ready(Some(Ok(result))) if result.task_id == id && result.result == Ok(7)
+        ));
+        let next = results.poll_next_unpin(&mut Context::from_waker(&waker));
+        if index == 0 {
+            assert!(next.is_pending());
+        } else {
+            assert!(matches!(next, Poll::Ready(None)));
+        }
+        assert_eq!(counter.0.load(Ordering::SeqCst), 0);
+    }
+    assert!(matches!(
+        results.poll_next_unpin(&mut Context::from_waker(&waker)),
+        Poll::Ready(None)
+    ));
+}
+
 #[tokio::test]
 async fn handler_failure_is_stored_and_reported_as_a_stream_error() {
     let mut backend = InMemoryWorkflow::<u32>::create();
@@ -154,6 +262,58 @@ async fn handler_failure_is_stored_and_reported_as_a_stream_error() {
             .unwrap()
             .is_err()
     );
+    assert!(stream.next().await.is_none());
+    assert!(
+        WaitForCompletion::<u32>::check_status(&mut backend, [id])
+            .await
+            .is_err()
+    );
+}
+
+#[derive(Debug)]
+struct Unserializable;
+
+impl Serialize for Unserializable {
+    fn serialize<S: Serializer>(&self, _: S) -> Result<S::Ok, S::Error> {
+        Err(serde::ser::Error::custom("output cannot be represented"))
+    }
+}
+
+#[tokio::test]
+async fn serialization_failure_is_stored_and_wakes_result_waiters() {
+    let mut backend = InMemoryWorkflow::<u32>::create();
+    let layer = backend.middleware(&mut WorkerContext::new("serialization"));
+    let id = RandomId::generate();
+    let mut stream = WaitForCompletion::<u32>::wait_for(&mut backend, [id.clone()]);
+    let counter = Arc::new(WakeCounter::default());
+    let waker = Waker::from(counter.clone());
+    assert!(
+        stream
+            .poll_next_unpin(&mut Context::from_waker(&waker))
+            .is_pending()
+    );
+    let service = layer.layer(service_fn(async |_: Task<u32>| {
+        Ok::<_, BoxDynError>(Unserializable)
+    }));
+    let task = TaskBuilder::new(8).task_id(id.clone()).attempt(2).build();
+    let status = task.status();
+    let error = service.oneshot(task).await.unwrap_err();
+    assert!(error.is::<serde_json::Error>());
+    let stored = layer
+        .store()
+        .get(&id)
+        .expect("completed serialization failure must have a stored result");
+    assert_eq!(stored.task_id, id);
+    assert_eq!(stored.attempt, 2);
+    assert_eq!(stored.status, status);
+    assert_eq!(stored.result, Err(error.to_string()));
+    assert!(counter.0.load(Ordering::SeqCst) > 0);
+    let observed = tokio::time::timeout(DEADLINE, stream.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap_err();
+    assert!(observed.to_string().contains(&error.to_string()));
     assert!(stream.next().await.is_none());
     assert!(
         WaitForCompletion::<u32>::check_status(&mut backend, [id])
@@ -193,4 +353,178 @@ async fn empty_wait_finishes_and_incompatible_result_types_are_reported() {
         .await
         .unwrap();
     assert!(snapshot[0].result.is_err());
+}
+
+#[tokio::test]
+async fn duplicate_result_ids_finish_after_each_distinct_result() {
+    let mut backend = InMemoryWorkflow::<u32>::create();
+    let layer = backend.middleware(&mut WorkerContext::new("duplicates"));
+    let ids = [RandomId::generate(), RandomId::generate()];
+    let service = layer.layer(service_fn(async |task: Task<u32>| {
+        Ok::<_, BoxDynError>(task.args)
+    }));
+    for (value, id) in ids.iter().enumerate() {
+        service
+            .clone()
+            .oneshot(TaskBuilder::new(value as u32).task_id(id.clone()).build())
+            .await
+            .unwrap();
+    }
+    let waker = Waker::from(Arc::new(WakeCounter::default()));
+    for input in [
+        vec![ids[0].clone(), ids[0].clone()],
+        vec![ids[0].clone(), ids[1].clone(), ids[0].clone()],
+    ] {
+        let expected = if input.len() == 2 {
+            &ids[..1]
+        } else {
+            &ids[..]
+        };
+        let mut results = WaitForCompletion::<u32>::wait_for(&mut backend, input);
+        for (value, id) in expected.iter().enumerate() {
+            assert!(matches!(
+                results.poll_next_unpin(&mut Context::from_waker(&waker)),
+                Poll::Ready(Some(Ok(result)))
+                    if result.task_id == *id && result.result == Ok(value as u32)
+            ));
+        }
+        assert!(
+            matches!(
+                results.poll_next_unpin(&mut Context::from_waker(&waker)),
+                Poll::Ready(None)
+            ),
+            "observing every distinct requested task must finish the stream"
+        );
+    }
+}
+
+#[tokio::test]
+async fn duplicate_result_ids_still_wait_for_missing_tasks_and_finish_after_errors() {
+    let mut backend = InMemoryWorkflow::<u32>::create();
+    let layer = backend.middleware(&mut WorkerContext::new("duplicate-errors"));
+    let ids = [RandomId::generate(), RandomId::generate()];
+    let service = layer.layer(service_fn(async |task: Task<u32>| {
+        if task.args == 0 {
+            Err::<u32, BoxDynError>("handler failed".into())
+        } else {
+            Ok(task.args)
+        }
+    }));
+    let mut results = WaitForCompletion::<u32>::wait_for(
+        &mut backend,
+        [ids[0].clone(), ids[1].clone(), ids[0].clone()],
+    );
+    let counter = Arc::new(WakeCounter::default());
+    let waker = Waker::from(counter.clone());
+    assert!(
+        results
+            .poll_next_unpin(&mut Context::from_waker(&waker))
+            .is_pending()
+    );
+    service
+        .clone()
+        .oneshot(TaskBuilder::new(7).task_id(ids[0].clone()).build())
+        .await
+        .unwrap();
+    assert!(matches!(
+        results.poll_next_unpin(&mut Context::from_waker(&waker)),
+        Poll::Ready(Some(Ok(result))) if result.result == Ok(7)
+    ));
+    counter.0.store(0, Ordering::SeqCst);
+    assert!(
+        results
+            .poll_next_unpin(&mut Context::from_waker(&waker))
+            .is_pending()
+    );
+    assert_eq!(counter.0.load(Ordering::SeqCst), 0);
+    service
+        .oneshot(TaskBuilder::new(0).task_id(ids[1].clone()).build())
+        .await
+        .unwrap_err();
+    assert!(counter.0.load(Ordering::SeqCst) > 0);
+    assert!(matches!(
+        results.poll_next_unpin(&mut Context::from_waker(&waker)),
+        Poll::Ready(Some(Err(error))) if error.to_string().contains("handler failed")
+    ));
+    assert!(
+        matches!(
+            results.poll_next_unpin(&mut Context::from_waker(&waker)),
+            Poll::Ready(None)
+        ),
+        "an observed error also completes its requested task"
+    );
+}
+
+#[test]
+fn dropping_a_pending_result_stream_releases_its_latest_waker() {
+    let mut backend = InMemoryWorkflow::<u32>::create();
+    let mut results = WaitForCompletion::<u32>::wait_for(&mut backend, [RandomId::generate()]);
+    let old_counter = Arc::new(WakeCounter::default());
+    let old_weak = Arc::downgrade(&old_counter);
+    let old_waker = Waker::from(old_counter);
+    assert!(
+        results
+            .poll_next_unpin(&mut Context::from_waker(&old_waker))
+            .is_pending()
+    );
+    drop(old_waker);
+    assert!(old_weak.upgrade().is_some());
+
+    let counter = Arc::new(WakeCounter::default());
+    let weak = Arc::downgrade(&counter);
+    let waker = Waker::from(counter);
+    assert!(
+        results
+            .poll_next_unpin(&mut Context::from_waker(&waker))
+            .is_pending()
+    );
+    assert!(old_weak.upgrade().is_none());
+    drop(waker);
+    assert!(weak.upgrade().is_some());
+    drop(results);
+    assert!(
+        weak.upgrade().is_none(),
+        "cancelling the observer must release its registered waker"
+    );
+}
+
+#[tokio::test]
+async fn dropping_one_result_observer_preserves_another_observer() {
+    let mut backend = InMemoryWorkflow::<u32>::create();
+    let layer = backend.middleware(&mut WorkerContext::new("cancellation"));
+    let id = RandomId::generate();
+    let mut canceled = WaitForCompletion::<u32>::wait_for(&mut backend, [id.clone()]);
+    let mut active = WaitForCompletion::<u32>::wait_for(&mut backend, [id.clone()]);
+    let canceled_counter = Arc::new(WakeCounter::default());
+    let canceled_waker = Waker::from(canceled_counter.clone());
+    let active_counter = Arc::new(WakeCounter::default());
+    let active_waker = Waker::from(active_counter.clone());
+    assert!(
+        canceled
+            .poll_next_unpin(&mut Context::from_waker(&canceled_waker))
+            .is_pending()
+    );
+    assert!(
+        active
+            .poll_next_unpin(&mut Context::from_waker(&active_waker))
+            .is_pending()
+    );
+    drop(canceled);
+    let service = layer.layer(service_fn(async |task: Task<u32>| {
+        Ok::<_, BoxDynError>(task.args + 1)
+    }));
+    service
+        .oneshot(TaskBuilder::new(8).task_id(id.clone()).build())
+        .await
+        .unwrap();
+    assert_eq!(canceled_counter.0.load(Ordering::SeqCst), 0);
+    assert!(active_counter.0.load(Ordering::SeqCst) > 0);
+    let result = tokio::time::timeout(DEADLINE, active.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.task_id, id);
+    assert_eq!(result.result, Ok(9));
+    assert!(active.next().await.is_none());
 }

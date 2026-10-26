@@ -22,7 +22,7 @@ use crate::{
 };
 
 /// The main workflow service that orchestrates the execution of workflow steps.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct WorkflowService<B, Input, Output>
 where
     B: Backend + WireFormatBackend,
@@ -32,15 +32,29 @@ where
     backend: B,
     _marker: PhantomData<(Input, Output)>,
 }
+impl<B, Input, Output> Clone for WorkflowService<B, Input, Output>
+where
+    B: Backend + WireFormatBackend + Clone,
+    B::Compact: Clone,
+    Input: Clone,
+    Output: Clone,
+{
+    fn clone(&self) -> Self {
+        // A cloned step may not retain the original service's readiness.
+        Self::new(self.services.clone(), self.backend.clone())
+    }
+}
+
 impl<B, Input, Output> WorkflowService<B, Input, Output>
 where
     B: Backend + WireFormatBackend,
 {
     /// Creates a new `WorkflowService` with the given services and backend.
     pub fn new(services: HashMap<usize, SteppedService<B::Compact>>, backend: B) -> Self {
+        let not_ready = services.keys().copied().collect();
         Self {
             services,
-            not_ready: VecDeque::new(),
+            not_ready,
             backend,
             _marker: PhantomData,
         }
@@ -96,7 +110,9 @@ where
         let meta = WorkflowContext::extract(req.metadata()).unwrap_or_default();
         let idx = meta.step_index;
 
-        let has_next = self.services.contains_key(&(idx + 1));
+        let has_next = idx
+            .checked_add(1)
+            .is_some_and(|next| self.services.contains_key(&next));
         let step_ctx: StepContext<B> = StepContext::new(self.backend.clone(), idx, has_next);
 
         let svc = self
