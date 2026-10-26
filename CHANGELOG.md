@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- docs(core): clarify tracked subtask completion ([#53](https://github.com/nanfeng-labs/miju/pull/53))
 - fix(workflow): reject exhausted repeat counters ([#52](https://github.com/nanfeng-labs/miju/pull/52))
 - fix(core): reject overflowing scheduling units ([#51](https://github.com/nanfeng-labs/miju/pull/51))
 - fix(core): keep piped destination tasks consumable ([#50](https://github.com/nanfeng-labs/miju/pull/50))
