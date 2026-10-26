@@ -401,3 +401,77 @@ async fn duplicate_result_ids_still_wait_for_missing_tasks_and_finish_after_erro
         "an observed error also completes its requested task"
     );
 }
+
+#[test]
+fn dropping_a_pending_result_stream_releases_its_latest_waker() {
+    let mut backend = InMemoryWorkflow::<u32>::create();
+    let mut results = WaitForCompletion::<u32>::wait_for(&mut backend, [RandomId::generate()]);
+    let old_counter = Arc::new(WakeCounter::default());
+    let old_weak = Arc::downgrade(&old_counter);
+    let old_waker = Waker::from(old_counter);
+    assert!(
+        results
+            .poll_next_unpin(&mut Context::from_waker(&old_waker))
+            .is_pending()
+    );
+    drop(old_waker);
+    assert!(old_weak.upgrade().is_some());
+
+    let counter = Arc::new(WakeCounter::default());
+    let weak = Arc::downgrade(&counter);
+    let waker = Waker::from(counter);
+    assert!(
+        results
+            .poll_next_unpin(&mut Context::from_waker(&waker))
+            .is_pending()
+    );
+    assert!(old_weak.upgrade().is_none());
+    drop(waker);
+    assert!(weak.upgrade().is_some());
+    drop(results);
+    assert!(
+        weak.upgrade().is_none(),
+        "cancelling the observer must release its registered waker"
+    );
+}
+
+#[tokio::test]
+async fn dropping_one_result_observer_preserves_another_observer() {
+    let mut backend = InMemoryWorkflow::<u32>::create();
+    let layer = backend.middleware(&mut WorkerContext::new("cancellation"));
+    let id = RandomId::generate();
+    let mut canceled = WaitForCompletion::<u32>::wait_for(&mut backend, [id.clone()]);
+    let mut active = WaitForCompletion::<u32>::wait_for(&mut backend, [id.clone()]);
+    let canceled_counter = Arc::new(WakeCounter::default());
+    let canceled_waker = Waker::from(canceled_counter.clone());
+    let active_counter = Arc::new(WakeCounter::default());
+    let active_waker = Waker::from(active_counter.clone());
+    assert!(
+        canceled
+            .poll_next_unpin(&mut Context::from_waker(&canceled_waker))
+            .is_pending()
+    );
+    assert!(
+        active
+            .poll_next_unpin(&mut Context::from_waker(&active_waker))
+            .is_pending()
+    );
+    drop(canceled);
+    let service = layer.layer(service_fn(async |task: Task<u32>| {
+        Ok::<_, BoxDynError>(task.args + 1)
+    }));
+    service
+        .oneshot(TaskBuilder::new(8).task_id(id.clone()).build())
+        .await
+        .unwrap();
+    assert_eq!(canceled_counter.0.load(Ordering::SeqCst), 0);
+    assert!(active_counter.0.load(Ordering::SeqCst) > 0);
+    let result = tokio::time::timeout(DEADLINE, active.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.task_id, id);
+    assert_eq!(result.result, Ok(9));
+    assert!(active.next().await.is_none());
+}

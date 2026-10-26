@@ -278,12 +278,10 @@ stored task failed. A successful value that cannot be decoded into the requested
 output type instead produces an error inside `TaskResult.result`.
 
 Results are process-local, unbounded, and retained after being read. There is no
-persistence or automatic eviction. The current waiter implementation has a
-check/register race, shares registration IDs when streams are cloned, and does
-not remove registrations when pending streams are dropped. Avoid assuming that
-result waiting is reliable under all concurrent interleavings. If serializing a
-successful handler output fails, the service returns an error without recording
-a result, so a waiter for that task may remain pending.
+persistence or automatic eviction. Wait streams own independent registrations
+and remove them when dropped. If serializing a successful handler output fails,
+the service returns an error without recording a result, so a waiter for that
+task may remain pending.
 Reusing the in-memory sink after a failed send to a closed channel can also panic;
 the underlying error mapper is consumed by its first failure.
 

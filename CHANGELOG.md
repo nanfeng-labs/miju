@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- fix(workflow): release canceled result waiter registrations ([#30](https://github.com/nanfeng-labs/miju/pull/30))
 - fix(workflow): finish result waits with duplicate task IDs ([#28](https://github.com/nanfeng-labs/miju/pull/28))
 - fix(workflow): preserve result notifications during waiter registration ([#26](https://github.com/nanfeng-labs/miju/pull/26))
 - fix(core): keep interval polling timers registered ([#25](https://github.com/nanfeng-labs/miju/pull/25))
