@@ -1,8 +1,8 @@
 //! Steps that enqueue the same payload with a later execution timestamp.
 //!
 //! The backend must enforce the timestamp; these steps do not sleep. In-memory
-//! workflows deliver tasks immediately. Always place another processing step
-//! after a delay: a terminal delay currently enqueues an unregistered step.
+//! workflows deliver tasks immediately. A terminal delay finishes the workflow
+//! without scheduling another task.
 
 use std::time::Duration;
 
@@ -214,6 +214,9 @@ where
                 .map_err(|e: <B::Codec as Codec<Input>>::Error| e.into())?;
             let (args, ctx) = req.take();
             let delay_duration = f(Task::new_with_ctx(decoded, ctx));
+            if !step_context.has_next {
+                return Ok(GoTo::Done);
+            }
 
             let task = TaskBuilder::new(args)
                 .task_id(task_id.clone())
@@ -244,8 +247,8 @@ impl<Start, Cur, B, L> SteppedFlow<Start, Cur, B, L> {
     ///
     /// Enqueues the unchanged payload for the next step with a `run_at`
     /// timestamp. The backend must enforce that timestamp; this step does not
-    /// sleep. A processing step must follow the delay. See the
-    /// [module limits](crate::sequential::delay).
+    /// sleep. Without a following step, the workflow finishes without scheduling
+    /// another task. See the [module limits](crate::sequential::delay).
     pub fn delay_for(self, delay: Duration) -> SteppedFlow<Start, Cur, B, Stack<DelayFor, L>> {
         self.add_step(DelayFor { duration: delay })
     }
