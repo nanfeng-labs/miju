@@ -146,7 +146,8 @@ where
             }
             HookState::Pending => {
                 let f = &mut this.f;
-                this.state.poll_hook(cx, || f(&mut this.backend))
+                ready!(this.state.poll_hook(cx, || f(&mut this.backend)))?;
+                this.backend.poll_ready_unpin(cx)
             }
         }
     }
