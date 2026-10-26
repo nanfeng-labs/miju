@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- fix(workflow): check readiness on new and cloned sequential steps ([#40](https://github.com/nanfeng-labs/miju/pull/40))
 - fix(workflow): return filter element decoding errors ([#38](https://github.com/nanfeng-labs/miju/pull/38))
 - fix(workflow): reuse the queued fold accumulator ([#36](https://github.com/nanfeng-labs/miju/pull/36))
 - fix(workflow): retain fresh task IDs after fan-out ([#35](https://github.com/nanfeng-labs/miju/pull/35))
