@@ -16,7 +16,7 @@ docsrs = ["dep:document-features"]
 ## Enable task function signature validation helpers
 test-utils = []
 ## Enable runtime-independent timers and task timeouts
-sleep = ["dep:futures-timer"]
+sleep = []
 ## Emit worker lifecycle logs and store explicit tracing metadata
 tracing = ["dep:tracing"]
 ## Track and cancel individual running tasks
@@ -36,7 +36,7 @@ futures-util = { version = "0.3.34", default-features = false, features = ["sink
 futures-core = { version = "0.3.34", default-features = false }
 futures-channel = { version = "0.3.34", default-features = false, features = ["sink", "std"] }
 futures-sink = { version = "0.3.34", default-features = false }
-futures-timer = { version = "3.0.4", optional = true }
+futures-timer = "3.0.4"
 dashmap = { version = "6.2.1", default-features = false, optional = true }
 pin-project = "1"
 tracing = { version = "0.1.44", default-features = false, optional = true }
