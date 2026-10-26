@@ -8,13 +8,34 @@ use std::{
     time::Duration,
 };
 
+#[cfg(feature = "catch-panic")]
+use miju::layers::catch_panic::{CatchPanicLayer, PanicError};
+
 use miju::{
     layers::retry::{
-        HasherRng, RetryConfig, RetryConfigError, RetryMetadataExt,
+        HasherRng, Policy, RetryConfig, RetryConfigError, RetryMetadataExt,
         backoff::{ExponentialBackoffMaker, MakeBackoff},
     },
     prelude::*,
 };
+
+#[tokio::test]
+async fn boxed_abort_errors_stop_both_retry_policies() {
+    let mut task = TaskBuilder::new(())
+        .data(WorkerContext::new("boxed-abort"))
+        .attempt(1)
+        .build();
+    let mut immediate = RetryPolicy::retries(2);
+    let mut backoff =
+        RetryPolicy::retries(2).with_backoff(ExponentialBackoffMaker::default().make_backoff());
+    let mut result: Result<(), BoxDynError> = Err(AbortError::new("abort").into());
+    let retries = [
+        immediate.retry(&mut task, &mut result).is_some(),
+        backoff.retry(&mut task, &mut result).is_some(),
+    ];
+    assert_eq!(retries, [false, false]);
+    assert!(result.unwrap_err().is::<AbortError>());
+}
 
 #[tokio::test]
 async fn fixed_retries_share_attempts_and_stop_on_success_or_exhaustion() {
@@ -275,8 +296,6 @@ async fn task_metadata_wrapper_preserves_the_inner_retry_limit() {
 #[cfg(feature = "catch-panic")]
 #[tokio::test]
 async fn custom_panic_predicate_prevents_reexecution() {
-    use miju::layers::catch_panic::{CatchPanicLayer, PanicError};
-
     let mut storage = MemoryStorage::new();
     let task = TaskBuilder::new(true)
         .task_id("panic".to_owned().into())
@@ -301,6 +320,37 @@ async fn custom_panic_predicate_prevents_reexecution() {
         .build(|fail: bool| async move {
             if fail {
                 panic!("handler panic");
+            }
+        });
+    tokio::time::timeout(Duration::from_secs(5), worker.run())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(observed.attempt(), 1);
+}
+
+#[cfg(feature = "catch-panic")]
+#[tokio::test]
+async fn default_caught_panics_are_not_retried() {
+    let mut storage = MemoryStorage::new();
+    let task = TaskBuilder::new(true)
+        .task_id("caught-abort".to_owned().into())
+        .build();
+    let observed = task.clone();
+    storage.push_task(task).await.unwrap();
+    let worker = WorkerBuilder::new("caught-abort")
+        .backend(storage)
+        .retry(RetryPolicy::retries(2))
+        .layer(CatchPanicLayer::new())
+        .on_event(|worker, event| {
+            if let Event::Error(error) = event {
+                assert!(error.is::<AbortError>());
+                worker.stop().unwrap();
+            }
+        })
+        .build(|fail: bool| async move {
+            if fail {
+                panic!("caught handler panic");
             }
         });
     tokio::time::timeout(Duration::from_secs(5), worker.run())

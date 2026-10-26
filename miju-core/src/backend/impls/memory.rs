@@ -54,13 +54,15 @@ use crate::{
 use futures_channel::mpsc::{SendError, unbounded};
 use futures_core::ready;
 use futures_sink::Sink;
-use futures_util::lock::Mutex;
+use futures_timer::Delay;
+use futures_util::lock::{Mutex, MutexGuard};
 use futures_util::{FutureExt, SinkExt, Stream, StreamExt};
 use std::collections::HashSet;
 use std::{
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
+    time::Duration,
 };
 use tower_layer::Identity;
 
@@ -142,6 +144,7 @@ impl<Args: Send + 'static> MemoryStorage<Args> {
             sender: MemorySink {
                 inner: Arc::new(futures_util::lock::Mutex::new(sender)),
                 idempotency_keys: Default::default(),
+                lock_retry: None,
             },
             receiver: receiver.boxed().into(),
         }
@@ -186,6 +189,7 @@ type ArcIdempotencySet = Arc<Mutex<HashSet<String>>>;
 pub struct MemorySink<Args> {
     pub(super) inner: ArcMemorySink<Args>,
     pub(super) idempotency_keys: ArcIdempotencySet,
+    lock_retry: Option<Delay>,
 }
 
 impl<Args> MemorySink<Args> {
@@ -194,7 +198,32 @@ impl<Args> MemorySink<Args> {
         Self {
             inner: sink,
             idempotency_keys: Arc::new(Mutex::new(HashSet::new())),
+            lock_retry: None,
         }
+    }
+
+    fn poll_lock(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<
+        MutexGuard<'_, Box<dyn Sink<Task<Args>, Error = MemoryStorageError> + Send + Sync + Unpin>>,
+    > {
+        if let Some(lock) = self.inner.try_lock() {
+            self.lock_retry = None;
+            return Poll::Ready(lock);
+        }
+
+        // A retained mutex waiter can strand other owners when a sink operation is cancelled.
+        let retry = self
+            .lock_retry
+            .get_or_insert_with(|| Delay::new(Duration::from_millis(1)));
+        if retry.poll_unpin(cx).is_ready() {
+            retry.reset(Duration::from_millis(1));
+            if retry.poll_unpin(cx).is_ready() {
+                cx.waker().wake_by_ref();
+            }
+        }
+        Poll::Pending
     }
 }
 
@@ -212,6 +241,7 @@ impl<Args> Clone for MemorySink<Args> {
         Self {
             inner: Arc::clone(&self.inner),
             idempotency_keys: Arc::clone(&self.idempotency_keys),
+            lock_retry: None,
         }
     }
 }
@@ -220,7 +250,7 @@ impl<Args> Sink<Task<Args>> for MemorySink<Args> {
     type Error = MemoryStorageError;
 
     fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        let mut lock = ready!(self.inner.lock().poll_unpin(cx));
+        let mut lock = ready!(self.get_mut().poll_lock(cx));
         Pin::new(&mut *lock).poll_ready_unpin(cx)
     }
 
@@ -248,12 +278,12 @@ impl<Args> Sink<Task<Args>> for MemorySink<Args> {
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        let mut lock = ready!(self.inner.lock().poll_unpin(cx));
+        let mut lock = ready!(self.get_mut().poll_lock(cx));
         Pin::new(&mut *lock).poll_flush_unpin(cx)
     }
 
     fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        let mut lock = ready!(self.inner.lock().poll_unpin(cx));
+        let mut lock = ready!(self.get_mut().poll_lock(cx));
         Pin::new(&mut *lock).poll_close_unpin(cx)
     }
 }
