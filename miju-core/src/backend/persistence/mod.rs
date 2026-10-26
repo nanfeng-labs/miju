@@ -879,20 +879,56 @@ mod tests {
     }
 
     #[test]
-    fn sink_flush_finishes_existing_batch_and_leaves_new_tasks_for_next_flush() {
+    fn sink_flush_includes_tasks_accepted_while_an_existing_batch_is_pending() {
         let (provider, mut driver, _) = fixture();
         let gate = provider.gate("push");
         let mut cx = Context::from_waker(noop_waker_ref());
+        assert!(matches!(
+            driver.poll_ready_unpin(&mut cx),
+            Poll::Ready(Ok(()))
+        ));
         driver.start_send_unpin(task(1)).unwrap();
         assert!(driver.poll_flush_unpin(&mut cx).is_pending());
+        assert!(matches!(
+            driver.poll_ready_unpin(&mut cx),
+            Poll::Ready(Ok(()))
+        ));
         driver.start_send_unpin(task(2)).unwrap();
         gate.send(()).unwrap();
         assert!(matches!(
             driver.poll_flush_unpin(&mut cx),
             Poll::Ready(Ok(()))
         ));
-        assert_eq!(provider.0.lock().unwrap().pushes, [vec![1]]);
-        assert_eq!(driver.sink_buffer.len(), 1);
+        assert_eq!(provider.0.lock().unwrap().pushes, [vec![1], vec![2]]);
+        assert!(matches!(
+            driver.poll_close_unpin(&mut cx),
+            Poll::Ready(Ok(()))
+        ));
+        assert_eq!(provider.0.lock().unwrap().pushes, [vec![1], vec![2]]);
+        assert!(matches!(driver.state(), State::NotBootstrapped));
+    }
+
+    #[test]
+    fn sink_close_waits_for_tasks_accepted_during_an_existing_flush() {
+        let (provider, mut driver, _) = fixture();
+        let first = provider.gate("push");
+        let mut cx = Context::from_waker(noop_waker_ref());
+        assert!(matches!(
+            driver.poll_ready_unpin(&mut cx),
+            Poll::Ready(Ok(()))
+        ));
+        driver.start_send_unpin(task(1)).unwrap();
+        assert!(driver.poll_flush_unpin(&mut cx).is_pending());
+        assert!(matches!(
+            driver.poll_ready_unpin(&mut cx),
+            Poll::Ready(Ok(()))
+        ));
+        driver.start_send_unpin(task(2)).unwrap();
+        let second = provider.gate("push");
+        first.send(()).unwrap();
+        assert!(driver.poll_close_unpin(&mut cx).is_pending());
+        assert_eq!(provider.0.lock().unwrap().pushes, [vec![1], vec![2]]);
+        second.send(()).unwrap();
         assert!(matches!(
             driver.poll_close_unpin(&mut cx),
             Poll::Ready(Ok(()))
