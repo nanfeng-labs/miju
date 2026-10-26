@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- fix(workflow): store output serialization failures ([#43](https://github.com/nanfeng-labs/miju/pull/43))
 - fix(core): scope task cancellation to its execution ([#42](https://github.com/nanfeng-labs/miju/pull/42))
 - fix(core): avoid missed deque readiness notifications ([#41](https://github.com/nanfeng-labs/miju/pull/41))
 - fix(workflow): check readiness on new and cloned sequential steps ([#40](https://github.com/nanfeng-labs/miju/pull/40))

@@ -273,15 +273,14 @@ for an entry task does not wait for all subsequent steps; inspect
 `GoTo::Break` and a repeater's `GoTo::Break` between iterations.
 `check_status` returns only results currently stored and omits missing IDs.
 
-Handler errors are returned as stream errors; `check_status` fails if a requested
-stored task failed. A successful value that cannot be decoded into the requested
-output type instead produces an error inside `TaskResult.result`.
+Handler errors and output serialization errors are returned as stream errors;
+`check_status` fails if a requested stored task failed. A successful value that
+cannot be decoded into the requested output type instead produces an error
+inside `TaskResult.result`.
 
 Results are process-local, unbounded, and retained after being read. There is no
 persistence or automatic eviction. Wait streams own independent registrations
-and remove them when dropped. If serializing a successful handler output fails,
-the service returns an error without recording a result, so a waiter for that
-task may remain pending.
+and remove them when dropped.
 Reusing the in-memory sink after a failed send to a closed channel can also panic;
 the underlying error mapper is consumed by its first failure.
 
