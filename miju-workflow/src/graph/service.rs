@@ -3,9 +3,9 @@
 //! A [`GraphFlow`] becomes a [`RootGraphService`] through [`IntoWorkerService`].
 //! Requests carry the backend's compact arguments and [`GraphFlowContext`]
 //! metadata. The service injects the codec before invoking a node adapter.
-//! A request without readable context starts a new execution; a single entry
-//! currently assumes node zero. Multiple entries require a codec-encoded list of
-//! compact inputs in ascending entry-node index order.
+//! A request without readable context starts a new execution at the sole entry
+//! node. Multiple entries require a codec-encoded list of compact inputs in
+//! ascending entry-node index order.
 //!
 //! Fan-in is handled by the predecessor with the greatest node index. It waits
 //! for stored [`GraphNodeResponse`] results and presents their values in incoming
@@ -40,7 +40,7 @@ use std::collections::VecDeque;
 use std::fmt::{Debug, Display};
 use std::str::FromStr;
 use std::task::Poll;
-use tower::Service;
+use tower::{Service, ServiceExt};
 
 use crate::GraphFlow;
 use crate::NodeService;
@@ -64,14 +64,15 @@ use crate::graph::response::GraphNodeResponse;
 ///
 /// Each call clones the graph's node services. Mutable state local to a service
 /// clone is not retained across calls; explicitly shared state follows its own
-/// clone semantics. The current readiness queue starts empty, so inner services
-/// are not polled for readiness before dispatch.
+/// clone semantics. Each call waits for its selected node service to become
+/// ready before dispatching on that same instance.
 ///
 /// Missing dependency IDs can produce a waiting response with no rescheduling.
-/// Fan-out retains earlier ID mappings even when they conflict with fresh IDs;
-/// single-edge continuations do not update those mappings. These behaviors limit
-/// joins across longer or repeated branches. Progress positions are counters,
-/// not a reliable topological cursor, and completed-node sets are not advanced.
+/// Fan-out records fresh IDs for newly enqueued nodes and retains other mappings.
+/// Single-edge continuations do not update mappings, and independently extended
+/// branches do not merge them. These behaviors limit joins across longer branches.
+/// Progress positions are counters, not a reliable topological cursor, and
+/// completed-node sets are not advanced.
 pub struct RootGraphService<B>
 where
     B: Backend + WireFormatBackend,
@@ -131,6 +132,9 @@ where
             .ok_or_else(|| GraphFlowError::MissingService(context.current_node))?;
 
         let result = service
+            .ready()
+            .await
+            .map_err(GraphServiceError::PollError)?
             .call(task.map_args(NodeInput::Single))
             .await
             .map_err(GraphFlowError::NodeExecutionError)?;
@@ -155,6 +159,9 @@ where
             .ok_or_else(|| GraphFlowError::MissingService(context.current_node))?;
 
         let result = service
+            .ready()
+            .await
+            .map_err(GraphServiceError::PollError)?
             .call(task.map_args(NodeInput::FanIn))
             .await
             .map_err(GraphFlowError::NodeExecutionError)?;
@@ -441,7 +448,8 @@ where
                 if start_nodes.len() == 1 {
                     #[cfg(feature = "tracing")]
                     tracing::debug!("Single start node detected, proceeding with execution");
-                    let context = GraphFlowContext::new(req.task_id().cloned());
+                    let mut context = GraphFlowContext::new(req.task_id().cloned());
+                    context.current_node = start_nodes[0];
                     req.inject_metadata(&context)?;
                     let response = Self::handle_task(&mut graph, req).await?;
                     #[cfg(feature = "tracing")]
@@ -541,8 +549,8 @@ where
         .iter()
         .map(|node| (*node, B::Id::generate()))
         .collect::<HashMap<NodeIndex, TaskId>>();
-    let mut node_task_ids = next_nodes.clone();
-    node_task_ids.extend(context.node_task_ids.clone());
+    let mut node_task_ids = context.node_task_ids.clone();
+    node_task_ids.extend(next_nodes.clone());
     for outgoing_node in outgoing_nodes.into_iter() {
         let task_id = next_nodes
             .get(&outgoing_node)
