@@ -246,24 +246,62 @@ async fn multiple_entries_receive_ordered_compact_inputs_and_initial_metadata() 
 }
 
 #[tokio::test]
-async fn sole_entry_at_nonzero_index_currently_dispatches_node_zero() {
+async fn sole_entry_at_nonzero_index_runs_before_its_successor() {
     let graph = GraphFlow::new("out-of-order");
+    let last = graph.add_task(|value: u32| async move { value + 1 });
+    let entry = graph.add_task(|value: u32| async move { value * 10 });
+    let last = last.depends_on(&entry);
+    graph.validate().unwrap();
+    let backend = InMemoryWorkflow::<u32>::create();
+    let mut queue = backend.clone();
+    let service = graph.into_service(backend).service;
+    let root_id = TaskId::from_string("out-of-order-root");
+    assert_eq!(
+        service
+            .clone()
+            .oneshot(
+                TaskBuilder::new(b"7".to_vec())
+                    .task_id(root_id.clone())
+                    .build()
+            )
+            .await
+            .unwrap(),
+        GraphNodeResponse::EnqueuedNext { result: json!(70) }
+    );
+    let continuation = next_task(&mut queue).await;
+    assert_eq!(continuation.args, b"70");
+    let context = GraphFlowContext::extract(continuation.metadata()).unwrap();
+    assert_eq!(context.root_task_id, Some(root_id));
+    assert_eq!(context.prev_node, Some(NodeIndex::new(1)));
+    assert_eq!(context.current_node, last.id());
+    assert_eq!(context.current_position, 1);
+    assert!(!context.is_initial);
+    assert_eq!(
+        service.oneshot(continuation).await.unwrap(),
+        GraphNodeResponse::Complete { result: json!(71) }
+    );
+    assert_empty(&mut queue);
+}
+
+#[tokio::test]
+async fn explicit_context_preserves_target_with_a_nonzero_entry() {
+    let graph = GraphFlow::new("resume-out-of-order");
     let last = graph.add_task(|value: u32| async move { value + 1 });
     let entry = graph.add_task(|value: u32| async move { value * 10 });
     let _last = last.depends_on(&entry);
     let backend = InMemoryWorkflow::<u32>::create();
     let mut queue = backend.clone();
     let service = graph.into_service(backend).service;
+    let mut context = GraphFlowContext::new(None);
     assert_eq!(
         service
             .clone()
-            .oneshot(Task::new(b"7".to_vec()))
+            .oneshot(request(b"7", &context))
             .await
             .unwrap(),
         GraphNodeResponse::Complete { result: json!(8) }
     );
     assert_empty(&mut queue);
-    let mut context = GraphFlowContext::new(None);
     context.current_node = NodeIndex::new(1);
     assert_eq!(
         service.oneshot(request(b"7", &context)).await.unwrap(),
