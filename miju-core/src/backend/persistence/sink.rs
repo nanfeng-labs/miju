@@ -1,7 +1,7 @@
 //! Buffered task submission, independent of the driver's polling state.
 //!
-//! A flush drives one in-flight batch. Tasks added while that batch is pending
-//! remain buffered for a subsequent flush. Failed batches are not rebuffered.
+//! A flush completes the in-flight batch and any tasks buffered while it was
+//! pending. Failed batches are not rebuffered.
 //! Sink close performs a flush; it does not run the driver's shutdown protocol.
 
 use std::{
@@ -36,31 +36,33 @@ where
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let this = self.get_mut();
 
-        // If there's no existing future and buffer is empty, we're done
-        if this.sink_future.is_none() && this.sink_buffer.is_empty() {
-            return Poll::Ready(Ok(()));
-        }
-
-        // Create the future only if we don't have one and there's work to do
-        if this.sink_future.is_none() && !this.sink_buffer.is_empty() {
-            let mut provider = this.inner.clone();
-            let buffer = std::mem::take(&mut this.sink_buffer);
-            let sink_fut = async move { provider.push_tasks(buffer).await };
-            this.sink_future = Some(sink_fut.boxed().into());
-        }
-
-        if let Some(mut fut) = this.sink_future.take() {
-            match fut.poll_unpin(cx) {
-                Poll::Ready(Ok(())) => Poll::Ready(Ok(())),
-                Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
-                Poll::Pending => {
-                    // Future is still pending, put it back and return Pending
-                    this.sink_future = Some(fut);
-                    Poll::Pending
-                }
+        loop {
+            // If there's no existing future and buffer is empty, we're done
+            if this.sink_future.is_none() && this.sink_buffer.is_empty() {
+                return Poll::Ready(Ok(()));
             }
-        } else {
-            Poll::Ready(Ok(()))
+
+            // Create the future only if we don't have one and there's work to do
+            if this.sink_future.is_none() && !this.sink_buffer.is_empty() {
+                let mut provider = this.inner.clone();
+                let buffer = std::mem::take(&mut this.sink_buffer);
+                let sink_fut = async move { provider.push_tasks(buffer).await };
+                this.sink_future = Some(sink_fut.boxed().into());
+            }
+
+            if let Some(mut fut) = this.sink_future.take() {
+                match fut.poll_unpin(cx) {
+                    Poll::Ready(Ok(())) => {}
+                    Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                    Poll::Pending => {
+                        // Future is still pending, put it back and return Pending
+                        this.sink_future = Some(fut);
+                        return Poll::Pending;
+                    }
+                }
+            } else {
+                return Poll::Ready(Ok(()));
+            }
         }
     }
 
