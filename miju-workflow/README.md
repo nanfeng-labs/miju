@@ -267,10 +267,10 @@ allow inspecting or composing that middleware directly. A task passed directly
 to the layer must already have an ID.
 
 `wait_for` yields results for the requested IDs and finishes after every unique
-requested ID has been observed. Supply distinct IDs: duplicate IDs currently
-prevent termination. Waiting for an entry task does not wait for all subsequent
-steps; inspect `StepResponse.next_task_id` for continuations, including a fold's
-final `GoTo::Break` and a repeater's `GoTo::Break` between iterations.
+requested ID has been observed. Repeated IDs yield one result per task. Waiting
+for an entry task does not wait for all subsequent steps; inspect
+`StepResponse.next_task_id` for continuations, including a fold's final
+`GoTo::Break` and a repeater's `GoTo::Break` between iterations.
 `check_status` returns only results currently stored and omits missing IDs.
 
 Handler errors are returned as stream errors; `check_status` fails if a requested
