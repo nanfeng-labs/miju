@@ -40,7 +40,7 @@ use std::collections::VecDeque;
 use std::fmt::{Debug, Display};
 use std::str::FromStr;
 use std::task::Poll;
-use tower::Service;
+use tower::{Service, ServiceExt};
 
 use crate::GraphFlow;
 use crate::NodeService;
@@ -64,8 +64,8 @@ use crate::graph::response::GraphNodeResponse;
 ///
 /// Each call clones the graph's node services. Mutable state local to a service
 /// clone is not retained across calls; explicitly shared state follows its own
-/// clone semantics. The current readiness queue starts empty, so inner services
-/// are not polled for readiness before dispatch.
+/// clone semantics. Each call waits for its selected node service to become
+/// ready before dispatching on that same instance.
 ///
 /// Missing dependency IDs can produce a waiting response with no rescheduling.
 /// Fan-out retains earlier ID mappings even when they conflict with fresh IDs;
@@ -131,6 +131,9 @@ where
             .ok_or_else(|| GraphFlowError::MissingService(context.current_node))?;
 
         let result = service
+            .ready()
+            .await
+            .map_err(GraphServiceError::PollError)?
             .call(task.map_args(NodeInput::Single))
             .await
             .map_err(GraphFlowError::NodeExecutionError)?;
@@ -155,6 +158,9 @@ where
             .ok_or_else(|| GraphFlowError::MissingService(context.current_node))?;
 
         let result = service
+            .ready()
+            .await
+            .map_err(GraphServiceError::PollError)?
             .call(task.map_args(NodeInput::FanIn))
             .await
             .map_err(GraphFlowError::NodeExecutionError)?;
