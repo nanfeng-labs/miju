@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- bump: to v0.1.1 ([#67](https://github.com/nanfeng-labs/miju/pull/67))
+
 ## [0.1.1](https://github.com/nanfeng-labs/miju/releases/tag/v0.1.1)
 
 ### Fixes
