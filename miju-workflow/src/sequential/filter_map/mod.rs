@@ -347,12 +347,11 @@ where
                 .boxed()
             }
             FilterState::SingleStep => {
-                let step: Task<Input> = request
+                let fut = request
                     .try_map_args(|arg| B::Codec::decode(&codec, &arg))
-                    .unwrap();
-                let fut = self.service.call(step);
+                    .map(|step| self.service.call(step));
                 async move {
-                    let res = fut.await.map_err(|e| e.into())?;
+                    let res = fut?.await.map_err(|e| e.into())?;
                     Ok(GoTo::Break(StepResponse {
                         result: to_value(&res)
                             .map_err(|e| TaskSinkError::CodecError::<Err>(e.into()))?,
@@ -477,7 +476,7 @@ impl<Start, C, L, I: IntoIterator<Item = C>, B: Backend> SteppedFlow<Start, I, B
     /// nonempty collection returns [`GoTo::Done`], which does not retain outputs.
     ///
     /// Missing or invalid filter-state metadata starts a new collection. An
-    /// invalid element payload can panic during decoding. Result-stream errors
+    /// invalid element payload returns a decoding error. Result-stream errors
     /// propagate; malformed collected values or unexpected transitions are
     /// currently skipped.
     ///

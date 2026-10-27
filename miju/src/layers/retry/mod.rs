@@ -90,16 +90,15 @@
 //!
 //! # Converted errors and shutdown
 //!
-//! The built-in [`AbortError`] check uses the concrete error type. It does not
-//! unwrap [`BoxDynError`](miju_core::error::BoxDynError). When another layer
-//! introduces boxed errors without marking the task killed, use `retry_if` to
-//! inspect the boxed error and decide whether it should be retried.
+//! Both policies recognize [`AbortError`] directly and inside [`BoxDynError`].
+//! For other error wrappers, use `retry_if` to inspect the error and decide
+//! whether it should be retried.
 //!
 //! Shutdown is checked when deciding on a retry. If a worker stops during an
 //! already scheduled backoff, the retry can remain waiting for service readiness.
 //! Bound the worker's run future when shutdown requires a deadline.
 
-use miju_core::error::AbortError;
+use miju_core::error::{AbortError, BoxDynError};
 
 use miju_core::task::Task;
 use miju_core::task::builder::TaskBuilder;
@@ -172,6 +171,13 @@ where
             Err(_) if status == Status::Killed => None,
             // Helps handle the case where the user explicitly wants to abort retries
             Err(err) if (err as &dyn Any).downcast_ref::<AbortError>().is_some() => None,
+            Err(err)
+                if (err as &dyn Any)
+                    .downcast_ref::<BoxDynError>()
+                    .is_some_and(|error| error.is::<AbortError>()) =>
+            {
+                None
+            }
 
             Err(_) if self.retries >= req.attempt() => Some(self.backoff.next_backoff()),
             Err(_) => None,
@@ -249,6 +255,13 @@ where
             Err(_) if self.retries == 0 => None,
             Err(_) if status == Status::Killed => None,
             Err(err) if (err as &dyn Any).downcast_ref::<AbortError>().is_some() => None,
+            Err(err)
+                if (err as &dyn Any)
+                    .downcast_ref::<BoxDynError>()
+                    .is_some_and(|error| error.is::<AbortError>()) =>
+            {
+                None
+            }
             Err(_) if self.retries >= req.attempt() => Some(std::future::ready(())),
             Err(_) => None,
         }
@@ -423,13 +436,16 @@ where
 
 /// Retry metadata extension to include [`RetryConfig`]
 pub trait RetryMetadataExt {
-    /// Set number of retries
+    /// Set [`RetryConfig::retries`] in the task metadata.
+    ///
+    /// [`FromTaskConfigPolicy`] compares this limit with the total attempt count,
+    /// including the first execution, and also applies its inner policy's limit.
     #[must_use]
     fn retries(self, retries: usize) -> Self;
 }
 
 impl<Args> RetryMetadataExt for TaskBuilder<Args> {
-    /// Set number of retries in the metadata
+    /// Set [`RetryConfig::retries`] in the task metadata.
     fn retries(self, retries: usize) -> Self {
         self.metadata(&RetryConfig { retries })
     }
