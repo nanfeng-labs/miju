@@ -445,8 +445,8 @@ node to be ready before invoking it. Clone-local mutable state does not persist
 between calls. New tasks copy graph metadata but omit arbitrary application data
 and unrelated metadata.
 Fan-out records fresh IDs for newly enqueued nodes and retains other mappings.
-A single-edge continuation into a join records the current predecessor's task ID
-when available. Other single-edge continuations leave mappings unchanged, and
+Each continuation into a join records the current predecessor's task ID when
+available. Other continuations retain their existing mapping behavior, and
 independently extended branches do not merge them. Fan-out increments the position
 twice, and completed-node sets are not updated. Do not rely on those fields as a
 complete execution history or assume joins across longer branches are fully
