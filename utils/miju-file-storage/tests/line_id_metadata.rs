@@ -187,13 +187,15 @@ async fn existing_noncollision_metadata_and_manual_ack_are_unchanged() {
 }
 
 #[tokio::test]
-async fn csv_reopened_metadata_keeps_existing_dispatch_behavior() {
+async fn csv_reopened_collision_preserves_application_metadata_and_acknowledges() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("tasks.csv");
     let mut store = CsvStorage::<u32>::new(&path).unwrap();
+    let id = TaskId::from_string("csv-reopened");
     store
         .push_task(
             TaskBuilder::new(7)
+                .task_id(id.clone())
                 .with_metadata(metadata("external-reference"))
                 .build(),
         )
@@ -203,9 +205,109 @@ async fn csv_reopened_metadata_keeps_existing_dispatch_behavior() {
     let mut store = CsvStorage::<u32>::new(&path).unwrap();
     let task = take(&mut store);
     assert_eq!(task.args, json!(7));
+    assert_eq!(task.metadata().get("line_id"), Some("external-reference"));
+    assert_eq!(task.metadata().get("ctx.line_id"), None);
+    store
+        .ack(&Ok::<u32, BoxDynError>(14), task.ctx())
+        .await
+        .unwrap();
+    let rows = <CsvStorage<u32> as WaitForCompletion<u32>>::check_status(&mut store, [id])
+        .await
+        .unwrap();
+    assert_eq!(rows[0].result, Ok(14));
+}
+
+#[tokio::test]
+async fn csv_metadata_keys_survive_reopens_and_result_rewrites() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("tasks.csv");
+    let mut metadata = MetadataStore::new();
+    metadata.insert("queue", "primary").unwrap();
+    metadata.insert("ctx.queue", "literal-prefix").unwrap();
+    metadata.insert("", "empty-key").unwrap();
+    metadata.insert("ctx.", "literal-empty-prefix").unwrap();
+    metadata.insert("标签", "001").unwrap();
+    let mut expected = metadata.clone();
+    expected.insert("line_id", "0").unwrap();
+    let mut store = CsvStorage::<u32>::new(&path).unwrap();
+    store
+        .push_task(TaskBuilder::new(7).with_metadata(metadata).build())
+        .await
+        .unwrap();
+
+    for round in 0..3 {
+        drop(store);
+        store = CsvStorage::<u32>::new(&path).unwrap();
+        let task = take(&mut store);
+        assert_eq!(task.args, json!(7));
+        assert_eq!(task.metadata().as_map(), expected.as_map());
+        if round < 2 {
+            store.set_result(0, json!(14 + round)).unwrap();
+        }
+    }
+}
+
+#[tokio::test]
+async fn csv_result_rewrite_preserves_metadata_columns() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("tasks.csv");
+    let mut metadata = MetadataStore::new();
+    metadata.insert("queue", "primary").unwrap();
+    metadata.insert("ctx.queue", "literal-prefix").unwrap();
+    let mut store = CsvStorage::<u32>::new(&path).unwrap();
+    store
+        .push_task(TaskBuilder::new(7).with_metadata(metadata).build())
+        .await
+        .unwrap();
+    drop(store);
+    let before = std::fs::read_to_string(&path).unwrap();
+    let mut store = CsvStorage::<u32>::new(&path).unwrap();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+    store.set_result(0, json!(14)).unwrap();
+    let after = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(after.lines().next(), before.lines().next());
+}
+
+#[tokio::test]
+async fn csv_reopened_numeric_collision_acknowledges_only_dispatched_row() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("tasks.csv");
+    let first = TaskId::from_string("first");
+    let second = TaskId::from_string("second");
+    let mut store = CsvStorage::<u32>::new(&path).unwrap();
+    for (id, value) in [(first.clone(), "external-first"), (second.clone(), "0")] {
+        store
+            .push_task(
+                TaskBuilder::new(7)
+                    .task_id(id)
+                    .with_metadata(metadata(value))
+                    .build(),
+            )
+            .await
+            .unwrap();
+    }
+    drop(store);
+    let original = std::fs::read_to_string(&path).unwrap();
+    let mut store = CsvStorage::<u32>::new(&path).unwrap();
+    let _ = take(&mut store);
+    let original_task = take(&mut store);
+    let task = original_task.clone().into_builder().build();
     assert_eq!(task.metadata().get("line_id"), Some("0"));
-    assert_eq!(
-        task.metadata().get("ctx.line_id"),
-        Some("external-reference")
-    );
+    store
+        .ack(&Ok::<u32, BoxDynError>(14), task.ctx())
+        .await
+        .unwrap();
+    assert_eq!(task.metadata().as_map(), original_task.metadata().as_map());
+    let rows = <CsvStorage<u32> as WaitForCompletion<u32>>::check_status(
+        &mut store,
+        [first.clone(), second.clone()],
+    )
+    .await
+    .unwrap();
+    let updated = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(updated.lines().next(), original.lines().next());
+    assert_eq!(updated.lines().nth(1), original.lines().nth(1));
+    let completed = rows.iter().find(|row| row.task_id == second).unwrap();
+    assert_eq!(completed.status, Status::Done);
+    assert_eq!(completed.result, Ok(14));
 }
