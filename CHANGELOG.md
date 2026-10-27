@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- fix(workflow): preserve predecessor IDs for single-edge joins ([#70](https://github.com/nanfeng-labs/miju/pull/70))
 - fix(file-storage): preserve application line metadata ([#68](https://github.com/nanfeng-labs/miju/pull/68))
 
 ## [0.1.1](https://github.com/nanfeng-labs/miju/releases/tag/v0.1.1)
