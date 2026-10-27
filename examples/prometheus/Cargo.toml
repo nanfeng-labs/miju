@@ -10,8 +10,8 @@ repository.workspace = true
 description = "Serves an email task form and Prometheus task metrics over local HTTP"
 
 [dependencies]
-miju = { version = "0.1.0", default-features = false, features = ["prometheus", "tracing"] }
-miju-file-storage = "0.1.0"
+miju = { version = "0.1.1", default-features = false, features = ["prometheus", "tracing"] }
+miju-file-storage = "0.1.1"
 email-service = { path = "../email-service", version = "0.1.0" }
 axum = { version = "0.8.9", default-features = false, features = ["form", "http1", "tokio"] }
 metrics-exporter-prometheus = { version = "0.18.3", default-features = false }

@@ -1000,7 +1000,7 @@ dependencies = [
 
 [[package]]
 name = "miju"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "document-features",
  "futures-util",
@@ -1025,7 +1025,7 @@ dependencies = [
 
 [[package]]
 name = "miju-codec"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bincode",
  "miju-core",
@@ -1037,7 +1037,7 @@ dependencies = [
 
 [[package]]
 name = "miju-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "dashmap",
  "document-features",
@@ -1062,7 +1062,7 @@ dependencies = [
 
 [[package]]
 name = "miju-file-storage"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "fd-lock",
  "futures-core",
@@ -1079,7 +1079,7 @@ dependencies = [
 
 [[package]]
 name = "miju-workflow"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "dashmap",
  "futures-sink",
