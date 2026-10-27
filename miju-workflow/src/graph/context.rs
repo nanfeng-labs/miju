@@ -28,6 +28,7 @@ use serde::{Deserialize, Serialize};
 /// Extracting metadata requires the current node and position. Missing or invalid
 /// `is_initial` values become `true`. Node/task mappings use comma-separated
 /// `node=task_id` pairs without escaping; IDs containing commas do not round-trip.
+/// Node indices must fit in `u32`; the progress position remains `usize`.
 ///
 /// Injection is not atomic. Duplicate keys return an error after earlier fields
 /// are written.
@@ -71,6 +72,20 @@ impl Clone for GraphFlowContext {
 }
 
 impl GraphFlowContext {
+    pub(crate) fn has_metadata(map: &MetadataStore) -> bool {
+        [
+            DAG_FLOW_PREV_NODE_KEY,
+            DAG_FLOW_CURRENT_NODE_KEY,
+            DAG_FLOW_COMPLETED_NODES_KEY,
+            DAG_FLOW_NODE_TASK_IDS_KEY,
+            DAG_FLOW_CURRENT_POSITION_KEY,
+            DAG_FLOW_IS_INITIAL_KEY,
+            DAG_FLOW_ROOT_TASK_ID_KEY,
+        ]
+        .iter()
+        .any(|key| map.contains_key(key))
+    }
+
     /// Create initial context at node zero with an optional root task ID.
     ///
     /// This does not inspect the graph or determine its entry node.
@@ -152,21 +167,21 @@ impl Metadata for GraphFlowContext {
     fn extract(map: &MetadataStore) -> Result<Self, Self::Error> {
         let prev_node = map
             .get(DAG_FLOW_PREV_NODE_KEY)
-            .map(|v| v.parse::<usize>())
+            .map(|v| v.parse::<u32>())
             .transpose()?
-            .map(NodeIndex::new);
+            .map(NodeIndex::from);
 
         let current_node = map
             .get(DAG_FLOW_CURRENT_NODE_KEY)
             .ok_or(GraphFlowContextError::MissingCurrentNode)?
-            .parse::<usize>()?;
+            .parse::<u32>()?;
 
         let completed_nodes = map
             .get(DAG_FLOW_COMPLETED_NODES_KEY)
             .map(|v| {
                 v.split(',')
                     .filter(|s| !s.is_empty())
-                    .map(|s| s.parse::<usize>().map(NodeIndex::new))
+                    .map(|s| s.parse::<u32>().map(NodeIndex::from))
                     .collect::<Result<HashSet<_>, _>>()
             })
             .transpose()?
@@ -184,8 +199,8 @@ impl Metadata for GraphFlowContext {
                             ))
                             .and_then(|(k, v)| {
                                 let node = k
-                                    .parse::<usize>()
-                                    .map(NodeIndex::new)
+                                    .parse::<u32>()
+                                    .map(NodeIndex::from)
                                     .map_err(GraphFlowContextError::ParseNodeIndex)?;
                                 let task_id = v
                                     .parse::<TaskId>()
@@ -218,7 +233,7 @@ impl Metadata for GraphFlowContext {
 
         Ok(Self {
             prev_node,
-            current_node: NodeIndex::new(current_node),
+            current_node: NodeIndex::from(current_node),
             completed_nodes,
             node_task_ids,
             current_position,

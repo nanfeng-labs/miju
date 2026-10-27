@@ -3,9 +3,10 @@
 //! A [`GraphFlow`] becomes a [`RootGraphService`] through [`IntoWorkerService`].
 //! Requests carry the backend's compact arguments and [`GraphFlowContext`]
 //! metadata. The service injects the codec before invoking a node adapter.
-//! A request without readable context starts a new execution at the sole entry
-//! node. Multiple entries require a codec-encoded list of compact inputs in
-//! ascending entry-node index order.
+//! A request without graph context fields starts a new execution at the sole
+//! entry node. Existing but unreadable graph context returns a metadata error.
+//! Multiple entries require a codec-encoded list of compact inputs in ascending
+//! entry-node index order.
 //!
 //! Fan-in is handled by the predecessor with the greatest node index. It waits
 //! for stored [`GraphNodeResponse`] results and presents their values in incoming
@@ -260,7 +261,12 @@ where
 
         async move {
             let current_task_id = req.task_id().cloned();
-            let ctx = req.extract::<Meta<GraphFlowContext>>().await;
+            let ctx = match req.extract::<Meta<GraphFlowContext>>().await {
+                Err(error) if GraphFlowContext::has_metadata(req.metadata()) => {
+                    return Err(error.into());
+                }
+                context => context,
+            };
             let ((compact, response), context) = if let Ok(Meta(context)) = ctx {
                 #[cfg(feature = "tracing")]
                 tracing::debug!(

@@ -814,6 +814,96 @@ async fn node_errors_and_invalid_metadata_do_not_enqueue_successors() {
     assert_empty(&mut queue);
 }
 
+#[tokio::test]
+async fn unreadable_graph_context_cannot_restart_entry_tasks() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let graph = GraphFlow::new("invalid-continuation");
+    for _ in 0..2 {
+        let calls = calls.clone();
+        graph.add_task(move |value: u32| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            async move { value }
+        });
+    }
+    let mut backend = InMemoryWorkflow::<u32>::create();
+    let service = graph.into_service(backend.clone()).service;
+    let bundle = serde_json::to_vec(&vec![b"7".to_vec(), b"8".to_vec()]).unwrap();
+    for (key, value) in [
+        ("miju_workflow.graph.current_node", "4294967296"),
+        ("miju_workflow.graph.prev_node", "4294967296"),
+        ("miju_workflow.graph.completed_nodes", "0,4294967296"),
+        ("miju_workflow.graph.node_task_ids", "4294967296=task"),
+        ("miju_workflow.graph.current_node", "invalid"),
+        ("miju_workflow.graph.current_position", "-1"),
+        ("miju_workflow.graph.node_task_ids", "no-delimiter"),
+        ("miju_workflow.graph.root_task_id", ""),
+    ] {
+        for payload in [b"7".to_vec(), bundle.clone()] {
+            let mut metadata = MetadataStore::new();
+            GraphFlowContext::new(Some(TaskId::from_string("root")))
+                .inject(&mut metadata)
+                .unwrap();
+            metadata.replace(key, value);
+            let response = service
+                .clone()
+                .oneshot(TaskBuilder::new(payload).with_metadata(metadata).build())
+                .await;
+            assert_empty(&mut backend);
+            assert_eq!(calls.load(Ordering::SeqCst), 0, "{key}");
+            assert!(
+                matches!(response, Err(GraphFlowError::MetadataError(_))),
+                "{key}: {response:?}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn partial_graph_context_is_rejected_but_unrelated_metadata_can_start_a_graph() {
+    let graph = GraphFlow::new("partial-continuation");
+    for _ in 0..2 {
+        graph.add_task(|value: u32| async move { value });
+    }
+    let mut backend = InMemoryWorkflow::<u32>::create();
+    let service = graph.into_service(backend.clone()).service;
+    let bundle = serde_json::to_vec(&vec![b"7".to_vec(), b"8".to_vec()]).unwrap();
+    for (key, value) in [
+        ("miju_workflow.graph.current_node", "0"),
+        ("miju_workflow.graph.current_position", "0"),
+        ("miju_workflow.graph.prev_node", "0"),
+        ("miju_workflow.graph.completed_nodes", ""),
+        ("miju_workflow.graph.node_task_ids", ""),
+        ("miju_workflow.graph.is_initial", "false"),
+        ("miju_workflow.graph.root_task_id", "root"),
+    ] {
+        let metadata = MetadataStore::from_iter([(key, value)]);
+        let response = service
+            .clone()
+            .oneshot(
+                TaskBuilder::new(bundle.clone())
+                    .with_metadata(metadata)
+                    .build(),
+            )
+            .await;
+        assert_empty(&mut backend);
+        assert!(
+            matches!(response, Err(GraphFlowError::MetadataError(_))),
+            "{key}: {response:?}"
+        );
+    }
+    let metadata = MetadataStore::from_iter([("application", "kept")]);
+    assert!(matches!(
+        service
+            .oneshot(TaskBuilder::new(bundle).with_metadata(metadata).build())
+            .await
+            .unwrap(),
+        GraphNodeResponse::EntryFanOut { .. }
+    ));
+    assert_eq!(next_task(&mut backend).await.args, b"7");
+    assert_eq!(next_task(&mut backend).await.args, b"8");
+    assert_empty(&mut backend);
+}
+
 #[derive(Clone)]
 struct StatefulProbe {
     readiness_polls: Arc<AtomicUsize>,
