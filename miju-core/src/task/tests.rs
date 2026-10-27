@@ -1,6 +1,6 @@
 //! Task construction, payload conversion, and context sharing behavior.
 
-use std::sync::Arc;
+use std::{panic::catch_unwind, sync::Arc};
 
 use crate::task::{
     Task,
@@ -175,6 +175,26 @@ fn schedule_helpers_store_unix_seconds_without_enforcing_a_timer() {
 fn schedule_before_epoch_preserves_the_panic_contract() {
     let _ =
         TaskBuilder::new(()).run_at_time(std::time::UNIX_EPOCH - std::time::Duration::from_secs(1));
+}
+
+#[test]
+fn overflowing_minutes_are_rejected() {
+    let result = catch_unwind(|| {
+        TaskBuilder::new(())
+            .run_in_minutes(u64::MAX / 60 + 1)
+            .build()
+    });
+    assert!(result.is_err(), "overflowing minutes must not wrap");
+}
+
+#[test]
+fn overflowing_hours_are_rejected() {
+    let result = catch_unwind(|| {
+        TaskBuilder::new(())
+            .run_in_hours(u64::MAX / 3600 + 1)
+            .build()
+    });
+    assert!(result.is_err(), "overflowing hours must not wrap");
 }
 
 #[test]

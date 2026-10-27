@@ -59,7 +59,11 @@ impl PollStrategy for IntervalStrategy {
 
         match Pin::new(delay).poll(cx) {
             Poll::Ready(()) => {
-                self.delay = Some(futures_timer::Delay::new(interval));
+                let mut next_delay = Delay::new(interval);
+                if Pin::new(&mut next_delay).poll(cx).is_ready() {
+                    cx.waker().wake_by_ref();
+                }
+                self.delay = Some(next_delay);
                 Poll::Ready(Some(()))
             }
             Poll::Pending => Poll::Pending,

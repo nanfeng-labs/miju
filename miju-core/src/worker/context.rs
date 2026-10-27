@@ -435,10 +435,14 @@ impl WorkerContext {
         Ok(())
     }
 
-    /// Cancel a specific task, if it's tracked.
+    /// Cancel a specific task execution, if it is still tracked by this worker.
     #[cfg(feature = "task-context")]
     pub fn cancel_task(&self, context: &TaskContext) -> Result<(), TaskStateError> {
-        if let Some(token) = &self.tasks.get(context) {
+        if let Some(token) = &self
+            .tasks
+            .get(context)
+            .filter(|token| token.same_execution(context))
+        {
             token.cancel()
         } else {
             Err(TaskStateError::TaskNotFound)

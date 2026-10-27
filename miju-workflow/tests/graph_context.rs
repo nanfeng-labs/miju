@@ -3,11 +3,10 @@
 use std::{
     collections::{HashMap, HashSet},
     error::Error,
-    panic::{AssertUnwindSafe, catch_unwind},
 };
 
 use miju_core::task::{
-    metadata::{Metadata, MetadataStore},
+    metadata::{Metadata, MetadataError, MetadataStore},
     task_id::TaskId,
 };
 use miju_workflow::graph::{
@@ -165,7 +164,7 @@ fn missing_required_fields_and_invalid_indices_or_task_ids_are_reported() {
 }
 
 #[test]
-fn duplicate_keys_return_errors_but_the_initial_flag_currently_panics() {
+fn duplicate_keys_return_errors_without_overwriting_existing_values() {
     let context = GraphFlowContext::new(Some(TaskId::from_string("root")));
     let mut metadata = MetadataStore::new();
     context.inject(&mut metadata).unwrap();
@@ -179,12 +178,11 @@ fn duplicate_keys_return_errors_but_the_initial_flag_currently_panics() {
     metadata
         .insert("miju_workflow.graph.is_initial", "false")
         .unwrap();
-    let panic = catch_unwind(AssertUnwindSafe(|| context.inject(&mut metadata))).unwrap_err();
-    let message = panic
-        .downcast_ref::<&str>()
-        .copied()
-        .or_else(|| panic.downcast_ref::<String>().map(String::as_str));
-    assert!(message.unwrap().contains("A value already exists"));
+    assert!(matches!(
+        context.inject(&mut metadata),
+        Err(GraphFlowContextError::DuplicateEntry(MetadataError::DuplicateKey(key)))
+            if key == "miju_workflow.graph.is_initial"
+    ));
     assert_eq!(
         metadata.get("miju_workflow.graph.is_initial"),
         Some("false")

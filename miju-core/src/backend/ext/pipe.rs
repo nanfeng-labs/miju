@@ -42,9 +42,11 @@
 //!
 //! This example pipes a stream of numbers into an in-memory backend and processes them with a worker.
 //!
-//! Readiness depends on both backends. An empty destination that reports
-//! `Pending` from `Backend::poll_ready` can prevent the worker from reaching
-//! the transfer step. Shutdown closes only the destination backend.
+//! Source readiness gates each source fetch, while destination sink readiness
+//! controls submission and destination backend readiness controls consumption.
+//! An empty destination can therefore receive tasks before it is ready to yield
+//! them, and already available destination tasks can be consumed while the source
+//! is pending. Shutdown closes only the destination backend.
 use std::fmt::Debug;
 use std::fmt::{self};
 use std::{
@@ -123,17 +125,17 @@ where
     ) -> Poll<Result<(), Self::Error>> {
         trace!("poll_ready: polling source");
 
-        ready!(S::poll_ready(&mut self.from, cx, wkr)).map_err(|e| {
+        if let Poll::Ready(Err(e)) = S::poll_ready(&mut self.from, cx, wkr) {
             trace!(error = ?e, "poll_ready: source returned error");
-            PipeError::Inner(e.into())
-        })?;
+            return Poll::Ready(Err(PipeError::Inner(e.into())));
+        }
 
-        trace!("poll_ready: source ready, polling destination");
+        trace!("poll_ready: polling destination");
 
-        ready!(Backend::poll_ready(&mut self.into, cx, wkr)).map_err(|e| {
+        if let Poll::Ready(Err(e)) = Backend::poll_ready(&mut self.into, cx, wkr) {
             trace!(error = ?e, "poll_ready: destination returned error");
-            PipeError::Inner(e.into())
-        })?;
+            return Poll::Ready(Err(PipeError::Inner(e.into())));
+        }
 
         trace!("poll_ready: ready");
 
@@ -152,6 +154,15 @@ where
                 }
                 Poll::Ready(Err(e)) => {
                     trace!(error = ?e, "poll_next: destination poll_ready failed");
+                    return Poll::Ready(Some(Err(PipeError::Inner(e.into()))));
+                }
+                Poll::Pending => break,
+            }
+
+            match self.from.poll_ready(cx, worker) {
+                Poll::Ready(Ok(())) => {}
+                Poll::Ready(Err(e)) => {
+                    trace!(error = ?e, "poll_next: source poll_ready failed");
                     return Poll::Ready(Some(Err(PipeError::Inner(e.into()))));
                 }
                 Poll::Pending => break,
@@ -313,7 +324,7 @@ mod tests {
     use std::{
         io,
         sync::{
-            Arc,
+            Arc, Mutex,
             atomic::{AtomicUsize, Ordering},
         },
         task::Wake,
@@ -444,6 +455,163 @@ mod tests {
             panic!("missing readiness error");
         };
         assert!(error.to_string().contains("readiness failed"));
+        assert_eq!(pipe.into.next_calls, 0);
+    }
+
+    #[tokio::test]
+    async fn destination_tasks_continue_after_source_becomes_pending() {
+        for source_tasks in [vec![], vec![1u32, 2]] {
+            let mut source = VecDequeBackend::new();
+            for task in &source_tasks {
+                source.push(*task).await.unwrap();
+            }
+            let mut destination = VecDequeBackend::new();
+            destination.push(0u32).await.unwrap();
+            let mut expected = vec![0];
+            expected.extend(source_tasks);
+            let last_task = *expected.last().unwrap();
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let received = seen.clone();
+            let worker = WorkerBuilder::new("pipe-source-pending")
+                .backend(source.pipe_to(destination))
+                .build(move |task: u32, worker: WorkerContext| {
+                    let received = received.clone();
+                    async move {
+                        received.lock().unwrap().push(task);
+                        if task == last_task {
+                            worker.stop().unwrap();
+                        }
+                    }
+                });
+
+            let result = tokio::time::timeout(Duration::from_secs(1), worker.run()).await;
+            assert_eq!(*seen.lock().unwrap(), expected);
+            result
+                .expect("worker should finish after its available tasks")
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn source_readiness_gates_each_fetch() {
+        let mut source = VecDequeBackend::new();
+        source.push(1u32).await.unwrap();
+        let source = ReadinessGate {
+            inner: source,
+            gate: None,
+            next_calls: 0,
+        };
+        let mut destination = VecDequeBackend::new();
+        destination.push(0u32).await.unwrap();
+        destination.push(9u32).await.unwrap();
+        let mut pipe = source.pipe_to(destination);
+        let worker = WorkerContext::new("pipe-source-gate");
+        let wake = Arc::new(CountWake(AtomicUsize::new(0)));
+        let waker = wake.clone().into();
+        let mut cx = Context::from_waker(&waker);
+        assert!(matches!(
+            Backend::poll_ready(&mut pipe, &mut cx, &worker),
+            Poll::Ready(Ok(()))
+        ));
+
+        let (tx, rx) = oneshot::channel();
+        pipe.from.gate = Some(rx);
+        let Poll::Ready(Some(Ok(task))) = pipe.poll_next(&mut cx, &worker) else {
+            panic!("missing existing destination task");
+        };
+        assert_eq!(task.args, 0);
+        assert_eq!(pipe.from.next_calls, 0);
+        wake.0.store(0, Ordering::SeqCst);
+        tx.send(true).unwrap();
+        assert!(wake.0.load(Ordering::SeqCst) > 0);
+
+        for expected in [9, 1] {
+            assert!(matches!(
+                Backend::poll_ready(&mut pipe, &mut cx, &worker),
+                Poll::Ready(Ok(()))
+            ));
+            let Poll::Ready(Some(Ok(task))) = pipe.poll_next(&mut cx, &worker) else {
+                panic!("missing task after source readiness resumed");
+            };
+            assert_eq!(task.args, expected);
+        }
+        assert_eq!(pipe.from.next_calls, 1);
+    }
+
+    #[tokio::test]
+    async fn stream_tasks_reach_an_empty_destination() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let received = seen.clone();
+        let backend =
+            stream::iter([Ok::<_, io::Error>(1u32), Ok(2)]).pipe_to(VecDequeBackend::new());
+        let worker = WorkerBuilder::new("pipe-empty-stream")
+            .backend(backend)
+            .build(move |task: u32, worker: WorkerContext| {
+                let received = received.clone();
+                async move {
+                    received.lock().unwrap().push(task);
+                    if task == 2 {
+                        worker.stop().unwrap();
+                    }
+                }
+            });
+
+        let result = tokio::time::timeout(Duration::from_secs(1), worker.run()).await;
+        assert_eq!(*seen.lock().unwrap(), [1, 2]);
+        result
+            .expect("worker should finish after the last task")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn backend_tasks_reach_an_empty_destination() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let received = seen.clone();
+        let mut source = MemoryStorage::new();
+        source.push(1u32).await.unwrap();
+        source.push(2).await.unwrap();
+        let worker = WorkerBuilder::new("pipe-empty-backend")
+            .backend(source.pipe_to(VecDequeBackend::new()))
+            .build(move |task: u32, worker: WorkerContext| {
+                let received = received.clone();
+                async move {
+                    received.lock().unwrap().push(task);
+                    if task == 2 {
+                        worker.stop().unwrap();
+                    }
+                }
+            });
+
+        let result = tokio::time::timeout(Duration::from_secs(1), worker.run()).await;
+        assert_eq!(*seen.lock().unwrap(), [1, 2]);
+        result
+            .expect("worker should finish after the last task")
+            .unwrap();
+    }
+
+    #[test]
+    fn initial_destination_error_does_not_take_source_tasks() {
+        let (tx, rx) = oneshot::channel();
+        tx.send(false).unwrap();
+        let destination = ReadinessGate {
+            inner: VecDequeBackend::<u32>::new(),
+            gate: Some(rx),
+            next_calls: 0,
+        };
+        let polled = Arc::new(AtomicUsize::new(0));
+        let calls = polled.clone();
+        let source = stream::iter([Ok::<_, io::Error>(1u32)]).inspect(move |_| {
+            calls.fetch_add(1, Ordering::SeqCst);
+        });
+        let mut pipe = source.pipe_to(destination);
+        let worker = WorkerContext::new("pipe-initial-error");
+        let mut cx = Context::from_waker(noop_waker_ref());
+
+        let Poll::Ready(Err(error)) = Backend::poll_ready(&mut pipe, &mut cx, &worker) else {
+            panic!("missing initial readiness error");
+        };
+        assert!(error.to_string().contains("readiness failed"));
+        assert_eq!(polled.load(Ordering::SeqCst), 0);
         assert_eq!(pipe.into.next_calls, 0);
     }
 

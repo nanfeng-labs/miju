@@ -13,7 +13,7 @@ use std::{
     time::Duration,
 };
 
-use futures_util::{SinkExt, StreamExt, future::poll_fn};
+use futures_util::{SinkExt, StreamExt, future::poll_fn, task::AtomicWaker};
 use miju_codec::json::JsonCodec;
 use miju_core::{
     backend::{Backend, BackendConfig, TaskResult, WaitForCompletion, ext::shared::Shared},
@@ -246,24 +246,62 @@ async fn multiple_entries_receive_ordered_compact_inputs_and_initial_metadata() 
 }
 
 #[tokio::test]
-async fn sole_entry_at_nonzero_index_currently_dispatches_node_zero() {
+async fn sole_entry_at_nonzero_index_runs_before_its_successor() {
     let graph = GraphFlow::new("out-of-order");
+    let last = graph.add_task(|value: u32| async move { value + 1 });
+    let entry = graph.add_task(|value: u32| async move { value * 10 });
+    let last = last.depends_on(&entry);
+    graph.validate().unwrap();
+    let backend = InMemoryWorkflow::<u32>::create();
+    let mut queue = backend.clone();
+    let service = graph.into_service(backend).service;
+    let root_id = TaskId::from_string("out-of-order-root");
+    assert_eq!(
+        service
+            .clone()
+            .oneshot(
+                TaskBuilder::new(b"7".to_vec())
+                    .task_id(root_id.clone())
+                    .build()
+            )
+            .await
+            .unwrap(),
+        GraphNodeResponse::EnqueuedNext { result: json!(70) }
+    );
+    let continuation = next_task(&mut queue).await;
+    assert_eq!(continuation.args, b"70");
+    let context = GraphFlowContext::extract(continuation.metadata()).unwrap();
+    assert_eq!(context.root_task_id, Some(root_id));
+    assert_eq!(context.prev_node, Some(NodeIndex::new(1)));
+    assert_eq!(context.current_node, last.id());
+    assert_eq!(context.current_position, 1);
+    assert!(!context.is_initial);
+    assert_eq!(
+        service.oneshot(continuation).await.unwrap(),
+        GraphNodeResponse::Complete { result: json!(71) }
+    );
+    assert_empty(&mut queue);
+}
+
+#[tokio::test]
+async fn explicit_context_preserves_target_with_a_nonzero_entry() {
+    let graph = GraphFlow::new("resume-out-of-order");
     let last = graph.add_task(|value: u32| async move { value + 1 });
     let entry = graph.add_task(|value: u32| async move { value * 10 });
     let _last = last.depends_on(&entry);
     let backend = InMemoryWorkflow::<u32>::create();
     let mut queue = backend.clone();
     let service = graph.into_service(backend).service;
+    let mut context = GraphFlowContext::new(None);
     assert_eq!(
         service
             .clone()
-            .oneshot(Task::new(b"7".to_vec()))
+            .oneshot(request(b"7", &context))
             .await
             .unwrap(),
         GraphNodeResponse::Complete { result: json!(8) }
     );
     assert_empty(&mut queue);
-    let mut context = GraphFlowContext::new(None);
     context.current_node = NodeIndex::new(1);
     assert_eq!(
         service.oneshot(request(b"7", &context)).await.unwrap(),
@@ -273,7 +311,7 @@ async fn sole_entry_at_nonzero_index_currently_dispatches_node_zero() {
 }
 
 #[tokio::test]
-async fn fan_out_retains_double_position_increment_and_stale_dependency_ids() {
+async fn fan_out_uses_fresh_dependency_ids_and_preserves_history() {
     let graph = GraphFlow::new("metadata");
     let entry = graph.add_task(|value: u32| async move { value });
     let _left = graph
@@ -289,6 +327,7 @@ async fn fan_out_retains_double_position_increment_and_stale_dependency_ids() {
     context.node_task_ids = HashMap::from([
         (NodeIndex::new(1), TaskId::from_string("old-left")),
         (NodeIndex::new(2), TaskId::from_string("old-right")),
+        (NodeIndex::new(99), TaskId::from_string("unrelated")),
     ]);
     let GraphNodeResponse::FanOut { node_task_ids, .. } =
         service.oneshot(request(b"7", &context)).await.unwrap()
@@ -301,10 +340,78 @@ async fn fan_out_retains_double_position_increment_and_stale_dependency_ids() {
         assert_eq!(next.current_position, 2);
         assert_eq!(next.prev_node, Some(NodeIndex::new(0)));
         assert!(!next.is_initial);
-        assert_eq!(next.node_task_ids, context.node_task_ids);
+        assert_eq!(next.node_task_ids.len(), 3);
+        assert_eq!(
+            next.node_task_ids.get(&NodeIndex::new(99)),
+            context.node_task_ids.get(&NodeIndex::new(99))
+        );
+        for (node, id) in &node_task_ids {
+            assert_eq!(next.node_task_ids.get(node), Some(id));
+        }
         assert_eq!(task.task_id(), node_task_ids.get(&next.current_node));
-        assert_ne!(task.task_id(), next.node_task_ids.get(&next.current_node));
+        assert_eq!(task.task_id(), next.node_task_ids.get(&next.current_node));
     }
+}
+
+#[tokio::test]
+async fn repeated_fan_out_joins_use_their_own_results() {
+    let graph = GraphFlow::new("repeated-fan-out");
+    let entry = graph.add_task(|value: u32| async move { value });
+    let left = graph
+        .add_task(|value: u32| async move { value * 2 })
+        .depends_on(&entry);
+    let right = graph
+        .add_task(|value: u32| async move { value + 3 })
+        .depends_on(&entry);
+    let _join = graph
+        .add_task(|(left, right): (u32, u32)| async move { left * 100 + right })
+        .depends_on((&left, &right));
+    let mut backend = InMemoryWorkflow::<u32>::create();
+    let store = backend
+        .middleware(&mut WorkerContext::new("results"))
+        .store();
+    let mut queue = backend.clone();
+    let service = graph.into_service(backend).service;
+    let mut context = GraphFlowContext::new(Some(TaskId::from_string("root")));
+    let mut joins = Vec::new();
+    for input in [b"7", b"9"] {
+        let GraphNodeResponse::FanOut { node_task_ids, .. } = service
+            .clone()
+            .oneshot(request(input, &context))
+            .await
+            .unwrap()
+        else {
+            panic!("expected fan-out")
+        };
+        for _ in 0..2 {
+            let task = next_task(&mut queue).await;
+            let id = task.task_id().unwrap().to_string();
+            let response = service.clone().oneshot(task).await.unwrap();
+            store_result(
+                &store,
+                &id,
+                Status::Done,
+                Ok(serde_json::to_value(response).unwrap()),
+            );
+        }
+        joins.push([next_task(&mut queue).await, next_task(&mut queue).await]);
+        context.node_task_ids = node_task_ids;
+    }
+    // Both executions finish their branches before any join selects results.
+    for (tasks, expected) in joins.into_iter().zip([1410, 1812]) {
+        let mut complete = Vec::new();
+        for task in tasks {
+            let response = tokio::time::timeout(DEADLINE, service.clone().oneshot(task))
+                .await
+                .unwrap()
+                .unwrap();
+            if let GraphNodeResponse::Complete { result } = response {
+                complete.push(result);
+            }
+        }
+        assert_eq!(complete, vec![json!(expected)]);
+    }
+    assert_empty(&mut queue);
 }
 
 fn fan_in_fixture() -> (RootService, Arc<ResultStore>, GraphFlowContext) {
@@ -352,6 +459,118 @@ impl Wake for WakeCount {
     fn wake(self: Arc<Self>) {
         self.0.fetch_add(1, Ordering::SeqCst);
     }
+}
+
+struct ReadinessProbe {
+    state: Arc<AtomicUsize>,
+    waker: Arc<AtomicWaker>,
+    calls: Arc<AtomicUsize>,
+    reserved: bool,
+}
+
+impl Clone for ReadinessProbe {
+    fn clone(&self) -> Self {
+        Self {
+            state: Arc::clone(&self.state),
+            waker: Arc::clone(&self.waker),
+            calls: Arc::clone(&self.calls),
+            reserved: false,
+        }
+    }
+}
+
+impl Service<Task<u32>> for ReadinessProbe {
+    type Response = u32;
+    type Error = io::Error;
+    type Future = Ready<Result<u32, io::Error>>;
+
+    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.waker.register(cx.waker());
+        match self.state.load(Ordering::SeqCst) {
+            0 => Poll::Pending,
+            1 => {
+                self.reserved = true;
+                Poll::Ready(Ok(()))
+            }
+            _ => Poll::Ready(Err(io::Error::other("node readiness failed"))),
+        }
+    }
+
+    fn call(&mut self, task: Task<u32>) -> Self::Future {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        ready(if std::mem::take(&mut self.reserved) {
+            Ok(task.args + 1)
+        } else {
+            Err(io::Error::other("node called without readiness"))
+        })
+    }
+}
+
+#[tokio::test]
+async fn graph_waits_for_the_dispatched_clone_to_be_ready() {
+    let state = Arc::new(AtomicUsize::new(0));
+    let waker = Arc::new(AtomicWaker::new());
+    let calls = Arc::new(AtomicUsize::new(0));
+    let graph = GraphFlow::new("readiness");
+    let _node = graph.add_node(
+        "gated",
+        ReadinessProbe {
+            state: Arc::clone(&state),
+            waker: Arc::clone(&waker),
+            calls: Arc::clone(&calls),
+            reserved: false,
+        },
+    );
+    let service = graph
+        .into_service(InMemoryWorkflow::<u32>::create())
+        .service;
+    let wake_count = Arc::new(WakeCount(AtomicUsize::new(0)));
+    let wake = Waker::from(Arc::clone(&wake_count));
+    let mut cx = Context::from_waker(&wake);
+    let mut response = Box::pin(service.clone().oneshot(Task::new(b"7".to_vec())));
+    assert!(response.as_mut().poll(&mut cx).is_pending());
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    state.store(1, Ordering::SeqCst);
+    waker.wake();
+    assert!(wake_count.0.load(Ordering::SeqCst) > 0);
+    assert_eq!(
+        response.await.unwrap(),
+        GraphNodeResponse::Complete { result: json!(8) }
+    );
+    assert_eq!(
+        service.oneshot(Task::new(b"9".to_vec())).await.unwrap(),
+        GraphNodeResponse::Complete { result: json!(10) }
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn graph_returns_node_readiness_errors_without_calling_or_enqueuing() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let graph = GraphFlow::new("readiness-error");
+    let first = graph.add_node(
+        "failing",
+        ReadinessProbe {
+            state: Arc::new(AtomicUsize::new(2)),
+            waker: Arc::new(AtomicWaker::new()),
+            calls: Arc::clone(&calls),
+            reserved: false,
+        },
+    );
+    let _last = graph
+        .add_task(|value: u32| async move { value })
+        .depends_on(&first);
+    let backend = InMemoryWorkflow::<u32>::create();
+    let mut queue = backend.clone();
+    let service = graph.into_service(backend).service;
+    let error = service.oneshot(Task::new(b"7".to_vec())).await.unwrap_err();
+    assert!(matches!(
+        error,
+        GraphFlowError::Service(GraphServiceError::PollError(ref source))
+            if source.to_string() == "node readiness failed"
+    ));
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert_empty(&mut queue);
 }
 
 #[tokio::test]
@@ -539,7 +758,7 @@ impl Service<Task<u32>> for StatefulProbe {
 
     fn poll_ready(&mut self, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         self.readiness_polls.fetch_add(1, Ordering::SeqCst);
-        Poll::Pending
+        Poll::Ready(Ok(()))
     }
 
     fn call(&mut self, _: Task<u32>) -> Self::Future {
@@ -549,7 +768,7 @@ impl Service<Task<u32>> for StatefulProbe {
 }
 
 #[tokio::test]
-async fn root_skips_node_readiness_and_clones_local_service_state_per_call() {
+async fn root_checks_node_readiness_and_preserves_clone_local_service_state() {
     let graph = GraphFlow::new("state");
     let polls = Arc::new(AtomicUsize::new(0));
     let _node = graph.add_node(
@@ -572,16 +791,16 @@ async fn root_skips_node_readiness_and_clones_local_service_state_per_call() {
             .unwrap();
         assert_eq!(response, GraphNodeResponse::Complete { result: json!(1) });
     }
-    assert_eq!(polls.load(Ordering::SeqCst), 0);
+    assert_eq!(polls.load(Ordering::SeqCst), 2);
     assert!(service.get_node_by_name_mut("missing").is_none());
     let node = service.get_node_by_name_mut("counter").unwrap();
     assert!(
         node.poll_ready(&mut Context::from_waker(
             futures_util::task::noop_waker_ref()
         ))
-        .is_pending()
+        .is_ready()
     );
-    assert_eq!(polls.load(Ordering::SeqCst), 1);
+    assert_eq!(polls.load(Ordering::SeqCst), 3);
     node.call(
         TaskBuilder::new(NodeInput::Single(b"0".to_vec()))
             .data(JsonCodec::<Vec<u8>>::default())
