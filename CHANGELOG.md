@@ -6,6 +6,7 @@
 - fix(core): keep empty deque consumers waiting ([#58](https://github.com/nanfeng-labs/miju/pull/58))
 - fix(workflow): preserve fold handler readiness ([#57](https://github.com/nanfeng-labs/miju/pull/57))
 - docs(retry): clarify the metadata attempt limit ([#54](https://github.com/nanfeng-labs/miju/pull/54))
+- fix(core): serialize memory idempotency checks ([#66](https://github.com/nanfeng-labs/miju/pull/66))
 - docs(core): clarify tracked subtask completion ([#53](https://github.com/nanfeng-labs/miju/pull/53))
 - fix(workflow): reject exhausted repeat counters ([#52](https://github.com/nanfeng-labs/miju/pull/52))
 - fix(core): reject overflowing scheduling units ([#51](https://github.com/nanfeng-labs/miju/pull/51))

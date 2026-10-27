@@ -60,7 +60,7 @@ use futures_util::{FutureExt, SinkExt, Stream, StreamExt};
 use std::collections::HashSet;
 use std::{
     pin::Pin,
-    sync::Arc,
+    sync::{Arc, Mutex as SyncMutex},
     task::{Context, Poll},
     time::Duration,
 };
@@ -183,7 +183,7 @@ type ArcMemorySink<Args> = Arc<
     Mutex<Box<dyn Sink<Task<Args>, Error = MemoryStorageError> + Send + Sync + Unpin + 'static>>,
 >;
 
-type ArcIdempotencySet = Arc<Mutex<HashSet<String>>>;
+type ArcIdempotencySet = Arc<SyncMutex<HashSet<String>>>;
 
 /// Memory sink for sending tasks to the in-memory backend
 pub struct MemorySink<Args> {
@@ -197,7 +197,7 @@ impl<Args> MemorySink<Args> {
     pub fn new(sink: ArcMemorySink<Args>) -> Self {
         Self {
             inner: sink,
-            idempotency_keys: Arc::new(Mutex::new(HashSet::new())),
+            idempotency_keys: Arc::new(SyncMutex::new(HashSet::new())),
             lock_retry: None,
         }
     }
@@ -231,7 +231,7 @@ impl<Args> std::fmt::Debug for MemorySink<Args> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MemorySink")
             .field("inner", &"<Sink>")
-            .field("idempotency_keys", &self.idempotency_keys.lock())
+            .field("idempotency_keys", &"<IdempotencySet>")
             .finish()
     }
 }
@@ -257,7 +257,7 @@ impl<Args> Sink<Task<Args>> for MemorySink<Args> {
     fn start_send(self: Pin<&mut Self>, mut item: Task<Args>) -> Result<(), Self::Error> {
         let this = self.get_mut();
         if let Some(key) = item.idempotency_key() {
-            let mut keys = this.idempotency_keys.try_lock().unwrap();
+            let mut keys = this.idempotency_keys.lock().unwrap();
 
             if keys.contains(key) {
                 return Ok(());
