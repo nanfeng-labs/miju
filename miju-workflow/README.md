@@ -273,15 +273,14 @@ for an entry task does not wait for all subsequent steps; inspect
 `GoTo::Break` and a repeater's `GoTo::Break` between iterations.
 `check_status` returns only results currently stored and omits missing IDs.
 
-Handler errors are returned as stream errors; `check_status` fails if a requested
-stored task failed. A successful value that cannot be decoded into the requested
-output type instead produces an error inside `TaskResult.result`.
+Handler errors and output serialization errors are returned as stream errors;
+`check_status` fails if a requested stored task failed. A successful value that
+cannot be decoded into the requested output type instead produces an error
+inside `TaskResult.result`.
 
 Results are process-local, unbounded, and retained after being read. There is no
 persistence or automatic eviction. Wait streams own independent registrations
-and remove them when dropped. If serializing a successful handler output fails,
-the service returns an error without recording a result, so a waiter for that
-task may remain pending.
+and remove them when dropped.
 Reusing the in-memory sink after a failed send to a closed channel can also panic;
 the underlying error mapper is consumed by its first failure.
 
@@ -441,13 +440,15 @@ of node registration order. Missing or malformed graph metadata takes the
 initial-task path; reinjecting context into partial metadata can fail or panic on
 duplicate keys. Use fresh initial metadata.
 
-The root service clones node services for each call and skips their readiness
-polls. Clone-local mutable state does not persist between calls. New tasks copy
-graph metadata but omit arbitrary application data and unrelated metadata.
-Single-edge scheduling does not update dependency IDs, fan-out lets existing IDs
-override fresh ones, and fan-out increments the position twice. Completed-node
-sets are not updated. Do not rely on those fields as a complete execution history
-or assume joins across longer branches are fully supported.
+The root service clones node services for each call and waits for the selected
+node to be ready before invoking it. Clone-local mutable state does not persist
+between calls. New tasks copy graph metadata but omit arbitrary application data
+and unrelated metadata.
+Fan-out records fresh IDs for newly enqueued nodes and retains other mappings.
+Single-edge scheduling does not update dependency IDs, and independently extended
+branches do not merge their mappings. Fan-out increments the position twice, and
+completed-node sets are not updated. Do not rely on those fields as a complete
+execution history or assume joins across longer branches are fully supported.
 
 Dependency waits have no timeout. Missing mappings can return a waiting response
 without scheduling another attempt, and backend errors are collected only after

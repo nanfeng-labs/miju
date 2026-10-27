@@ -26,6 +26,7 @@ use miju_workflow::{
     in_memory::InMemoryWorkflow,
     sequential::{GoTo, StepResponse},
 };
+use serde::{Serialize, Serializer};
 use serde_json::json;
 use tower::{Layer, ServiceExt, service_fn};
 
@@ -261,6 +262,58 @@ async fn handler_failure_is_stored_and_reported_as_a_stream_error() {
             .unwrap()
             .is_err()
     );
+    assert!(stream.next().await.is_none());
+    assert!(
+        WaitForCompletion::<u32>::check_status(&mut backend, [id])
+            .await
+            .is_err()
+    );
+}
+
+#[derive(Debug)]
+struct Unserializable;
+
+impl Serialize for Unserializable {
+    fn serialize<S: Serializer>(&self, _: S) -> Result<S::Ok, S::Error> {
+        Err(serde::ser::Error::custom("output cannot be represented"))
+    }
+}
+
+#[tokio::test]
+async fn serialization_failure_is_stored_and_wakes_result_waiters() {
+    let mut backend = InMemoryWorkflow::<u32>::create();
+    let layer = backend.middleware(&mut WorkerContext::new("serialization"));
+    let id = RandomId::generate();
+    let mut stream = WaitForCompletion::<u32>::wait_for(&mut backend, [id.clone()]);
+    let counter = Arc::new(WakeCounter::default());
+    let waker = Waker::from(counter.clone());
+    assert!(
+        stream
+            .poll_next_unpin(&mut Context::from_waker(&waker))
+            .is_pending()
+    );
+    let service = layer.layer(service_fn(async |_: Task<u32>| {
+        Ok::<_, BoxDynError>(Unserializable)
+    }));
+    let task = TaskBuilder::new(8).task_id(id.clone()).attempt(2).build();
+    let status = task.status();
+    let error = service.oneshot(task).await.unwrap_err();
+    assert!(error.is::<serde_json::Error>());
+    let stored = layer
+        .store()
+        .get(&id)
+        .expect("completed serialization failure must have a stored result");
+    assert_eq!(stored.task_id, id);
+    assert_eq!(stored.attempt, 2);
+    assert_eq!(stored.status, status);
+    assert_eq!(stored.result, Err(error.to_string()));
+    assert!(counter.0.load(Ordering::SeqCst) > 0);
+    let observed = tokio::time::timeout(DEADLINE, stream.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap_err();
+    assert!(observed.to_string().contains(&error.to_string()));
     assert!(stream.next().await.is_none());
     assert!(
         WaitForCompletion::<u32>::check_status(&mut backend, [id])

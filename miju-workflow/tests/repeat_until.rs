@@ -2,6 +2,7 @@
 
 use std::{
     collections::HashSet,
+    panic::AssertUnwindSafe,
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -10,7 +11,7 @@ use std::{
     time::Duration,
 };
 
-use futures_util::{future::poll_fn, task::noop_waker_ref};
+use futures_util::{FutureExt, future::poll_fn, task::noop_waker_ref};
 use miju_core::{
     backend::{Backend, TaskSink, ext::shared::Shared},
     error::BoxDynError,
@@ -292,4 +293,47 @@ fn repeater_metadata_defaults_round_trips_and_reports_invalid_or_duplicate_entri
         RepeaterState::extract(&metadata),
         Err(RepeaterStateError::ParseTaskId)
     ));
+}
+
+#[tokio::test]
+async fn exhausted_iteration_count_returns_an_error_without_enqueueing() {
+    let backend = InMemoryWorkflow::<u32>::create();
+    let mut reader = backend.clone();
+    let flow = SteppedFlow::new("exhausted").repeat_until(
+        async |_: u32, Meta(state): Meta<RepeaterState>| {
+            assert_eq!(state.iterations(), usize::MAX);
+            None::<u32>
+        },
+    );
+    let service = flow.into_service(backend).service;
+    let state: RepeaterState = serde_json::from_value(json!({
+        "iterations": usize::MAX,
+        "prev_task_id": null,
+    }))
+    .unwrap();
+    let task = TaskBuilder::new(b"7".to_vec()).metadata(&state).build();
+    let result = AssertUnwindSafe(service.oneshot(task)).catch_unwind().await;
+    assert!(result.is_ok(), "iteration exhaustion must not unwind");
+    assert!(result.unwrap().is_err(), "iteration count must not wrap");
+    assert_queue_empty(&mut reader);
+}
+
+#[tokio::test]
+async fn exhausted_iteration_count_can_still_complete() {
+    let backend = InMemoryWorkflow::<u32>::create();
+    let mut reader = backend.clone();
+    let flow = SteppedFlow::new("complete").repeat_until(async |value: u32| Some(value));
+    let service = flow.into_service(backend).service;
+    let state: RepeaterState = serde_json::from_value(json!({
+        "iterations": usize::MAX,
+        "prev_task_id": null,
+    }))
+    .unwrap();
+    let task = TaskBuilder::new(b"7".to_vec()).metadata(&state).build();
+    let GoTo::Break(response) = service.oneshot(task).await.unwrap() else {
+        panic!("expected a terminal result");
+    };
+    assert_eq!(response.result, json!(7));
+    assert!(response.next_task_id.is_none());
+    assert_queue_empty(&mut reader);
 }

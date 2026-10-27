@@ -163,13 +163,23 @@ impl<Args> TaskBuilder<Args> {
     }
 
     /// Schedule the task to run in the specified number of minutes
+    ///
+    /// # Panics
+    ///
+    /// Panics if the delay or resulting timestamp cannot be represented.
     pub fn run_in_minutes(self, minutes: u64) -> Self {
-        self.run_after(Duration::from_secs(minutes * 60))
+        let seconds = minutes.checked_mul(60).expect("Delay is too large");
+        self.run_after(Duration::from_secs(seconds))
     }
 
     /// Schedule the task to run in the specified number of hours
+    ///
+    /// # Panics
+    ///
+    /// Panics if the delay or resulting timestamp cannot be represented.
     pub fn run_in_hours(self, hours: u64) -> Self {
-        self.run_after(Duration::from_secs(hours * 3600))
+        let seconds = hours.checked_mul(3600).expect("Delay is too large");
+        self.run_after(Duration::from_secs(seconds))
     }
 
     /// Set the idempotency key

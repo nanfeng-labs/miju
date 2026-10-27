@@ -79,6 +79,10 @@ where
 
     fn poll_ready(&mut self, cx: &mut std::task::Context<'_>) -> Poll<Result<(), Self::Error>> {
         let result = self.service.poll_ready(cx).map_err(Into::into);
+        if let Poll::Ready(Err(error)) = result {
+            self.worker.is_ready.store(false, Ordering::SeqCst);
+            return Poll::Ready(Err(error));
+        }
         if self.worker.is_shutting_down() || self.worker.is_paused() || result.is_pending() {
             self.worker.is_ready.store(false, Ordering::SeqCst);
             return Poll::Pending;
@@ -276,9 +280,17 @@ impl<Fut> PinnedDrop for LifecycleFuture<Fut> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::task::{builder::TaskBuilder, task_fn::task_fn};
+    #[cfg(feature = "task-context")]
+    use crate::task::context::TerminalState;
+    use crate::{
+        backend::memory::MemoryStorage,
+        task::{builder::TaskBuilder, task_fn::task_fn},
+        worker::{builder::WorkerBuilder, event::Event},
+    };
+    use futures_util::StreamExt;
     use std::{
         future::{Future, Ready, pending, ready},
+        io,
         panic::{AssertUnwindSafe, catch_unwind},
         sync::{Arc, atomic::AtomicUsize},
         task::{Wake, Waker},
@@ -297,6 +309,68 @@ mod tests {
         TaskBuilder::new(7)
             .task_id("tracked".to_owned().into())
             .build()
+    }
+
+    struct ReadinessFailure {
+        worker: WorkerContext,
+        before_error: fn(&WorkerContext),
+        error: Option<io::Error>,
+    }
+
+    impl Service<Task<u32>> for ReadinessFailure {
+        type Response = ();
+        type Error = io::Error;
+        type Future = Ready<Result<(), io::Error>>;
+
+        fn poll_ready(&mut self, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            (self.before_error)(&self.worker);
+            Poll::Ready(Err(self.error.take().expect("failed service polled again")))
+        }
+
+        fn call(&mut self, _: Task<u32>) -> Self::Future {
+            panic!("service with failed readiness must not receive tasks");
+        }
+    }
+
+    #[tokio::test]
+    async fn readiness_errors_survive_pause_and_stop() {
+        let cases: [(bool, fn(&WorkerContext)); 3] = [
+            (true, |_| {}),
+            (false, |worker| worker.pause().unwrap()),
+            (false, |worker| worker.stop().unwrap()),
+        ];
+        for (paused_before, before_error) in cases {
+            let ctx = WorkerContext::new("readiness-error");
+            let service = ReadinessFailure {
+                worker: ctx.clone(),
+                before_error,
+                error: Some(io::Error::new(io::ErrorKind::PermissionDenied, "readiness")),
+            };
+            let mut events = WorkerBuilder::new(&ctx)
+                .backend(MemoryStorage::new())
+                .build(service)
+                .stream();
+            assert!(matches!(events.next().await, Some(Ok(Event::Start))));
+            if paused_before {
+                ctx.pause().unwrap();
+            }
+            let Poll::Ready(Some(Ok(Event::Error(error)))) =
+                events.poll_next_unpin(&mut Context::from_waker(Waker::noop()))
+            else {
+                panic!("worker must report the readiness error");
+            };
+            let error = error.downcast_ref::<io::Error>().unwrap();
+            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+            assert_eq!(error.to_string(), "readiness");
+            assert!(!ctx.is_ready());
+            assert_eq!(ctx.task_count(), 0);
+            if ctx.is_paused() {
+                ctx.resume().unwrap();
+            }
+            ctx.stop().unwrap();
+            assert!(matches!(events.next().await, Some(Ok(Event::Exit))));
+            assert!(events.next().await.is_none());
+        }
     }
 
     #[test]
@@ -448,5 +522,80 @@ mod tests {
         drop(future);
         assert_eq!(worker.task_count(), 0);
         assert!(worker.get_task("tracked").is_err());
+    }
+
+    #[cfg(feature = "task-context")]
+    #[test]
+    fn stale_context_cannot_cancel_a_new_execution() {
+        for complete_first in [false, true] {
+            let worker = WorkerContext::new("replayed");
+            let mut service = LifecycleLayer::new(worker.clone())
+                .layer(task_fn(|_: u32| ready(Ok::<_, BoxDynError>(()))));
+            let task = task();
+            let first = service.call(task.clone());
+            let old = worker.get_task("tracked").unwrap();
+            if complete_first {
+                first.now_or_never().unwrap().unwrap();
+            } else {
+                drop(first);
+            }
+            assert_eq!(worker.task_count(), 0);
+
+            let second = service.call(task.clone());
+            let current = worker.get_task("tracked").unwrap();
+            assert!(Arc::ptr_eq(
+                &old.execution_context().unwrap(),
+                &current.execution_context().unwrap()
+            ));
+            assert_eq!(worker.cancel_task(&old), Err(TaskStateError::TaskNotFound));
+            assert!(!current.is_executed());
+            assert_eq!(old.is_completed(), complete_first);
+            second.now_or_never().unwrap().unwrap();
+            assert!(current.is_completed());
+            assert_eq!(task.status(), Status::Done);
+            assert_eq!(worker.task_count(), 0);
+        }
+    }
+
+    #[cfg(feature = "task-context")]
+    #[test]
+    fn cancellation_requires_a_context_from_the_same_worker_execution() {
+        let worker = WorkerContext::new("local");
+        let other = WorkerContext::new("other");
+        let handler = task_fn(|_: u32| ready(Ok::<_, BoxDynError>(())));
+        let mut service = LifecycleLayer::new(worker.clone()).layer(handler);
+        let mut other_service = LifecycleLayer::new(other.clone()).layer(handler);
+        let task = task();
+        let local_future = service.call(task.clone());
+        let other_future = other_service.call(task);
+        let local = worker.get_task("tracked").unwrap();
+        let foreign = other.get_task("tracked").unwrap();
+        assert_eq!(local, foreign);
+        assert_eq!(
+            worker.cancel_task(&foreign),
+            Err(TaskStateError::TaskNotFound)
+        );
+        assert!(!local.is_executed());
+        assert!(!foreign.is_executed());
+
+        worker.cancel_task(&local).unwrap();
+        assert_eq!(
+            worker.cancel_task(&local),
+            Err(TaskStateError::AlreadyExecuted(TerminalState::Cancelled))
+        );
+        assert!(
+            local_future
+                .now_or_never()
+                .unwrap()
+                .unwrap_err()
+                .is::<AbortError>()
+        );
+        other_future.now_or_never().unwrap().unwrap();
+        assert_eq!(worker.task_count(), 0);
+        assert_eq!(other.task_count(), 0);
+        assert_eq!(
+            worker.cancel_task(&local),
+            Err(TaskStateError::TaskNotFound)
+        );
     }
 }

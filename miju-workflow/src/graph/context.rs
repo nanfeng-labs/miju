@@ -29,8 +29,8 @@ use serde::{Deserialize, Serialize};
 /// `is_initial` values become `true`. Node/task mappings use comma-separated
 /// `node=task_id` pairs without escaping; IDs containing commas do not round-trip.
 ///
-/// Injection is not atomic. Duplicate keys normally return an error, but a
-/// duplicate `is_initial` key currently panics after earlier fields are written.
+/// Injection is not atomic. Duplicate keys return an error after earlier fields
+/// are written.
 /// Use a fresh metadata store for each injection.
 #[derive(Debug, Deserialize, Serialize, Default)]
 pub struct GraphFlowContext {
@@ -266,8 +266,7 @@ impl Metadata for GraphFlowContext {
             self.current_position.to_string(),
         )?;
 
-        map.insert(DAG_FLOW_IS_INITIAL_KEY, self.is_initial.to_string())
-            .expect("A value already exists");
+        map.insert(DAG_FLOW_IS_INITIAL_KEY, self.is_initial.to_string())?;
 
         if let Some(root_task_id) = &self.root_task_id {
             map.insert(DAG_FLOW_ROOT_TASK_ID_KEY, root_task_id.to_string())?;
