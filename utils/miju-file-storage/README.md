@@ -42,6 +42,14 @@ instance starts reading at the first record, including records with results.
 `new_temp` retains the temporary file's restrictive permissions and removes it
 when the last storage clone is dropped.
 
+New CSV files store each result in a fixed `result_v1` column: hexadecimal UTF-8
+JSON containing an empty array for a pending task or a one-element array for a
+stored result. This preserves result types and keeps successful, failed and
+pending records distinct across rewrites and reopening. Invalid encoded cells
+return an error. Older versions of this crate cannot read these result cells.
+Existing CSV files without this column retain their legacy read/write format;
+they are not upgraded, and their known result-recovery limitations remain.
+
 Clones share entries, pending changes, and the active file handle. Appending a
 task wakes waiting readers. Result updates replace the file using a securely
 created temporary file in the same directory, retaining file permissions.
@@ -72,7 +80,7 @@ File operations are synchronous, including those invoked through async traits.
   coordination, crash or power-loss recovery, and exactly-once execution are
   not provided. Dropping storage does not flush pending changes.
 - The CSV adapter splits on commas without quoting or escaping. Its flattened
-  representation does not preserve all JSON types, keys, or changing schemas.
+  arguments and metadata do not preserve all JSON types, keys, or changing schemas.
   Prefer JSON for structured data. CSV is not a general-purpose interchange
   format in this implementation.
 - Some completion and shared-store error paths can panic or terminate a stream.
