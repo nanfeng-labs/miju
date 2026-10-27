@@ -75,10 +75,8 @@ impl<Start, C, L, I: IntoIterator<Item = C>, B: Backend> SteppedFlow<Start, I, B
     /// The full remaining collection is encoded in each continuation. Handler
     /// and decoding errors propagate without enqueueing a continuation.
     ///
-    /// # Panics
-    ///
-    /// Processing an empty collection currently panics instead of returning the
-    /// default accumulator. Supply nonempty inputs.
+    /// An empty collection completes with its existing accumulator without calling
+    /// the handler. For a new fold, this is the default value.
     ///
     /// ```rust
     /// use miju_core::backend::ext::shared::Shared;
@@ -263,10 +261,14 @@ where
                 let (acc, items) = args;
 
                 let mut items = items.into_iter();
-                let next = items.next().unwrap();
+                let next = items.next();
                 let rest = items.collect::<Vec<_>>();
-                let fold_task = task.map_args(|_| (acc, next));
-                let response = fold.call(fold_task).await.map_err(|e| e.into())?;
+                let response = if let Some(next) = next {
+                    let fold_task = task.map_args(|_| (acc, next));
+                    fold.call(fold_task).await.map_err(|e| e.into())?
+                } else {
+                    acc
+                };
 
                 match rest.len() {
                     0 if ctx.has_next => {

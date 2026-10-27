@@ -155,7 +155,7 @@ values or unexpected transitions are skipped.
 
 ## Fold collections
 
-Use `fold` to reduce a nonempty iterable into a single value. The handler receives
+Use `fold` to reduce an iterable into a single value. The handler receives
 `(accumulator, item)` and returns an accumulator of the same type. Its initial
 value comes from `Default`; each item is processed in iterator order by a
 separate queued task. When `fold` is the first step, worker construction currently
@@ -200,10 +200,11 @@ A terminal fold retains its final value and has no next task ID.
 
 Fold requires a codec and task sink, without requiring `WaitForCompletion`.
 Every continuation serializes the accumulator and all remaining items, so large
-collections incur repeated copying and encoding. Empty input currently panics
-when processing its first collection task. Validate that input is nonempty;
-when composed after `filter_map`, an all-filtered result stops before reaching
-the fold. Missing or unrecognized fold-state metadata starts initialization.
+collections incur repeated copying and encoding. An empty collection completes
+with its existing accumulator without calling the handler; a new fold uses its
+default value. When composed after `filter_map`, an all-filtered result stops
+before reaching the fold. Missing or unrecognized fold-state metadata starts
+initialization.
 
 ## Repeat until a result is ready
 
