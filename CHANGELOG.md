@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- fix(file-storage): preserve application line metadata ([#68](https://github.com/nanfeng-labs/miju/pull/68))
+
 ## [0.1.1](https://github.com/nanfeng-labs/miju/releases/tag/v0.1.1)
 
 - bump: to v0.1.1 ([#67](https://github.com/nanfeng-labs/miju/pull/67))
