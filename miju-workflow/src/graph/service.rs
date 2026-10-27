@@ -69,8 +69,10 @@ use crate::graph::response::GraphNodeResponse;
 ///
 /// Missing dependency IDs can produce a waiting response with no rescheduling.
 /// Fan-out records fresh IDs for newly enqueued nodes and retains other mappings.
-/// Single-edge continuations do not update mappings, and independently extended
-/// branches do not merge them. These behaviors limit joins across longer branches.
+/// A single-edge continuation into a join records the current predecessor's task
+/// ID when available. Other single-edge continuations leave mappings unchanged,
+/// and independently extended branches do not merge them. Joins across longer
+/// branches remain limited.
 /// Progress positions are counters, not a reliable topological cursor, and
 /// completed-node sets are not advanced.
 pub struct RootGraphService<B>
@@ -257,6 +259,7 @@ where
         req.inject_data(codec); // Inject codec
 
         async move {
+            let current_task_id = req.task_id().cloned();
             let ctx = req.extract::<Meta<GraphFlowContext>>().await;
             let ((compact, response), context) = if let Ok(Meta(context)) = ctx {
                 #[cfg(feature = "tracing")]
@@ -494,6 +497,17 @@ where
                     new_context.current_node = next_node;
                     new_context.current_position += 1;
                     new_context.is_initial = false;
+                    if graph
+                        .neighbors_directed(next_node, Direction::Incoming)
+                        .count()
+                        > 1
+                    {
+                        if let Some(current_task_id) = current_task_id {
+                            new_context
+                                .node_task_ids
+                                .insert(current_node, current_task_id);
+                        }
+                    }
 
                     let task = TaskBuilder::new(compact)
                         .task_id(B::Id::generate())

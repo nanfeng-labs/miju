@@ -445,10 +445,12 @@ node to be ready before invoking it. Clone-local mutable state does not persist
 between calls. New tasks copy graph metadata but omit arbitrary application data
 and unrelated metadata.
 Fan-out records fresh IDs for newly enqueued nodes and retains other mappings.
-Single-edge scheduling does not update dependency IDs, and independently extended
-branches do not merge their mappings. Fan-out increments the position twice, and
-completed-node sets are not updated. Do not rely on those fields as a complete
-execution history or assume joins across longer branches are fully supported.
+A single-edge continuation into a join records the current predecessor's task ID
+when available. Other single-edge continuations leave mappings unchanged, and
+independently extended branches do not merge them. Fan-out increments the position
+twice, and completed-node sets are not updated. Do not rely on those fields as a
+complete execution history or assume joins across longer branches are fully
+supported.
 
 Dependency waits have no timeout. Missing mappings can return a waiting response
 without scheduling another attempt, and backend errors are collected only after
