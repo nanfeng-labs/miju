@@ -179,3 +179,46 @@ async fn zero_duration_delays_compose_with_worker_execution() {
         .unwrap();
     assert_eq!(seen.load(Ordering::SeqCst), 12);
 }
+
+async fn assert_terminal_delay_finishes(computed: bool) {
+    let backend = InMemoryWorkflow::<u32>::create();
+    let mut reader = backend.clone();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let observed = calls.clone();
+    let service = if computed {
+        SteppedFlow::new("terminal-computed")
+            .delay_with(move |task: Task<u32>| {
+                assert_eq!(task.args, 7);
+                observed.fetch_add(1, Ordering::SeqCst);
+                Duration::from_secs(60)
+            })
+            .into_service(backend)
+            .service
+    } else {
+        SteppedFlow::new("terminal-fixed")
+            .delay_for(Duration::from_secs(60))
+            .into_service(backend)
+            .service
+    };
+    let result = service
+        .oneshot(Task::new(serde_json::to_vec(&7u32).unwrap()))
+        .await
+        .unwrap();
+    assert!(
+        matches!(result, GoTo::Done),
+        "a terminal delay must finish without a successor"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), usize::from(computed));
+    let mut cx = Context::from_waker(noop_waker_ref());
+    assert!(Backend::poll_next(&mut reader, &mut cx, &WorkerContext::new("empty")).is_pending());
+}
+
+#[tokio::test]
+async fn terminal_fixed_delay_finishes_without_enqueuing_an_unknown_step() {
+    assert_terminal_delay_finishes(false).await;
+}
+
+#[tokio::test]
+async fn terminal_computed_delay_finishes_without_enqueuing_an_unknown_step() {
+    assert_terminal_delay_finishes(true).await;
+}

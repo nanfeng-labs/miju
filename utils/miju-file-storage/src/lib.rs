@@ -10,7 +10,7 @@ use miju_codec::json::JsonCodec;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     fmt::Debug,
     fs::{File, OpenOptions},
     io::{self, BufRead, Read, Seek, SeekFrom, Write},
@@ -768,9 +768,6 @@ where
 {
     type ResultStream = BoxStream<'static, Result<TaskResult<O>, FileStorageError<A>>>;
     fn wait_for(&mut self, task_ids: impl IntoIterator<Item = TaskId>) -> Self::ResultStream {
-        use futures_util::StreamExt;
-        use std::{collections::HashSet, time::Duration};
-
         let task_ids: HashSet<_> = task_ids.into_iter().collect();
         struct PollState<Res, T, A: Adapter> {
             vault: FileStorage<T, A>,
@@ -795,7 +792,9 @@ where
                     let vault = &state.vault;
 
                     let completed_task = {
-                        let vault = vault.entries.try_read().ok()?;
+                        let Ok(vault) = vault.entries.try_read() else {
+                            return Some((Err(FileStorageError::WouldBlockLock), state));
+                        };
                         vault.iter().find_map(|value| {
                             let attempt = value
                                 .ctx
@@ -815,11 +814,20 @@ where
 
                     if let Some((task_id, result, attempt)) = completed_task {
                         state.pending_tasks.remove(&task_id);
-                        let result: Result<O, String> = serde_json::from_value(result).unwrap();
+                        let result: Result<O, String> = match serde_json::from_value(result) {
+                            Ok(result) => result,
+                            Err(error) => {
+                                return Some((Err(FileStorageError::Json(error)), state));
+                            }
+                        };
                         return Some((
                             Ok(TaskResult {
                                 task_id,
-                                status: Status::Done,
+                                status: if result.is_ok() {
+                                    Status::Done
+                                } else {
+                                    Status::Failed
+                                },
                                 result,
                                 attempt,
                             }),
@@ -839,15 +847,13 @@ where
         &mut self,
         task_ids: impl IntoIterator<Item = TaskId> + Send,
     ) -> Result<Vec<TaskResult<O>>, Self::Error> {
-        use miju_core::task::status::Status;
-        use std::collections::HashSet;
         let task_ids: HashSet<_> = task_ids.into_iter().collect();
         let mut results = Vec::new();
         for task_id in task_ids {
             if let Some(value) = self
                 .entries
                 .try_read()
-                .unwrap()
+                .map_err(|_| FileStorageError::WouldBlockLock)?
                 .iter()
                 .find(|s| s.task_id == task_id)
             {
@@ -872,7 +878,11 @@ where
                 ) {
                     Ok(result) => TaskResult {
                         task_id: task_id.clone(),
-                        status: Status::Done,
+                        status: if result.is_ok() {
+                            Status::Done
+                        } else {
+                            Status::Failed
+                        },
                         result,
                         attempt,
                     },
@@ -1361,6 +1371,48 @@ mod tests {
             store.set_result(10, Value::Null),
             Err(FileStorageError::JobNotFound { line_id: 10 })
         ));
+    }
+
+    #[tokio::test]
+    async fn completion_status_matches_the_stored_result() {
+        for (expected, status) in [
+            (Ok(14_u32), Status::Done),
+            (Err("handler failed".to_owned()), Status::Failed),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("tasks.json");
+            let mut store = JsonStorage::<u32>::new(&path).unwrap();
+            let id = TaskId::from_string(RandomId::default());
+            store
+                .push_task(TaskBuilder::new(7_u32).task_id(id.clone()).build())
+                .await
+                .unwrap();
+            store
+                .set_result(0, serde_json::to_value(&expected).unwrap())
+                .unwrap();
+
+            for mut observer in [store.clone(), JsonStorage::<u32>::new(&path).unwrap()] {
+                let snapshot = <JsonStorage<u32> as WaitForCompletion<u32>>::check_status(
+                    &mut observer,
+                    [id.clone()],
+                )
+                .await
+                .unwrap();
+                let mut results = <JsonStorage<u32> as WaitForCompletion<u32>>::wait_for(
+                    &mut observer,
+                    [id.clone()],
+                );
+                let result = results.next().await.unwrap().unwrap();
+                assert_eq!(snapshot.len(), 1);
+                assert_eq!(snapshot[0].status, status);
+                assert_eq!(result.status, status);
+                assert_eq!(snapshot[0].task_id, id);
+                assert_eq!(result.task_id, id);
+                assert_eq!(snapshot[0].result, expected);
+                assert_eq!(result.result, expected);
+                assert!(results.next().await.is_none());
+            }
+        }
     }
 
     #[test]
