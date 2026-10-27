@@ -71,6 +71,36 @@ fn live_consumer_is_notified_after_another_clone_is_dropped() {
 }
 
 #[test]
+fn empty_next_preserves_another_consumers_readiness_notification() {
+    let mut queue = VecDequeBackend::new();
+    let mut peer = queue.clone();
+    let waiting = Arc::new(WakeCounter::default());
+    let next = Arc::new(WakeCounter::default());
+    let worker = WorkerContext::new("consumer");
+    let next_waker = Waker::from(next.clone());
+    let mut cx = Context::from_waker(&next_waker);
+
+    send(&mut queue, 1);
+    assert!(matches!(
+        peer.poll_ready(&mut cx, &worker),
+        Poll::Ready(Ok(()))
+    ));
+    assert!(matches!(
+        queue.poll_next(&mut cx, &worker),
+        Poll::Ready(Some(Ok(_)))
+    ));
+    pending(&mut queue, &Waker::from(waiting.clone()));
+    assert!(peer.poll_next(&mut cx, &worker).is_pending());
+
+    send(&mut queue.clone(), 7);
+    assert!(waiting.0.load(Ordering::SeqCst) > 0);
+    assert!(next.0.load(Ordering::SeqCst) > 0);
+    assert!(
+        matches!(peer.poll_next(&mut cx, &worker), Poll::Ready(Some(Ok(task))) if task.args == 7)
+    );
+}
+
+#[test]
 fn repoll_replaces_only_that_consumers_notification() {
     let mut queue = VecDequeBackend::<u32>::new();
     let mut peer = queue.clone();

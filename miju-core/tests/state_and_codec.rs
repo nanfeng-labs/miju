@@ -405,10 +405,7 @@ async fn dequeue_idempotency_only_covers_queued_tasks_and_push_wakes_receiver() 
     };
     assert!(fetched.task_id().is_some());
     assert_eq!(fetched.args, 3);
-    assert!(matches!(
-        backend.poll_next(&mut cx, &worker),
-        Poll::Ready(None)
-    ));
+    assert!(backend.poll_next(&mut cx, &worker).is_pending());
     backend.push_task(task).await.unwrap();
     assert!(matches!(
         backend.poll_next(&mut cx, &worker),
@@ -517,6 +514,7 @@ mod durable_submission {
             Err(TaskSinkError::CodecError(_))
         ));
         backend.backend.push("invalid".to_owned()).await.unwrap();
+        let mut sender = backend.backend.clone();
         let mut finalized = <Durable as FinalizeBackend<_, u32>>::finalize(backend);
         let worker = WorkerContext::new("decode");
         let mut cx = Context::from_waker(Waker::noop());
@@ -530,9 +528,11 @@ mod durable_submission {
             finalized.poll_next(&mut cx, &worker),
             Poll::Ready(Some(Err(DurableError::CodecError(_))))
         ));
-        assert!(matches!(
-            finalized.poll_next(&mut cx, &worker),
-            Poll::Ready(None)
-        ));
+        assert!(finalized.poll_next(&mut cx, &worker).is_pending());
+        sender.push("43".to_owned()).await.unwrap();
+        let Poll::Ready(Some(Ok(decoded))) = finalized.poll_next(&mut cx, &worker) else {
+            panic!("a later decoded task must remain available")
+        };
+        assert_eq!(decoded.args, 43);
     }
 }
