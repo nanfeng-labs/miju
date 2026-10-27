@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- fix(sentry): finish transactions when task futures are dropped ([#83](https://github.com/nanfeng-labs/miju/pull/83))
 - fix(workflow): preserve predecessor IDs for single-edge joins ([#70](https://github.com/nanfeng-labs/miju/pull/70))
 - fix(file-storage): preserve CSV metadata keys on reopen ([#69](https://github.com/nanfeng-labs/miju/pull/69))
 - fix(file-storage): preserve application line metadata ([#68](https://github.com/nanfeng-labs/miju/pull/68))
