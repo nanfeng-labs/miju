@@ -99,9 +99,24 @@ impl<T> Backend for VecDequeBackend<T> {
 
     fn poll_next(
         &mut self,
-        _cx: &mut Context<'_>,
+        cx: &mut Context<'_>,
         _worker: &WorkerContext,
     ) -> Poll<Option<Result<Self::Task, Self::Error>>> {
+        let task = self
+            .queue
+            .lock()
+            .map_err(|e| VecDequeError::PollError(Arc::new(e.to_string().into())))?
+            .pop_front();
+        if let Some(task) = task {
+            return Poll::Ready(Some(Ok(task)));
+        }
+
+        // Waker callbacks may reenter the backend, so run them outside the locks.
+        let waker = cx.waker().clone();
+        let previous = self.waker.lock().unwrap().replace(waker);
+        drop(previous);
+
+        // Recheck after registering so a send cannot be missed.
         match self
             .queue
             .lock()
@@ -109,7 +124,7 @@ impl<T> Backend for VecDequeBackend<T> {
             .pop_front()
         {
             Some(task) => Poll::Ready(Some(Ok(task))),
-            None => Poll::Ready(None),
+            None => Poll::Pending,
         }
     }
 
