@@ -117,7 +117,17 @@ impl<T> Backend for VecDequeBackend<T> {
                 .unwrap()
                 .insert(ptr::from_ref(self.waker.key.as_ref()) as usize, waker);
             drop(previous);
-            Poll::Pending
+            // A producer may have sent before the waker was registered.
+            if self
+                .queue
+                .lock()
+                .map_err(|e| VecDequeError::PollError(Arc::new(e.to_string().into())))?
+                .is_empty()
+            {
+                Poll::Pending
+            } else {
+                Poll::Ready(Ok(()))
+            }
         } else {
             Poll::Ready(Ok(()))
         }
