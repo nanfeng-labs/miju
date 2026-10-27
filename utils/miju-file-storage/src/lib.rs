@@ -493,6 +493,9 @@ impl<A: Adapter + Unpin, Args: Unpin> Stream for FileStorage<Args, A> {
     }
 }
 
+#[derive(Clone)]
+struct FileLineId(usize);
+
 impl<Args, A> Backend for FileStorage<Args, A>
 where
     Args: 'static + Send + Serialize + for<'de> Deserialize<'de> + Unpin,
@@ -521,11 +524,19 @@ where
         _: &WorkerContext,
     ) -> Poll<Option<Result<Self::Task, Self::Error>>> {
         self.poll_next_unpin(cx).map_ok(|(line_id, mut job)| {
-            job.ctx.insert("line_id", line_id.to_string()).unwrap();
+            let has_line_id = job.ctx.contains_key("line_id");
+            if !has_line_id {
+                job.ctx.insert("line_id", line_id.to_string()).unwrap();
+            }
             let task = TaskBuilder::new(job.args)
                 .with_metadata(job.ctx)
                 .task_id(job.task_id);
-            task.build()
+            if has_line_id {
+                // Keep the application field separate from the acknowledgement address.
+                task.data(FileLineId(line_id)).build()
+            } else {
+                task.build()
+            }
         })
     }
 
@@ -745,12 +756,15 @@ where
     fn ack(&mut self, res: &Result<Res, BoxDynError>, ctx: &ExecutionContext) -> Self::Future {
         let res = |this: &mut Self| {
             let val = serde_json::to_value(res.as_ref().map_err(|e| e.to_string()))?;
-            let line_id = ctx
-                .metadata()
-                .get("line_id")
-                .unwrap()
-                .parse()
-                .map_err(|e: ParseIntError| FileStorageError::Parse(e.to_string()))?;
+            let line_id = if let Some(line_id) = ctx.data().get::<FileLineId>() {
+                line_id.0
+            } else {
+                ctx.metadata()
+                    .get("line_id")
+                    .unwrap()
+                    .parse()
+                    .map_err(|e: ParseIntError| FileStorageError::Parse(e.to_string()))?
+            };
             this.set_result(line_id, val)?;
             Ok(())
         };
