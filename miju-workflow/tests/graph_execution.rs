@@ -116,6 +116,75 @@ async fn linear_dispatch_preserves_root_id_and_enqueues_fresh_task_context() {
 }
 
 #[tokio::test]
+async fn single_edge_into_join_records_current_predecessor_id() {
+    let graph = GraphFlow::new("single-successor-join");
+    let entry = graph.add_task(|value: u32| async move { value });
+    let left = graph
+        .add_task(|value: u32| async move { value * 2 })
+        .depends_on(&entry);
+    let right = graph
+        .add_task(|value: u32| async move { value + 3 })
+        .depends_on(&entry);
+    let right_tail = graph
+        .add_task(|value: u32| async move { value * 3 })
+        .depends_on(&right);
+    let join = graph
+        .add_task(|(left, right): (u32, u32)| async move { left * 100 + right })
+        .depends_on((&left, &right_tail));
+    graph.validate().unwrap();
+    let mut backend = InMemoryWorkflow::<u32>::create();
+    let store = backend
+        .middleware(&mut WorkerContext::new("results"))
+        .store();
+    let mut queue = backend.clone();
+    let service = graph.into_service(backend).service;
+    service
+        .clone()
+        .oneshot(TaskBuilder::new(b"7".to_vec()).build())
+        .await
+        .unwrap();
+    let mut joins = Vec::new();
+    let mut predecessor_ids = Vec::new();
+    // Store every actual branch result before dispatching either join task.
+    for _ in 0..4 {
+        let task = next_task(&mut queue).await;
+        let context = GraphFlowContext::extract(task.metadata()).unwrap();
+        if context.current_node == join.id() {
+            joins.push(task);
+        } else {
+            let id = task.task_id().unwrap().to_string();
+            if context.current_node == left.id() || context.current_node == right_tail.id() {
+                predecessor_ids.push(TaskId::from_string(&id));
+            }
+            let response = service.clone().oneshot(task).await.unwrap();
+            store_result(
+                &store,
+                &id,
+                Status::Done,
+                Ok(serde_json::to_value(response).unwrap()),
+            );
+        }
+    }
+    joins.push(next_task(&mut queue).await);
+    assert_eq!(predecessor_ids.len(), 2);
+    for id in predecessor_ids {
+        assert_eq!(store.get(&id).unwrap().status, Status::Done);
+    }
+    let mut complete = Vec::new();
+    for task in joins {
+        let response = tokio::time::timeout(DEADLINE, service.clone().oneshot(task))
+            .await
+            .unwrap()
+            .unwrap();
+        if let GraphNodeResponse::Complete { result } = response {
+            complete.push(result);
+        }
+    }
+    assert_eq!(complete, vec![json!(1430)]);
+    assert_empty(&mut queue);
+}
+
+#[tokio::test]
 async fn worker_executes_fan_out_and_fan_in_with_stored_results() {
     let graph = GraphFlow::new("branches");
     let entry = graph.add_task(|value: u32| async move { value });
