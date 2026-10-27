@@ -199,3 +199,41 @@ fn notifying_a_consumer_allows_its_waker_to_send() {
         .expect("a notification must allow its callback's public send to complete");
     poller.join().unwrap();
 }
+
+#[test]
+fn empty_next_keeps_other_consumers_registered_after_peer_cancellation() {
+    let mut queue = VecDequeBackend::<u32>::new();
+    let mut peer = queue.clone();
+    let old = Arc::new(WakeCounter::default());
+    let current = Arc::new(WakeCounter::default());
+    let cancelled = Arc::new(WakeCounter::default());
+    let worker = WorkerContext::new("next-consumer");
+    assert!(
+        queue
+            .poll_next(&mut Context::from_waker(&Waker::from(old.clone())), &worker)
+            .is_pending()
+    );
+    assert!(
+        queue
+            .poll_next(
+                &mut Context::from_waker(&Waker::from(current.clone())),
+                &worker
+            )
+            .is_pending()
+    );
+    assert!(
+        peer.poll_next(
+            &mut Context::from_waker(&Waker::from(cancelled.clone())),
+            &worker
+        )
+        .is_pending()
+    );
+    drop(peer);
+    send(&mut queue.clone(), 19);
+    assert_eq!(old.0.load(Ordering::SeqCst), 0);
+    assert_eq!(cancelled.0.load(Ordering::SeqCst), 0);
+    assert!(current.0.load(Ordering::SeqCst) > 0);
+    assert!(
+        matches!(queue.poll_next(&mut Context::from_waker(Waker::noop()), &worker), Poll::Ready(Some(Ok(task))) if task.args == 19)
+    );
+}
