@@ -75,6 +75,8 @@ use crate::graph::response::GraphNodeResponse;
 /// branches remain limited.
 /// Progress positions are counters, not a reliable topological cursor, and
 /// completed-node sets are not advanced.
+/// If the next position cannot be represented, the completed node returns a
+/// metadata error without enqueueing successors.
 pub struct RootGraphService<B>
 where
     B: Backend + WireFormatBackend,
@@ -495,7 +497,10 @@ where
                     let mut new_context = context.clone();
                     new_context.prev_node = Some(current_node);
                     new_context.current_node = next_node;
-                    new_context.current_position += 1;
+                    new_context.current_position =
+                        new_context.current_position.checked_add(1).ok_or_else(|| {
+                            GraphFlowError::Metadata("Graph progress position overflow".into())
+                        })?;
                     new_context.is_initial = false;
                     if graph
                         .neighbors_directed(next_node, Direction::Incoming)
@@ -523,7 +528,10 @@ where
                     // Multiple outgoing nodes, fan out
                     let mut new_context = context.clone();
                     new_context.prev_node = Some(current_node);
-                    new_context.current_position += 1;
+                    new_context.current_position =
+                        new_context.current_position.checked_add(1).ok_or_else(|| {
+                            GraphFlowError::Metadata("Graph progress position overflow".into())
+                        })?;
                     new_context.is_initial = false;
 
                     let next_task_ids =
@@ -558,6 +566,10 @@ where
     B::Id: FromStr + Display,
     <B::Id as FromStr>::Err: std::error::Error + Send + Sync + 'static,
 {
+    let current_position = context
+        .current_position
+        .checked_add(1)
+        .ok_or_else(|| GraphFlowError::Metadata("Graph progress position overflow".into()))?;
     let mut enqueue_futures = vec![];
     let next_nodes = outgoing_nodes
         .iter()
@@ -577,7 +589,7 @@ where
                 current_node: outgoing_node,
                 completed_nodes: context.completed_nodes.clone(),
                 node_task_ids: node_task_ids.clone(),
-                current_position: context.current_position + 1,
+                current_position,
                 is_initial: context.is_initial,
                 root_task_id: context.root_task_id.clone(),
             })
