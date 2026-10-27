@@ -75,21 +75,22 @@
 //! application-created hub. Merely binding one shared hub to an entire worker
 //! does not isolate concurrently running tasks.
 //!
-//! Dropping an unpolled Future starts no transaction. Dropping it after polling,
-//! or unwinding through it, does not finish its transaction or restore its scope
-//! span. Isolating the task hub contains scope changes but does not finish a
-//! cancelled transaction. Put timeout or panic-capture middleware inside this
-//! layer when their returned errors should complete the transaction. Retry
-//! placement similarly controls whether each attempt gets its own transaction.
+//! Dropping an unpolled Future starts no transaction. Dropping a started Future,
+//! including during unwinding, finishes its transaction and restores the previous
+//! span on the hub used for its first poll. An unset status becomes `Cancelled`;
+//! an explicitly set status is preserved. Put timeout or panic-capture middleware
+//! inside this layer when their returned errors should complete the transaction.
+//! Retry placement similarly controls whether each attempt gets its own transaction.
 //!
 //! [`SentryFutureExt::bind_hub`]: sentry_core::SentryFutureExt::bind_hub
 
 use miju_core::error::BoxDynError;
-use sentry_core::protocol;
+use sentry_core::{SentryFutureExt, protocol};
 use std::fmt::{self, Debug};
 use std::future::Future;
-use std::pin::Pin;
-use std::task::{Context, Poll};
+use std::pin::{Pin, pin};
+use std::sync::Arc;
+use std::task::{Context, Poll, Waker};
 use tower::Layer;
 use tower::Service;
 
@@ -137,18 +138,24 @@ struct Request {
 
 /// The Future returned from [`SentryTaskService`].
 ///
-/// Starts instrumentation on the first poll and finishes it on completion.
-/// Dropping a pending Future does not finish or restore its transaction.
+/// Starts instrumentation on the first poll and finishes it on completion or
+/// cancellation, restoring the previous span on the task hub.
 #[pin_project::pin_project]
 pub struct SentryHttpFuture<F> {
     on_first_poll: Option<(Request, sentry_core::TransactionContext)>,
-    transaction: Option<(
-        sentry_core::TransactionOrSpan,
-        Option<sentry_core::TransactionOrSpan>,
-    )>,
     #[pin]
     future: F,
+    // Handler scopes and child spans must be dropped before the transaction.
+    transaction: TransactionGuard,
 }
+
+struct TransactionGuard(
+    Option<(
+        sentry_core::TransactionOrSpan,
+        Option<sentry_core::TransactionOrSpan>,
+        Arc<sentry_core::Hub>,
+    )>,
+);
 
 /// Error type for Sentry task processing.
 ///
@@ -171,7 +178,7 @@ where
             .field("on_first_poll", &"<Request, TransactionContext>")
             .field(
                 "transaction",
-                &self.transaction.as_ref().map(|(_, maybe_span)| {
+                &self.transaction.0.as_ref().map(|(_, maybe_span, _)| {
                     let has_child = maybe_span.is_some();
                     format!(
                         "<TransactionOrSpan, child: {}>",
@@ -195,25 +202,27 @@ where
         let this = self.project();
         if let Some((task_details, trx_ctx)) = this.on_first_poll.take() {
             let tid = task_details.id;
-            sentry_core::configure_scope(|scope| {
-                scope.add_event_processor(move |mut event| {
-                    event.event_id = tid;
-                    Some(event)
-                });
-                scope.set_tag("queue", task_details.queue.clone());
-                let mut details = std::collections::BTreeMap::new();
-                details.insert(String::from("task_id"), task_details.id.to_string().into());
-                details.insert(
-                    String::from("current_attempt"),
-                    task_details.current_attempt.into(),
-                );
-                scope.set_context("task", sentry_core::protocol::Context::Other(details));
+            sentry_core::Hub::with_active(|hub| {
+                hub.configure_scope(|scope| {
+                    scope.add_event_processor(move |mut event| {
+                        event.event_id = tid;
+                        Some(event)
+                    });
+                    scope.set_tag("queue", task_details.queue.clone());
+                    let mut details = std::collections::BTreeMap::new();
+                    details.insert(String::from("task_id"), task_details.id.to_string().into());
+                    details.insert(
+                        String::from("current_attempt"),
+                        task_details.current_attempt.into(),
+                    );
+                    scope.set_context("task", sentry_core::protocol::Context::Other(details));
 
-                let transaction: sentry_core::TransactionOrSpan =
-                    sentry_core::start_transaction(trx_ctx).into();
-                let parent_span = scope.get_span();
-                scope.set_span(Some(transaction.clone()));
-                *this.transaction = Some((transaction, parent_span));
+                    let transaction: sentry_core::TransactionOrSpan =
+                        sentry_core::start_transaction(trx_ctx).into();
+                    let parent_span = scope.get_span();
+                    scope.set_span(Some(transaction.clone()));
+                    this.transaction.0 = Some((transaction, parent_span, hub.clone()));
+                })
             });
         }
         match this
@@ -222,7 +231,7 @@ where
             .map_err(|e| SentryTaskError::Inner(e.into()))
         {
             Poll::Ready(res) => {
-                if let Some((transaction, parent_span)) = this.transaction.take() {
+                if let Some((transaction, parent_span, _)) = this.transaction.0.take() {
                     if transaction.get_status().is_none() {
                         let status = match &res {
                             Ok(_) => protocol::SpanStatus::Ok,
@@ -239,6 +248,26 @@ where
                 Poll::Ready(Ok(res?))
             }
             Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl Drop for TransactionGuard {
+    fn drop(&mut self) {
+        if let Some((transaction, parent_span, hub)) = self.0.take() {
+            let cleanup = async {
+                if transaction.get_status().is_none() {
+                    transaction.set_status(protocol::SpanStatus::Cancelled);
+                }
+                transaction.finish();
+                hub.configure_scope(|scope| scope.set_span(parent_span));
+            };
+            // Finishing reads the current scope; bound futures bind only during poll.
+            // This cleanup has no await and completes in one poll without a runtime.
+            let mut cleanup = pin!(cleanup.bind_hub(hub.clone()));
+            let _ = cleanup
+                .as_mut()
+                .poll(&mut Context::from_waker(Waker::noop()));
         }
     }
 }
@@ -272,7 +301,7 @@ where
 
         SentryHttpFuture {
             on_first_poll: Some((task_details, trx_ctx)),
-            transaction: None,
+            transaction: TransactionGuard(None),
             future: self.service.call(task),
         }
     }
