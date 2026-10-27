@@ -668,8 +668,7 @@ impl Adapter for CsvAdapter {
 
         let ctx = line
             .iter()
-            .filter(|(k, _)| k.starts_with("ctx."))
-            .map(|(k, v)| (k.clone(), v.clone()))
+            .filter_map(|(k, v)| k.strip_prefix("ctx.").map(|k| (k.to_owned(), v.clone())))
             .collect::<HashMap<String, String>>();
 
         let ctx = MetadataStore::from_map(ctx);
