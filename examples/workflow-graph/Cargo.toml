@@ -10,8 +10,8 @@ repository.workspace = true
 description = "Demonstrates graph entry inputs, typed dependency tuples, and result collection"
 
 [dependencies]
-miju = { version = "0.1.0", default-features = false, features = ["tracing"] }
-miju-workflow = { version = "0.1.0" }
+miju = { version = "0.1.1", default-features = false, features = ["tracing"] }
+miju-workflow = { version = "0.1.1" }
 tokio = { version = "1.53.2", default-features = false, features = ["macros", "rt-multi-thread"] }
 tracing = { version = "0.1.44", default-features = false, features = ["std"] }
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["env-filter", "fmt"] }
