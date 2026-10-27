@@ -229,6 +229,9 @@ where
         let mut ctx = task.data().get::<StepContext<B>>().cloned().unwrap();
         let codec = ctx.backend.codec().clone();
         let mut fold = self.fold.clone();
+        if state == FoldState::Collection {
+            std::mem::swap(&mut self.fold, &mut fold);
+        }
 
         match state {
             FoldState::Init => async move {

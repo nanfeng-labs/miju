@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- fix(workflow): preserve fold handler readiness ([#57](https://github.com/nanfeng-labs/miju/pull/57))
 - docs(retry): clarify the metadata attempt limit ([#54](https://github.com/nanfeng-labs/miju/pull/54))
 - fix(core): serialize memory idempotency checks ([#66](https://github.com/nanfeng-labs/miju/pull/66))
 - docs(core): clarify tracked subtask completion ([#53](https://github.com/nanfeng-labs/miju/pull/53))
