@@ -1,7 +1,7 @@
 //! Persistence providers, polling state, and task lifecycle events.
 //!
-//! [`Persistence`](crate::backend::persistence::Persistence) supplies storage operations.
-//! [`Persisted`](crate::backend::persistence::Persisted) drives registration,
+//! The [`Persistence` trait](crate::backend::persistence::Persistence) supplies storage operations.
+//! The [`Persisted` driver](crate::backend::persistence::Persisted) drives registration,
 //! heartbeats, event processing, and task batches, and implements a submission
 //! sink. A storage integration connects its polling methods to
 //! [`Backend`](crate::backend::Backend) and uses
