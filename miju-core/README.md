@@ -4,6 +4,14 @@
 
 <h1 align="center">miju-core</h1>
 
+<br />
+
+<div align="center">
+  <a href="README.zh-CN.md">简体中文</a>
+</div>
+
+<br />
+
 Task backends and worker execution for background processing in Rust.
 
 `miju-core` provides task data structures, backend protocols, workers, and
@@ -63,11 +71,82 @@ calls to the underlying backend. Enable `sleep` for interval and backoff
 strategies, `tracing` for span instrumentation, and `shared` for cloneable
 backend handles.
 
+#### Backend capabilities
+
+```mermaid
+flowchart LR
+    impl["Backend implementation<br/>Define task source and storage semantics"] -->|Implements| backend["Backend · consumption contract<br/>Check readiness · fetch tasks<br/>Clean up backend resources on close"]
+    backend -->|Yield tasks| worker["Worker<br/>Drive backend and in-flight work"]
+    worker --> pipeline["Service pipeline<br/>Middleware → typed handler"]
+    subgraph optional["Optional capabilities · not provided by Backend itself"]
+        sink["TaskSink<br/>Submit tasks and flush submissions"]
+        query["FetchById<br/>Fetch tasks by ID"]
+        results["WaitForCompletion<br/>Wait for results · check status"]
+        manage["Update / Reschedule<br/>Update tasks · reschedule"]
+    end
+    impl -.->|Implements as supported| optional
+    ack["AcknowledgeLayer (optional)<br/>Result and context → ack"] -.->|Wraps service| pipeline
+    classDef source fill:#eff6ff,stroke:#3b82f6,color:#172554
+    classDef control fill:#f5f3ff,stroke:#8b5cf6,color:#2e1065
+    classDef action fill:#ecfdf5,stroke:#10b981,color:#064e3b
+    class impl,backend source
+    class sink,query,results,manage,ack control
+    class worker,pipeline action
+```
+
+`Backend` defines the consumption contract: readiness, task delivery, and
+shutdown cleanup. Workers poll that contract and drive in-flight execution.
+The additional interfaces below are representative capabilities, not a
+requirement that every backend provide every operation.
+
+- **Submission and management.** `TaskSink` submits tasks and drives submission
+  buffers; `Update` and `Reschedule` manage existing tasks. These interfaces
+  alone do not establish durable storage guarantees.
+- **Task and result queries.** `FetchById` retrieves a task by ID.
+  `WaitForCompletion` streams execution results or checks their current status;
+  it does not execute tasks or store results itself.
+- **Acknowledgement.** An optional `AcknowledgeLayer` wraps a service and passes
+  its outcome and execution context to `Acknowledge::ack`. The acknowledger and
+  storage integration determine whether and how results are recorded. Adding
+  this layer does not automatically provide result-query capabilities.
+
+#### Persistence integration
+
 With `sleep`, `backend::persistence` provides the `Persistence` provider
-contract and the `Persisted` driver for registration, heartbeats, task
-batches, and lifecycle events. Storage integrations bridge that driver to
-`Backend` and configure its event layer; the driver itself is not a backend
-implementation. Providers supply storage operations and atomic task claims.
+contract and the `Persisted<P>` driver. The driver coordinates registration,
+heartbeats, task batches, event processing, and shutdown cleanup; it does not
+implement `Backend` itself.
+
+```mermaid
+flowchart LR
+    backend["Storage integration<br/>Implement Backend<br/>Configure backend middleware"] -->|Delegate polling| driver["Persisted&lt;P&gt;<br/>Requires sleep feature<br/>Registration · heartbeat<br/>batches · events<br/>Drive cleanup on close"]
+    driver -->|Call storage operations| provider["P: Persistence<br/>Provide storage operations<br/>Own atomic claims<br/>and storage guarantees"]
+    provider -->|Access| store[("Storage")]
+    backend -.->|Attach to service pipeline| layer["TaskPersistLayer<br/>Send configured task events<br/>Lock / Complete disabled by default"]
+    layer -->|Enqueue events for the driver| driver
+    classDef source fill:#eff6ff,stroke:#3b82f6,color:#172554
+    classDef action fill:#ecfdf5,stroke:#10b981,color:#064e3b
+    classDef control fill:#f5f3ff,stroke:#8b5cf6,color:#2e1065
+    class backend,store source
+    class driver,provider action
+    class layer control
+```
+
+Storage integrations implement `Backend`, delegate polling to the driver,
+and attach its `TaskPersistLayer` through backend middleware configuration.
+The event layer's task-locking and result-persistence options are disabled by
+default. Enabling them emits `Lock` and `Complete` events respectively; tasks
+must have IDs even when both options are disabled.
+
+Sending an event only queues it. The driver must continue being polled to apply
+it through the provider. A queued lock event does not establish exclusive task
+ownership. Providers implement the actual storage operations and are responsible
+for atomic task claims, consistency, and durability.
+
+For repeated worker middleware initialization, `Persisted::shared_layer` reuses
+one driver's event channel. Cloning `Persisted` resets its local polling,
+submission, and event-channel state; storage sharing depends on the provider's
+own `Clone` implementation.
 
 ### Workers
 
@@ -95,7 +174,8 @@ async fn main() {
 [`WorkerContext`](src/worker/context.rs) controls pause, resume, and
 shutdown. Lifecycle tracking records attempts and task status. Handler errors
 become worker events; retry-classified errors update status without automatically
-requeuing tasks. Backend exhaustion alone does not stop the worker context.
+requeuing tasks. On backend EOF, the worker drains in-flight work and
+completes backend cleanup before stopping its context and finishing shutdown.
 
 ### Monitors
 

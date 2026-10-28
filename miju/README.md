@@ -4,11 +4,64 @@
 
 <h1 align="center">miju</h1>
 
+<br />
+
+<div align="center">
+  <a href="README.zh-CN.md">简体中文</a>
+</div>
+
+<br />
+
 miju is an application entry point for background task processing. It brings
 task, backend, worker, and monitor APIs into one [`prelude`] and extends
 [`WorkerBuilder`](prelude::WorkerBuilder) with middleware composition methods.
 The underlying types are shared with `miju-core`, so applications and backend
 integrations can exchange tasks without conversion.
+
+## Application facade
+
+```mermaid
+flowchart LR
+    app["Application code<br/>Define handlers and task data<br/>Choose backend, policies<br/>and telemetry configuration"] -->|Unified application entry point| facade
+    subgraph facade["miju · Application facade"]
+        api["Public API · prelude<br/>Task / Backend<br/>Worker / Monitor<br/>Core types and extensions"]
+        policy["Service composition<br/>WorkerBuilderExt<br/>Concurrency / rate limits<br/>Timeouts / retries<br/>Filtering / panic capture<br/>Request, response and error mapping"]
+        observe["Observability integrations · layers<br/>Task tracing / counts and durations<br/>Context propagation<br/>Error and transaction reporting"]
+    end
+    api -->|Re-export with shared type identity| core["miju-core<br/>Task and backend contracts<br/>Worker execution and lifecycle<br/>Monitor coordination"]
+    policy -->|Compose layers in insertion order| middleware["Tower and miju middleware<br/>Layer wraps Service<br/>Layer order defines policy scope"]
+    observe -->|Enable features and configure at runtime| telemetry["Telemetry libraries and systems<br/>tracing / Prometheus<br/>OpenTelemetry / Sentry"]
+    classDef source fill:#eff6ff,stroke:#3b82f6,color:#172554
+    classDef action fill:#ecfdf5,stroke:#10b981,color:#064e3b
+    classDef support fill:#f5f3ff,stroke:#8b5cf6,color:#2e1065
+    class app,core source
+    class api,policy,observe action
+    class middleware,telemetry support
+    style facade fill:#f8fafc,stroke:#94a3b8,color:#0f172a
+```
+
+The arrows show API dependencies and composition, rather than task execution order.
+Execution policies and observability are grouped by responsibility; both integrate
+through service layers.
+
+**Shared core types.** The prelude re-exports selected core APIs with the same
+type identity as `miju-core`. Applications and backend integrations can exchange
+tasks without conversion. Query and management operations still depend on the
+capability traits implemented by the selected backend.
+
+**Ordered service composition.** `WorkerBuilderExt` adds middleware and request,
+response, and error transformations to the core `WorkerBuilder`. Earlier layers
+wrap later layers: requests enter in insertion order, while responses and errors
+return in reverse order. This determines the scope of retries, timeouts, and
+observability. Panic capture applies to unwinding panics; see
+[Panic handling](#panic-handling) for its boundaries.
+
+**Explicit integration setup.** Features make the corresponding APIs available;
+applications attach middleware and configure subscribers, recorders, providers,
+or clients. OpenTelemetry trace propagation also requires `tracing` and the
+setup described under [OpenTelemetry](#opentelemetry). The optional `config`
+feature provides a [configuration-driven construction entry point](#worker-configuration)
+for workers and middleware.
 
 ## Getting started
 
@@ -236,8 +289,10 @@ errors. Put `.retry(...)` before a layer whose errors should be retried. The
 
 `RetryMetadataExt::retries` stores `RetryConfig` on a task. Enable its use with
 `.from_task_config()`. This wrapper compares the configured value against the
-total attempt count, including the first execution, and also applies the inner
-policy's limit. Missing or invalid metadata uses the inner policy unchanged.
+total attempt count, including the first execution and failures before execution,
+and also applies the inner policy's limit. Pre-execution failures consume the
+budget without advancing the task's shared attempt counter. Missing or invalid
+metadata uses the inner policy unchanged.
 
 The default panic handler returns an `AbortError`, which both retry policies
 recognize even when boxed. Use `.retry_if(...)` to exclude custom panic errors
@@ -346,7 +401,11 @@ Rust 1.89 because it enables UUID task-ID conversion. The application configures
 its Sentry SDK client, transport, sampling, and shutdown; the feature alone does
 not enable a client.
 
-Transactions start on the first poll and finish when the task Future completes.
+Transactions start on the first poll and finish when the task Future completes
+or a started Future is dropped. Dropping a started Future restores the previous
+span on its original hub; an unset transaction status becomes `Cancelled`, while
+an explicitly set status is preserved. Dropping an unpolled Future starts no
+transaction.
 The layer uses the current hub, so provide a separate hub for each task to
 isolate scope changes. Cancellation and custom transaction statuses affect
 reporting. The `miju::layers::sentry` module documents these boundaries and the

@@ -4,6 +4,14 @@
 
 <h1 align="center">miju-workflow</h1>
 
+<br />
+
+<div align="center">
+  <a href="README.zh-CN.md">简体中文</a>
+</div>
+
+<br />
+
 Build typed sequences and dependency graphs of tasks for miju workers. Ordinary
 nonterminal steps encode their outputs and enqueue tasks for the next step;
 collection steps filter and map elements or reduce them into an accumulator.
@@ -42,6 +50,39 @@ backend's `Clone` implementation. The context types carry state only;
 to their steps.
 
 ## Sequential execution
+
+This diagram follows ordinary `and_then` steps with valid step metadata.
+Each continuation is a new queued task, rather than a direct call to the next
+handler in the same invocation.
+
+```mermaid
+flowchart LR
+    queued["Queued step task<br/>Encoded input · step metadata"] -->|Worker fetches task| dispatch["Sequential workflow service<br/>Dispatch by step_index"]
+    dispatch --> step["Current and_then step<br/>Decode input → call handler"]
+    step -->|Success with a next step| next["Build continuation task<br/>Encode output · generate TaskId<br/>Set step_index + 1"]
+    next -->|Submit to backend| queued
+    next -.->|Submission and response conversion succeed| result["GoTo::Next(StepResponse)<br/>Step result · continuation ID"]
+    step -->|Success with no next step| done["GoTo::Done<br/>End this sequential path<br/>Response omits final step output"]
+    step -.->|Decode or handler error| error["Return error<br/>No continuation from this call"]
+    classDef source fill:#eff6ff,stroke:#3b82f6,color:#172554
+    classDef action fill:#ecfdf5,stroke:#10b981,color:#064e3b
+    classDef outcome fill:#f5f3ff,stroke:#8b5cf6,color:#2e1065
+    class queued source
+    class dispatch,step,next action
+    class done,error,result outcome
+```
+
+The service dispatches by `step_index`. When another step exists, it encodes
+the current output, generates a fresh task ID, and submits a task with the next
+index. `StepResponse` reports this invocation's result and continuation ID;
+it does not mean the next step has finished. The last ordinary step returns
+`GoTo::Done` without retaining its output in that response.
+
+Submission and response conversion are not atomic: conversion can fail after
+the continuation has been submitted. Retrying that invocation can enqueue
+another continuation. Decoding or handler errors do not schedule a next step
+from the failing call. Delay, collection, and other routing operations are
+covered in their own sections below.
 
 This example runs in memory and waits for the entry task's stored result:
 
@@ -149,9 +190,9 @@ Empty inputs and all-filtered collections currently stop at the collector with
 `GoTo::Break([])`; subsequent steps do not run. The entry task returns `GoTo::Done`
 after enqueueing, so waiting for its ID alone does not observe collection
 completion. Fan-out is not transactional: an enqueue failure can leave already
-created element tasks without a collector. Invalid element payloads can panic
-during decoding. Result-stream errors propagate, while malformed collected
-values or unexpected transitions are skipped.
+created element tasks without a collector. Invalid element payloads return decoding errors.
+Result-stream errors, child-result errors, and malformed collected values propagate;
+collected transitions other than `GoTo::Break` are skipped.
 
 ## Fold collections
 
@@ -371,6 +412,41 @@ newlines when relying on DOT output. `RootGraphService::get_node_by_name_mut`
 also selects the most recently registered node when names repeat.
 
 ## Graph execution
+
+The diagram follows a simple diamond, `A → B, C → D`, with valid dependency
+mappings, predecessor indices `B = 1` and `C = 2`, and backend result storage.
+Arrows into a node represent queued tasks; a call targeting a join does not
+necessarily execute its handler.
+
+```mermaid
+flowchart LR
+    a["A · execute entry node<br/>Assign IDs and enqueue B and C<br/>Return FanOut"] -->|Branch task B| b["B · predecessor index 1<br/>Execute and enqueue a task for D<br/>Return EnqueuedNext"]
+    a -->|Branch task C| c["C · predecessor index 2<br/>Execute and enqueue a task for D<br/>Return EnqueuedNext"]
+    b -->|D call: prev_node = B| skip["Non-designated join call<br/>Return WaitingForDependencies<br/>Skip D · no automatic requeue"]
+    c -->|D call: prev_node = C| join["Designated join call<br/>C has the largest predecessor index<br/>Use recorded dependency IDs<br/>Wait for successful results"]
+    b -.->|Stored by backend integration| results[("Task results for B and C<br/>WaitForCompletion")]
+    c -.->|Stored by backend integration| results
+    results -.->|Done · successful result · valid response type| join
+    join -->|Combine values in incoming-edge insertion order| d["Call the handler for D<br/>D is a terminal node<br/>Return Complete"]
+    classDef source fill:#eff6ff,stroke:#3b82f6,color:#172554
+    classDef action fill:#ecfdf5,stroke:#10b981,color:#064e3b
+    classDef outcome fill:#f5f3ff,stroke:#8b5cf6,color:#2e1065
+    class a,results source
+    class b,c,join,d action
+    class skip outcome
+```
+
+A returns `FanOut` after submitting B and C. Each branch submits its own
+continuation targeting D and returns `EnqueuedNext`. The predecessor with the
+largest node index determines the designated join call, regardless of which
+branch finishes first. The non-designated call returns
+`WaitingForDependencies` without executing D or automatically requeuing itself.
+
+The designated call uses recorded dependency IDs to obtain successful stored
+results with `Done` status and a supported response type. It supplies their
+values to D in incoming-edge insertion order. D's `Complete` response describes
+that terminal node; it is not a general guarantee that an entire graph has
+finished. The result requirements and execution limits below also apply.
 
 Passing a `GraphFlow` to `WorkerBuilder::build` converts it through
 `IntoWorkerService` into a `graph::RootGraphService`. Conversion validates cycles
