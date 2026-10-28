@@ -61,11 +61,18 @@ impl<S> Layer<S> for CircuitBreakerLayer {
     }
 }
 
+#[derive(Debug, Default)]
+struct SharedState {
+    stats: CircuitBreakerStats,
+    // Exhausted probe batches cool down without altering real failure history.
+    exhausted_since: Option<Instant>,
+}
+
 #[derive(Debug)]
 pub struct CircuitBreakerService<S> {
     inner: S,
     config: CircuitBreakerConfig,
-    stats: Arc<RwLock<CircuitBreakerStats>>,
+    stats: Arc<RwLock<SharedState>>,
     recovery_delay: Option<Delay>,
 }
 
@@ -91,20 +98,25 @@ impl<S> CircuitBreakerService<S> {
         Self {
             inner: service,
             config,
-            stats: Arc::new(RwLock::new(CircuitBreakerStats::default())),
+            stats: Arc::new(RwLock::new(SharedState::default())),
             recovery_delay: None,
         }
     }
 
     pub fn get_stats(&self) -> CircuitBreakerStats {
         let res = self.stats.try_read().unwrap();
-        res.clone()
+        res.stats.clone()
     }
 
     fn should_allow_request(&self) -> bool {
-        let Ok(mut stats) = self.stats.write() else {
+        let Ok(mut shared) = self.stats.write() else {
             return false; // If poisoned, reject request
         };
+
+        let SharedState {
+            stats,
+            exhausted_since,
+        } = &mut *shared;
 
         match stats.state {
             CircuitState::Closed => true,
@@ -112,6 +124,7 @@ impl<S> CircuitBreakerService<S> {
                 if let Some(last_failure) = stats.last_failure_time {
                     if last_failure.elapsed() >= self.config.recovery_timeout {
                         stats.state = CircuitState::HalfOpen;
+                        *exhausted_since = None;
                         stats.half_open_calls = 0;
                         true
                     } else {
@@ -125,6 +138,12 @@ impl<S> CircuitBreakerService<S> {
                 if stats.half_open_calls < self.config.half_open_max_calls {
                     stats.half_open_calls += 1;
                     true
+                } else if exhausted_since.get_or_insert_with(Instant::now).elapsed()
+                    >= self.config.recovery_timeout
+                {
+                    stats.half_open_calls = 0;
+                    *exhausted_since = None;
+                    true
                 } else {
                     false
                 }
@@ -134,9 +153,13 @@ impl<S> CircuitBreakerService<S> {
 
     /// Record a successful request
     pub fn record_success(&self) {
-        let Ok(mut stats) = self.stats.write() else {
+        let Ok(mut shared) = self.stats.write() else {
             return; // If poisoned, skip recording
         };
+        let SharedState {
+            stats,
+            exhausted_since,
+        } = &mut *shared;
         stats.success_count += 1;
 
         if stats.state == CircuitState::HalfOpen {
@@ -144,6 +167,7 @@ impl<S> CircuitBreakerService<S> {
             let success_rate = stats.success_count as f32 / total_calls as f32;
 
             if success_rate >= self.config.success_threshold {
+                *exhausted_since = None;
                 stats.state = CircuitState::Closed;
                 stats.failure_count = 0;
                 stats.success_count = 0;
@@ -154,10 +178,15 @@ impl<S> CircuitBreakerService<S> {
 
     /// Record a failure and potentially open the circuit
     pub fn record_failure(&self) {
-        let Ok(mut stats) = self.stats.write() else {
+        let Ok(mut shared) = self.stats.write() else {
             return; // If poisoned, skip recording
         };
 
+        let SharedState {
+            stats,
+            exhausted_since,
+        } = &mut *shared;
+        *exhausted_since = None;
         stats.failure_count += 1;
         stats.last_failure_time = Some(Instant::now());
 
@@ -176,38 +205,43 @@ impl<S> CircuitBreakerService<S> {
     }
 
     fn can_make_request(&mut self, cx: &mut Context<'_>) -> bool {
-        let Ok(stats) = self.stats.read() else {
+        let Ok(mut shared) = self.stats.write() else {
             return false; // If poisoned, reject request
         };
-
-        match stats.state {
-            CircuitState::Closed => true,
-            CircuitState::Open => {
-                if let Some(last_failure) = stats.last_failure_time {
-                    let elapsed = last_failure.elapsed();
-                    if elapsed >= self.config.recovery_timeout {
-                        true
-                    } else {
-                        let remaining = self.config.recovery_timeout - elapsed;
-                        // Registering a waker can reenter the service through user callbacks.
-                        drop(stats);
-                        if let Some(delay) = &mut self.recovery_delay {
-                            delay.reset(remaining);
-                        }
-                        let delay = self
-                            .recovery_delay
-                            .get_or_insert_with(|| Delay::new(remaining));
-                        if Pin::new(delay).poll(cx).is_ready() {
-                            cx.waker().wake_by_ref();
-                        }
-                        false
-                    }
-                } else {
-                    false
+        let SharedState {
+            stats,
+            exhausted_since,
+        } = &mut *shared;
+        let since = match stats.state {
+            CircuitState::Closed => return true,
+            CircuitState::Open => stats.last_failure_time,
+            CircuitState::HalfOpen => {
+                if stats.half_open_calls < self.config.half_open_max_calls {
+                    return true;
                 }
+                Some(*exhausted_since.get_or_insert_with(Instant::now))
             }
-            CircuitState::HalfOpen => stats.half_open_calls < self.config.half_open_max_calls,
+        };
+        let Some(since) = since else {
+            return false;
+        };
+        let elapsed = since.elapsed();
+        if elapsed >= self.config.recovery_timeout {
+            return true;
         }
+        let remaining = self.config.recovery_timeout - elapsed;
+        // Registering a waker can reenter the service through user callbacks.
+        drop(shared);
+        if let Some(delay) = &mut self.recovery_delay {
+            delay.reset(remaining);
+        }
+        let delay = self
+            .recovery_delay
+            .get_or_insert_with(|| Delay::new(remaining));
+        if Pin::new(delay).poll(cx).is_ready() {
+            cx.waker().wake_by_ref();
+        }
+        false
     }
 }
 
@@ -265,13 +299,18 @@ where
             match future.await {
                 Ok(response) => {
                     // Record success
-                    if let Ok(mut s) = stats.write() {
+                    if let Ok(mut shared) = stats.write() {
+                        let SharedState {
+                            stats: s,
+                            exhausted_since,
+                        } = &mut *shared;
                         s.success_count += 1;
                         if s.state == CircuitState::HalfOpen {
                             let total_calls = s.success_count + s.failure_count;
                             let success_rate = s.success_count as f32 / total_calls as f32;
 
                             if success_rate >= success_threshold {
+                                *exhausted_since = None;
                                 s.state = CircuitState::Closed;
                                 s.failure_count = 0;
                                 s.success_count = 0;
@@ -283,7 +322,12 @@ where
                 }
                 Err(e) => {
                     // Record failure
-                    if let Ok(mut s) = stats.write() {
+                    if let Ok(mut shared) = stats.write() {
+                        let SharedState {
+                            stats: s,
+                            exhausted_since,
+                        } = &mut *shared;
+                        *exhausted_since = None;
                         s.failure_count += 1;
                         s.last_failure_time = Some(Instant::now());
 
