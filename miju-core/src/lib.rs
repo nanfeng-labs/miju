@@ -56,11 +56,46 @@
 //! strategies, `tracing` for span instrumentation, and `shared` for cloneable
 //! backend handles.
 //!
+//! ### Backend capabilities
+//!
+//! `Backend` defines the consumption contract: readiness, task delivery, and
+//! shutdown cleanup. Workers poll that contract and drive in-flight execution.
+//! The additional interfaces below are representative capabilities, not a
+//! requirement that every backend provide every operation.
+//!
+//! - **Submission and management.** `TaskSink` submits tasks and drives submission
+//!   buffers; `Update` and `Reschedule` manage existing tasks. These interfaces
+//!   alone do not establish durable storage guarantees.
+//! - **Task and result queries.** `FetchById` retrieves a task by ID.
+//!   `WaitForCompletion` streams execution results or checks their current status;
+//!   it does not execute tasks or store results itself.
+//! - **Acknowledgement.** An optional `AcknowledgeLayer` wraps a service and passes
+//!   its outcome and execution context to `Acknowledge::ack`. The acknowledger and
+//!   storage integration determine whether and how results are recorded. Adding
+//!   this layer does not automatically provide result-query capabilities.
+//!
+//! ### Persistence integration
+//!
 //! With `sleep`, `backend::persistence` provides the `Persistence` provider
-//! contract and the `Persisted` driver for registration, heartbeats, task
-//! batches, and lifecycle events. Storage integrations bridge that driver to
-//! `Backend` and configure its event layer; the driver itself is not a backend
-//! implementation. Providers supply storage operations and atomic task claims.
+//! contract and the `Persisted<P>` driver. The driver coordinates registration,
+//! heartbeats, task batches, event processing, and shutdown cleanup; it does not
+//! implement `Backend` itself.
+//!
+//! Storage integrations implement `Backend`, delegate polling to the driver,
+//! and attach its `TaskPersistLayer` through backend middleware configuration.
+//! The event layer's task-locking and result-persistence options are disabled by
+//! default. Enabling them emits `Lock` and `Complete` events respectively; tasks
+//! must have IDs even when both options are disabled.
+//!
+//! Sending an event only queues it. The driver must continue being polled to apply
+//! it through the provider. A queued lock event does not establish exclusive task
+//! ownership. Providers implement the actual storage operations and are responsible
+//! for atomic task claims, consistency, and durability.
+//!
+//! For repeated worker middleware initialization, `Persisted::shared_layer` reuses
+//! one driver's event channel. Cloning `Persisted` resets its local polling,
+//! submission, and event-channel state; storage sharing depends on the provider's
+//! own `Clone` implementation.
 //!
 //! ## Workers
 //!
@@ -88,7 +123,8 @@
 //! [`WorkerContext`](worker::context::WorkerContext) controls pause, resume, and
 //! shutdown. Lifecycle tracking records attempts and task status. Handler errors
 //! become worker events; retry-classified errors update status without automatically
-//! requeuing tasks. Backend exhaustion alone does not stop the worker context.
+//! requeuing tasks. On backend EOF, the worker drains in-flight work and
+//! completes backend cleanup before stopping its context and finishing shutdown.
 //!
 //! ## Monitors
 //!
