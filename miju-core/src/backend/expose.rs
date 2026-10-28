@@ -105,7 +105,7 @@ pub struct Filter {
     #[cfg_attr(feature = "serde", serde(default))]
     pub status: Option<Status>,
     #[cfg_attr(feature = "serde", serde(default = "default_page"))]
-    /// Page number for pagination (default is 1)
+    /// Page number for pagination, starting at 1 (default is 1)
     pub page: u32,
     /// Optional page size for pagination (default is 10)
     #[cfg_attr(feature = "serde", serde(default))]
@@ -113,10 +113,13 @@ pub struct Filter {
 }
 
 impl Filter {
-    /// Calculate the offset based on the current page and page size
+    /// Calculate the offset for a page number of at least 1.
+    ///
+    /// The `u64` result represents the full range of positive `u32` page numbers
+    /// and `u32` page sizes.
     #[must_use]
-    pub fn offset(&self) -> u32 {
-        (self.page - 1) * self.page_size.unwrap_or(DEFAULT_PAGE_SIZE)
+    pub fn offset(&self) -> u64 {
+        u64::from(self.page - 1) * u64::from(self.page_size.unwrap_or(DEFAULT_PAGE_SIZE))
     }
 
     /// Get the limit (page size) for the query
