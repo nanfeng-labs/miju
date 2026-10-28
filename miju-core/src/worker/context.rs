@@ -45,7 +45,7 @@
 use std::{
     fmt::{self},
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, RwLock,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     task::{Context, Waker},
@@ -75,7 +75,7 @@ use crate::{
 ///  **Tip**: All fields are wrapped inside [`Arc`] so it should be cheap to clone
 #[derive(Clone)]
 pub struct WorkerContext {
-    pub(crate) name: Arc<String>,
+    pub(crate) name: Arc<RwLock<String>>,
     /// The waker used to wake the worker when tasks complete or shutdown is triggered.
     waker: Arc<Mutex<Option<Waker>>>,
     state: Arc<WorkerState>,
@@ -113,7 +113,7 @@ impl WorkerContext {
     #[must_use]
     pub fn new(name: &str) -> Self {
         Self {
-            name: Arc::new(name.to_owned()),
+            name: Arc::new(RwLock::new(name.to_owned())),
             service: "Unspecified".to_owned().into(),
             waker: Default::default(),
             state: Default::default(),
@@ -128,10 +128,14 @@ impl WorkerContext {
         }
     }
 
-    /// Get the worker id
+    /// Get a snapshot of the current worker name.
+    ///
+    /// A monitor's restart factory may change the name. All cloned contexts
+    /// observe the new name on their next call; previously returned strings stay
+    /// unchanged.
     #[must_use]
-    pub fn name(&self) -> &str {
-        &self.name
+    pub fn name(&self) -> String {
+        self.name.read().unwrap().clone()
     }
 
     /// Start running the worker
