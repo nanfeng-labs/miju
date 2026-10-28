@@ -176,6 +176,7 @@ where
             task_ctx: (),
             record_attempt: Some(attempt),
             task_status: status,
+            finished: false,
         }
     }
 }
@@ -205,6 +206,8 @@ impl Drop for TaskRegistrationGuard<'_> {
 ///
 /// The future updates the task status when processing begins, handles
 /// cancellation, and records the final task status when processing completes.
+/// Dropping it before it returns a result marks the execution as killed and,
+/// with task contexts enabled, cancels its context to release execution waiters.
 #[pin_project::pin_project(PinnedDrop)]
 #[derive(Debug)]
 pub struct LifecycleFuture<Fut> {
@@ -219,6 +222,7 @@ pub struct LifecycleFuture<Fut> {
     worker: WorkerContext,
     record_attempt: Option<Attempt>,
     task_status: AtomicStatus,
+    finished: bool,
 }
 
 /// Errors that can occur during the lifecycle of a task.
@@ -281,6 +285,7 @@ where
         if this.task_ctx.is_cancelled() {
             trace!("task.cancelled");
             this.task_status.store(Status::Killed);
+            *this.finished = true;
             return Poll::Ready(Err(Box::new(AbortError::new(TaskLifecycleError::Exit(
                 this.task_ctx.clone(),
             )))));
@@ -305,9 +310,11 @@ where
                 #[cfg(feature = "task-context")]
                 if let Err(e) = this.task_ctx.complete() {
                     this.task_status.store(Status::Killed);
+                    *this.finished = true;
                     return Poll::Ready(Err(e.into()));
                 }
                 this.task_status.store(new_status);
+                *this.finished = true;
                 Poll::Ready(res)
             }
         }
@@ -318,10 +325,15 @@ where
 impl<Fut> PinnedDrop for LifecycleFuture<Fut> {
     fn drop(self: Pin<&mut Self>) {
         let this = self.project();
-        drop(TaskRegistrationGuard {
+        let _registration = TaskRegistrationGuard {
             worker: Some(this.worker),
             task_ctx: this.task_ctx,
-        });
+        };
+        if !*this.finished {
+            this.task_status.store(Status::Killed);
+            #[cfg(feature = "task-context")]
+            let _ = this.task_ctx.cancel();
+        }
     }
 }
 
@@ -679,16 +691,30 @@ mod tests {
         assert!(future.as_mut().poll(&mut cx).is_pending());
         assert_eq!(task.attempt(), 1);
         assert_eq!(task.status(), Status::Running);
+        #[cfg(feature = "task-context")]
+        let context = worker.get_task("tracked").unwrap();
         drop(future);
         assert_eq!(worker.task_count(), 0);
-        assert_eq!(task.status(), Status::Running);
+        assert_eq!(task.status(), Status::Killed);
+        #[cfg(feature = "task-context")]
+        assert!(context.is_cancelled());
 
-        let unpolled = task.into_builder().attempt(0).build();
+        let unpolled = task
+            .into_builder()
+            .attempt(0)
+            .status(Status::Pending)
+            .build();
         let future = service.call(unpolled.clone());
         assert_eq!(worker.task_count(), 1);
+        assert_eq!(unpolled.status(), Status::Pending);
+        #[cfg(feature = "task-context")]
+        let context = worker.get_task("tracked").unwrap();
         drop(future);
         assert_eq!(worker.task_count(), 0);
         assert_eq!(unpolled.attempt(), 0);
+        assert_eq!(unpolled.status(), Status::Killed);
+        #[cfg(feature = "task-context")]
+        assert!(context.is_cancelled());
     }
 
     #[test]
@@ -717,9 +743,40 @@ mod tests {
             assert_eq!(task.status(), expected);
             assert_eq!(task.attempt(), 1);
             assert_eq!(worker.task_count(), 1);
+            #[cfg(feature = "task-context")]
+            let context = worker.get_task("tracked").unwrap();
             drop(future);
             assert_eq!(worker.task_count(), 0);
+            assert_eq!(task.status(), expected);
+            #[cfg(feature = "task-context")]
+            assert!(context.is_completed());
         }
+    }
+
+    #[test]
+    fn dropping_a_finished_future_preserves_a_later_execution() {
+        let first_worker = WorkerContext::new("first-execution");
+        let next_worker = WorkerContext::new("next-execution");
+        let mut first_service = LifecycleLayer::new(first_worker.clone())
+            .layer(task_fn(|_: u32| ready(Ok::<_, BoxDynError>(()))));
+        let mut next_service = LifecycleLayer::new(next_worker.clone())
+            .layer(task_fn(|_: u32| pending::<Result<(), BoxDynError>>()));
+        let task = task();
+        let mut first = Box::pin(first_service.call(task.clone()));
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(matches!(first.as_mut().poll(&mut cx), Poll::Ready(Ok(()))));
+        let mut next = Box::pin(next_service.call(task.clone()));
+        assert!(next.as_mut().poll(&mut cx).is_pending());
+        assert_eq!(task.status(), Status::Running);
+        drop(first);
+        assert_eq!(first_worker.task_count(), 0);
+        assert_eq!(next_worker.task_count(), 1);
+        assert_eq!(task.status(), Status::Running);
+        #[cfg(feature = "task-context")]
+        assert!(!next_worker.get_task("tracked").unwrap().is_executed());
+        drop(next);
+        assert_eq!(next_worker.task_count(), 0);
+        assert_eq!(task.status(), Status::Killed);
     }
 
     #[cfg(feature = "task-context")]

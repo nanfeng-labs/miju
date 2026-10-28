@@ -17,6 +17,11 @@ use miju_core::task::{
     Task, builder::TaskBuilder, data::Data, from_request::FromRequest, status::Status,
     task_fn::task_fn,
 };
+#[cfg(feature = "test-utils")]
+use miju_core::{
+    backend::memory::MemoryStorage,
+    worker::service::task_fn_validator::{check_fn_1, check_fn_2},
+};
 use tower_layer::Layer;
 use tower_service::Service;
 
@@ -98,6 +103,22 @@ fn extracting_handlers_clone_per_call_and_run_after_data_injection() {
         error.downcast_ref::<std::io::Error>().unwrap().kind(),
         std::io::ErrorKind::PermissionDenied
     );
+}
+
+#[cfg(feature = "test-utils")]
+#[test]
+fn validators_accept_the_extractor_signatures_that_task_fn_executes() {
+    let one = |payload: u32, value: Data<u32>| ready(payload + *value);
+    check_fn_1::<_, MemoryStorage<u32>, u32, Data<u32>>(one);
+    let mut service = task_fn(one);
+    let task = TaskBuilder::new(7).data(5_u32).build();
+    assert_eq!(ready_output(service.call(task)).unwrap(), 12);
+
+    let two = |payload: u32, first: Data<u32>, second: Data<u32>| ready(payload + *first + *second);
+    check_fn_2::<_, MemoryStorage<u32>, u32, Data<u32>, Data<u32>>(two);
+    let mut service = task_fn(two);
+    let task = TaskBuilder::new(7).data(5_u32).build();
+    assert_eq!(ready_output(service.call(task)).unwrap(), 17);
 }
 
 struct Trace {

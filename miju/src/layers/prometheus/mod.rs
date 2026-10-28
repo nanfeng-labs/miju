@@ -138,7 +138,7 @@ where
         let worker = request
             .data()
             .get::<WorkerContext>()
-            .map(|w| w.name().to_owned())
+            .map(|w| w.name())
             .expect("worker context not found in task data");
 
         let req = self.service.call(request);
