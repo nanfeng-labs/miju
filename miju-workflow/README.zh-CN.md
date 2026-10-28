@@ -425,7 +425,7 @@ assert_eq!(value, json!(9));
 
 适配器委托就绪检查，并保留任务的执行上下文。输入解码错误会跳过处理器。处理器错误、输出编码错误和 JSON 序列化错误都会返回；序列化失败时不会回滚处理器副作用。缺少 codec 数据会在返回 Future 前 panic，汇合输入也不例外。
 
-单个输入使用 `graph::decode::GraphCodec`。标量、Option 和 Result 通过后端 codec 处理。具有二至十二个元素的元组使用分别编码元素的列表；解码后长度错误会 panic。向量和单元素元组的编码与解码不对称，例如字节 JSON 无法通过此 trait 对非空 `Vec<u32>` 或 `(u32,)` 完成往返转换。节点输出使用普通 codec 编码，可能与图元组布局不同。
+单个输入使用 `graph::decode::GraphCodec`。标量、Option 和 Result 通过后端 codec 处理。具有二至十二个元素的元组使用分别编码元素的列表；解码后长度错误返回 `GraphFlowError::InputCountMismatch`，codec 错误包装为 `GraphFlowError::Codec` 并保留原始错误来源。向量和单元素元组的编码与解码不对称，例如字节 JSON 无法通过此 trait 对非空 `Vec<u32>` 或 `(u32,)` 完成往返转换。节点输出使用普通 codec 编码，可能与图元组布局不同。
 
 汇合输入绕过 `GraphCodec::decode`：其 JSON 值作为数组反序列化为处理器输入。这会保留提供的顺序，但不会获取结果、检查就绪状态或推断每个位置应属于哪个依赖。`RootGraphService` 在调用适配器前执行依赖查询。
 

@@ -182,7 +182,8 @@ where
         CodecError: Into<BoxDynError> + Send + 'static,
         S::Error: Into<BoxDynError>,
         B: BackendConfig + Send + Sync + 'static,
-        Input: GraphCodec<B, Error = CodecError> + Send + Sync + 'static + DeserializeOwned,
+        Input: GraphCodec<B> + Send + Sync + 'static + DeserializeOwned,
+        <Input as GraphCodec<B>>::Error: Into<BoxDynError>,
         S::Response: Serialize,
     {
         let svc: GraphNodeService<S, B, Input> = GraphNodeService::new(service);
@@ -222,7 +223,8 @@ where
         CodecError: Into<BoxDynError> + Send + 'static,
         Err: Into<BoxDynError>,
         B: BackendConfig + Send + Sync + 'static,
-        Input: GraphCodec<B, Error = CodecError> + Send + Sync + DeserializeOwned + 'static,
+        Input: GraphCodec<B> + Send + Sync + DeserializeOwned + 'static,
+        <Input as GraphCodec<B>>::Error: Into<BoxDynError>,
         O: Serialize,
     {
         self.add_node(std::any::type_name::<F>(), task_fn(task))
@@ -251,7 +253,8 @@ where
         CodecError: Into<BoxDynError> + Send + 'static,
         Err: Into<BoxDynError>,
         B: BackendConfig + Send + Sync + 'static,
-        Input: GraphCodec<B, Error = CodecError> + Send + Sync + 'static + DeserializeOwned,
+        Input: GraphCodec<B> + Send + Sync + 'static + DeserializeOwned,
+        <Input as GraphCodec<B>>::Error: Into<BoxDynError>,
     {
         self.add_node::<TaskFn<F, Input, FnArgs>, Input, CodecError>(
             std::any::type_name::<F>(),
