@@ -80,7 +80,14 @@
 //!
 //! These policies require a [`WorkerContext`] in the task's data and read the
 //! task's shared attempt counter. A worker advances that counter on each execution;
-//! the policy itself does not increment it. Requests must have cloneable arguments.
+//! the policy itself does not increment it. Failures before execution also consume
+//! the retry budget without changing that counter. This accounting follows the
+//! retained retry request and resets when a dispatched task is submitted again.
+//! Each policy owns its pending retry decisions; cloned policies consume their
+//! copies independently. When driving [`Policy`] directly, call
+//! [`Policy::clone_request`] before dispatching each attempt and retain its returned
+//! request for the retry decision.
+//! Requests must have cloneable arguments.
 //! Backoff timers may require a runtime; Tower's exponential backoff uses Tokio.
 //!
 //! [`RetryPolicy::retries`] allows retries after the first execution. The
@@ -110,6 +117,7 @@ use miju_core::worker::context::WorkerContext;
 use std::any::Any;
 use std::fmt::Debug;
 use std::num::ParseIntError;
+use std::sync::{Arc, Weak};
 use tower::retry::backoff::Backoff;
 
 /// Re-exports from [`tower::retry`]
@@ -117,18 +125,96 @@ pub use tower::retry::*;
 /// Re-exports from [`tower::util`]
 pub use tower::util::rng::HasherRng;
 
+// Snapshots follow retained requests; approval belongs to the policy that issued it.
+#[derive(Clone, Debug)]
+struct RetryAttempts {
+    before_call: usize,
+    rejected: Option<usize>,
+}
+
+impl RetryAttempts {
+    fn rejected(&self, attempt: usize) -> Option<usize> {
+        self.rejected?
+            .checked_add(usize::from(self.before_call == attempt))
+    }
+
+    fn failed<T>(req: &Task<T>) -> Option<usize> {
+        let rejected = match req.data().get::<Arc<Self>>() {
+            Some(attempts) => attempts.rejected(req.attempt())?,
+            None => 0,
+        };
+        req.attempt().checked_add(rejected)
+    }
+
+    fn take_retry<T>(pending: &mut Vec<Weak<Self>>, req: &Task<T>) -> bool {
+        let previous = req.data().get::<Arc<Self>>();
+        let mut retrying = false;
+        pending.retain(|entry| {
+            if previous.is_some_and(|old| entry.as_ptr() == Arc::as_ptr(old)) {
+                retrying = true;
+                false
+            } else {
+                entry.strong_count() != 0
+            }
+        });
+        retrying
+    }
+
+    fn set_retrying<T>(pending: &mut Vec<Weak<Self>>, req: &Task<T>, retrying: bool) {
+        Self::take_retry(pending, req);
+        if retrying {
+            if let Some(attempts) = req.data().get::<Arc<Self>>() {
+                pending.push(Arc::downgrade(attempts));
+            }
+        }
+    }
+
+    fn cancel<T>(req: &mut Task<T>) {
+        if let Some(previous) = req.data().get::<Arc<Self>>() {
+            // Invalidate an inner policy's prior approval without changing aliases.
+            req.inject_data(Arc::new((**previous).clone()));
+        }
+    }
+
+    fn clone_request<T>(req: &Task<T>, mut cloned: Task<T>, retrying: bool) -> Task<T> {
+        let previous = req.data().get::<Arc<Self>>();
+        if let Some(prepared) = cloned.data().get::<Arc<Self>>() {
+            if previous.is_none_or(|old| !Arc::ptr_eq(old, prepared))
+                && (!retrying || RetryConfig::extract(req.metadata()).is_err())
+            {
+                // An active metadata cap must retain its own budget.
+                return cloned;
+            }
+        }
+        let rejected = match previous.filter(|_| retrying) {
+            Some(old) => old.rejected(req.attempt()),
+            None => Some(0),
+        };
+        cloned.inject_data(Arc::new(Self {
+            before_call: cloned.attempt(),
+            rejected,
+        }));
+        cloned
+    }
+}
+
 /// Retries a task with backoff
 #[derive(Clone, Debug)]
 pub struct BackoffRetryPolicy<B> {
     retries: usize,
     backoff: B,
+    retrying: Vec<Weak<RetryAttempts>>,
 }
 
 impl<B> BackoffRetryPolicy<B> {
     /// Build a new retry policy with backoff
     #[must_use]
     pub fn new(retries: usize, backoff: B) -> Self {
-        Self { retries, backoff }
+        Self {
+            retries,
+            backoff,
+            retrying: Vec::new(),
+        }
     }
 
     /// Retry the task if the predicate returns true
@@ -158,6 +244,7 @@ where
     type Future = B::Future;
 
     fn retry(&mut self, req: &mut Task<T>, result: &mut Result<Res, Err>) -> Option<Self::Future> {
+        RetryAttempts::set_retrying(&mut self.retrying, req, false);
         let status = req.status();
         let worker = req.data().get::<WorkerContext>()?;
         if worker.is_shutting_down() {
@@ -181,14 +268,19 @@ where
                 None
             }
 
-            Err(_) if self.retries >= req.attempt() => Some(self.backoff.next_backoff()),
-            Err(_) => None,
+            Err(_) => {
+                let attempt = RetryAttempts::failed(req)?;
+                (self.retries >= attempt).then(|| {
+                    RetryAttempts::set_retrying(&mut self.retrying, req, true);
+                    self.backoff.next_backoff()
+                })
+            }
         }
     }
 
     fn clone_request(&mut self, req: &Task<T>) -> Option<Task<T>> {
-        let req = req.clone();
-        Some(req)
+        let retrying = RetryAttempts::take_retry(&mut self.retrying, req);
+        Some(RetryAttempts::clone_request(req, req.clone(), retrying))
     }
 }
 
@@ -196,11 +288,12 @@ where
 #[derive(Clone, Debug)]
 pub struct RetryPolicy {
     retries: usize,
+    retrying: Vec<Weak<RetryAttempts>>,
 }
 
 impl Default for RetryPolicy {
     fn default() -> Self {
-        Self { retries: 5 }
+        Self::retries(5)
     }
 }
 
@@ -208,7 +301,10 @@ impl RetryPolicy {
     /// Set the number of retries
     #[must_use]
     pub fn retries(retries: usize) -> Self {
-        Self { retries }
+        Self {
+            retries,
+            retrying: Vec::new(),
+        }
     }
 
     /// Include a backoff to the retry policy
@@ -217,6 +313,7 @@ impl RetryPolicy {
         BackoffRetryPolicy {
             retries: self.retries,
             backoff,
+            retrying: self.retrying,
         }
     }
     /// Retry the task if the predicate returns true
@@ -243,6 +340,7 @@ where
     type Future = std::future::Ready<()>;
 
     fn retry(&mut self, req: &mut Task<T>, result: &mut Result<Res, Err>) -> Option<Self::Future> {
+        RetryAttempts::set_retrying(&mut self.retrying, req, false);
         let status = req.status();
         let worker = req.data().get::<WorkerContext>()?;
         if worker.is_shutting_down() {
@@ -264,14 +362,19 @@ where
             {
                 None
             }
-            Err(_) if self.retries >= req.attempt() => Some(std::future::ready(())),
-            Err(_) => None,
+            Err(_) => {
+                let attempt = RetryAttempts::failed(req)?;
+                (self.retries >= attempt).then(|| {
+                    RetryAttempts::set_retrying(&mut self.retrying, req, true);
+                    std::future::ready(())
+                })
+            }
         }
     }
 
     fn clone_request(&mut self, req: &Task<T>) -> Option<Task<T>> {
-        let req = req.clone();
-        Some(req)
+        let retrying = RetryAttempts::take_retry(&mut self.retrying, req);
+        Some(RetryAttempts::clone_request(req, req.clone(), retrying))
     }
 }
 
@@ -306,14 +409,22 @@ where
     type Future = P::Future;
 
     fn retry(&mut self, req: &mut Task<T>, result: &mut Result<Res, Err>) -> Option<Self::Future> {
-        let worker = req.data().get::<WorkerContext>()?;
-        if worker.is_shutting_down() {
+        if req
+            .data()
+            .get::<WorkerContext>()
+            .is_none_or(WorkerContext::is_shutting_down)
+        {
+            RetryAttempts::cancel(req);
             return None;
         }
         match result {
-            Ok(_) => None,
+            Ok(_) => {
+                RetryAttempts::cancel(req);
+                None
+            }
             Err(err) => {
                 if !(self.predicate)(err) {
+                    RetryAttempts::cancel(req);
                     return None;
                 }
                 self.inner.retry(req, result)
@@ -377,13 +488,17 @@ impl Metadata for RetryConfig {
 #[derive(Debug, Clone)]
 pub struct FromTaskConfigPolicy<P> {
     inner: P,
+    retrying: Vec<Weak<RetryAttempts>>,
 }
 
 impl<P> FromTaskConfigPolicy<P> {
     /// Build a policy with metadata configuration
     #[must_use]
     pub fn new(inner: P) -> Self {
-        Self { inner }
+        Self {
+            inner,
+            retrying: Vec::new(),
+        }
     }
 
     /// Retry the task if the predicate returns true
@@ -400,6 +515,7 @@ impl Default for FromTaskConfigPolicy<RetryPolicy> {
     fn default() -> Self {
         Self {
             inner: RetryPolicy::retries(0),
+            retrying: Vec::new(),
         }
     }
 }
@@ -412,27 +528,38 @@ where
     type Future = P::Future;
 
     fn retry(&mut self, req: &mut Task<T>, result: &mut Result<Res, Err>) -> Option<Self::Future> {
-        let worker = req.data().get::<WorkerContext>()?;
-        if worker.is_shutting_down() {
+        RetryAttempts::set_retrying(&mut self.retrying, req, false);
+        if req
+            .data()
+            .get::<WorkerContext>()
+            .is_none_or(WorkerContext::is_shutting_down)
+        {
+            RetryAttempts::cancel(req);
             return None;
         }
         if result.is_ok() {
+            RetryAttempts::cancel(req);
             None
         } else {
-            let attempt = req.attempt();
+            let attempt = RetryAttempts::failed(req);
             // If we have a retry config, we need to respect it
             if let Ok(cfg) = RetryConfig::extract(req.metadata()) {
-                if cfg.retries <= attempt {
+                if attempt.is_none_or(|attempt| cfg.retries <= attempt) {
+                    RetryAttempts::cancel(req);
                     return None;
                 }
             };
 
-            self.inner.retry(req, result)
+            let retry = self.inner.retry(req, result);
+            RetryAttempts::set_retrying(&mut self.retrying, req, retry.is_some());
+            retry
         }
     }
 
     fn clone_request(&mut self, req: &Task<T>) -> Option<Task<T>> {
-        self.inner.clone_request(req)
+        let retrying = RetryAttempts::take_retry(&mut self.retrying, req);
+        let cloned = self.inner.clone_request(req)?;
+        Some(RetryAttempts::clone_request(req, cloned, retrying))
     }
 }
 
