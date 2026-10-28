@@ -9,16 +9,16 @@
 //! to their corresponding [`Status`] values.
 use std::{
     pin::Pin,
-    sync::atomic::Ordering,
+    sync::{Arc, atomic::Ordering},
     task::{Context, Poll},
 };
 
-use futures_util::FutureExt;
+use futures_util::{FutureExt, task::AtomicWaker};
 use tower_layer::Layer;
 use tower_service::Service;
 
 use crate::{
-    error::{AbortError, BoxDynError, DeferredError, RetryAfterError},
+    error::{AbortError, BoxDynError, DeferredError, RetryAfterError, WorkerStateError},
     task::{
         Task,
         attempt::Attempt,
@@ -53,6 +53,7 @@ impl<S> Layer<S> for LifecycleLayer {
         LifecycleService {
             worker: self.worker.clone(),
             service,
+            readiness_waker: None,
         }
     }
 }
@@ -62,10 +63,33 @@ impl<S> Layer<S> for LifecycleLayer {
 /// `LifecycleService` registers tasks with the worker before processing and
 /// wraps the underlying service future in a [`LifecycleFuture`] to track task
 /// state and completion.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct LifecycleService<S> {
     worker: WorkerContext,
     service: S,
+    readiness_waker: Option<Arc<AtomicWaker>>,
+}
+
+impl<S: Clone> Clone for LifecycleService<S> {
+    fn clone(&self) -> Self {
+        Self {
+            worker: self.worker.clone(),
+            service: self.service.clone(),
+            readiness_waker: None,
+        }
+    }
+}
+
+impl<S> Drop for LifecycleService<S> {
+    fn drop(&mut self) {
+        if let Some(waker) = &self.readiness_waker {
+            self.worker
+                .readiness_waiters
+                .lock()
+                .unwrap()
+                .retain(|registered| !Arc::ptr_eq(registered, waker));
+        }
+    }
 }
 
 impl<S, Args> Service<Task<Args>> for LifecycleService<S>
@@ -78,12 +102,36 @@ where
     type Future = LifecycleFuture<S::Future>;
 
     fn poll_ready(&mut self, cx: &mut std::task::Context<'_>) -> Poll<Result<(), Self::Error>> {
+        if let Some(waker) = &self.readiness_waker {
+            waker.take();
+        }
         let result = self.service.poll_ready(cx).map_err(Into::into);
         if let Poll::Ready(Err(error)) = result {
             self.worker.is_ready.store(false, Ordering::SeqCst);
             return Poll::Ready(Err(error));
         }
-        if self.worker.is_shutting_down() || self.worker.is_paused() || result.is_pending() {
+        let mut paused = self.worker.is_paused();
+        if paused || result.is_pending() {
+            let waker = self.readiness_waker.get_or_insert_with(|| {
+                let waker = Arc::new(AtomicWaker::new());
+                self.worker
+                    .readiness_waiters
+                    .lock()
+                    .unwrap()
+                    .push(waker.clone());
+                waker
+            });
+            waker.register(cx.waker());
+            // Register before rechecking state so resume/stop cannot be missed.
+            paused = self.worker.is_paused();
+        }
+        if self.worker.is_shutting_down() {
+            self.worker.is_ready.store(false, Ordering::SeqCst);
+            return Poll::Ready(Err(Box::new(AbortError::new(
+                WorkerStateError::ShuttingDown,
+            ))));
+        }
+        if paused || result.is_pending() {
             self.worker.is_ready.store(false, Ordering::SeqCst);
             return Poll::Pending;
         }
@@ -128,6 +176,7 @@ where
             task_ctx: (),
             record_attempt: Some(attempt),
             task_status: status,
+            finished: false,
         }
     }
 }
@@ -157,6 +206,8 @@ impl Drop for TaskRegistrationGuard<'_> {
 ///
 /// The future updates the task status when processing begins, handles
 /// cancellation, and records the final task status when processing completes.
+/// Dropping it before it returns a result marks the execution as killed and,
+/// with task contexts enabled, cancels its context to release execution waiters.
 #[pin_project::pin_project(PinnedDrop)]
 #[derive(Debug)]
 pub struct LifecycleFuture<Fut> {
@@ -171,6 +222,7 @@ pub struct LifecycleFuture<Fut> {
     worker: WorkerContext,
     record_attempt: Option<Attempt>,
     task_status: AtomicStatus,
+    finished: bool,
 }
 
 /// Errors that can occur during the lifecycle of a task.
@@ -233,6 +285,7 @@ where
         if this.task_ctx.is_cancelled() {
             trace!("task.cancelled");
             this.task_status.store(Status::Killed);
+            *this.finished = true;
             return Poll::Ready(Err(Box::new(AbortError::new(TaskLifecycleError::Exit(
                 this.task_ctx.clone(),
             )))));
@@ -257,9 +310,11 @@ where
                 #[cfg(feature = "task-context")]
                 if let Err(e) = this.task_ctx.complete() {
                     this.task_status.store(Status::Killed);
+                    *this.finished = true;
                     return Poll::Ready(Err(e.into()));
                 }
                 this.task_status.store(new_status);
+                *this.finished = true;
                 Poll::Ready(res)
             }
         }
@@ -270,10 +325,15 @@ where
 impl<Fut> PinnedDrop for LifecycleFuture<Fut> {
     fn drop(self: Pin<&mut Self>) {
         let this = self.project();
-        drop(TaskRegistrationGuard {
+        let _registration = TaskRegistrationGuard {
             worker: Some(this.worker),
             task_ctx: this.task_ctx,
-        });
+        };
+        if !*this.finished {
+            this.task_status.store(Status::Killed);
+            #[cfg(feature = "task-context")]
+            let _ = this.task_ctx.cancel();
+        }
     }
 }
 
@@ -374,6 +434,188 @@ mod tests {
     }
 
     #[test]
+    fn pause_and_resume_preserve_readiness() {
+        let mut worker = WorkerContext::new("pause-readiness");
+        worker.start().unwrap();
+        let mut service = LifecycleLayer::new(worker.clone())
+            .layer(task_fn(|_: u32| ready(Ok::<_, BoxDynError>(()))));
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(matches!(service.poll_ready(&mut cx), Poll::Ready(Ok(()))));
+        assert!(worker.is_ready());
+        worker.pause().unwrap();
+        assert!(service.poll_ready(&mut cx).is_pending());
+        assert!(!worker.is_ready());
+        worker.resume().unwrap();
+        assert!(matches!(service.poll_ready(&mut cx), Poll::Ready(Ok(()))));
+        assert!(worker.is_ready());
+    }
+
+    #[test]
+    fn cloned_readiness_waiters_wake_independently_and_release_on_drop() {
+        let mut worker = WorkerContext::new("cloned-readiness");
+        worker.start().unwrap();
+        worker.pause().unwrap();
+        let parent = Arc::new(CountWake(AtomicUsize::new(0)));
+        let parent_waker = Waker::from(parent.clone());
+        worker.register_waker(&Context::from_waker(&parent_waker));
+        let mut first = LifecycleLayer::new(worker.clone())
+            .layer(task_fn(|_: u32| ready(Ok::<_, BoxDynError>(()))));
+        let first_wake = Arc::new(CountWake(AtomicUsize::new(0)));
+        assert!(
+            first
+                .poll_ready(&mut Context::from_waker(&first_wake.clone().into()))
+                .is_pending()
+        );
+        // Clone after registration: it must not overwrite the first child's waker.
+        let mut second = first.clone();
+        let second_wake = Arc::new(CountWake(AtomicUsize::new(0)));
+        let second_waker = Waker::from(second_wake.clone());
+        assert!(
+            second
+                .poll_ready(&mut Context::from_waker(&second_waker))
+                .is_pending()
+        );
+        worker.resume().unwrap();
+        assert_eq!(first_wake.0.load(Ordering::SeqCst), 1);
+        assert_eq!(second_wake.0.load(Ordering::SeqCst), 1);
+        assert_eq!(parent.0.load(Ordering::SeqCst), 1);
+        worker.pause().unwrap();
+        let dropped = Arc::new(CountWake(AtomicUsize::new(0)));
+        let dropped_weak = Arc::downgrade(&dropped);
+        assert!(
+            first
+                .poll_ready(&mut Context::from_waker(&dropped.into()))
+                .is_pending()
+        );
+        assert!(
+            second
+                .poll_ready(&mut Context::from_waker(&second_waker))
+                .is_pending()
+        );
+        drop(first);
+        assert!(
+            dropped_weak.upgrade().is_none(),
+            "dropped service must release its waiter"
+        );
+        worker.stop().unwrap();
+        assert_eq!(second_wake.0.load(Ordering::SeqCst), 2);
+        assert!(matches!(
+            second.poll_ready(&mut Context::from_waker(&second_waker)),
+            Poll::Ready(Err(_))
+        ));
+    }
+
+    #[test]
+    fn readiness_notifications_do_not_recurse_through_remaining_waiters() {
+        struct ReenterStop {
+            worker: WorkerContext,
+            depth: Arc<AtomicUsize>,
+            maximum: Arc<AtomicUsize>,
+            calls: Arc<AtomicUsize>,
+        }
+        impl Wake for ReenterStop {
+            fn wake(self: Arc<Self>) {
+                let depth = self.depth.fetch_add(1, Ordering::SeqCst) + 1;
+                self.maximum.fetch_max(depth, Ordering::SeqCst);
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                assert!(depth <= 64);
+                self.worker.stop().unwrap();
+                self.depth.fetch_sub(1, Ordering::SeqCst);
+            }
+        }
+
+        let mut worker = WorkerContext::new("reentrant-readiness");
+        worker.start().unwrap();
+        worker.register_waker(&Context::from_waker(Waker::noop()));
+        worker.pause().unwrap();
+        let depth = Arc::new(AtomicUsize::new(0));
+        let maximum = Arc::new(AtomicUsize::new(0));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut services = Vec::new();
+        for _ in 0..64 {
+            let mut service = LifecycleLayer::new(worker.clone())
+                .layer(task_fn(|_: u32| ready(Ok::<_, BoxDynError>(()))));
+            let waker = Waker::from(Arc::new(ReenterStop {
+                worker: worker.clone(),
+                depth: depth.clone(),
+                maximum: maximum.clone(),
+                calls: calls.clone(),
+            }));
+            assert!(
+                service
+                    .poll_ready(&mut Context::from_waker(&waker))
+                    .is_pending()
+            );
+            services.push(service);
+        }
+        worker.stop().unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 64);
+        assert_eq!(maximum.load(Ordering::SeqCst), 1);
+        assert_eq!(depth.load(Ordering::SeqCst), 0);
+        drop(services);
+        assert!(worker.readiness_waiters.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn repolling_readiness_replaces_its_waker() {
+        let mut worker = WorkerContext::new("replace-readiness");
+        worker.start().unwrap();
+        worker.pause().unwrap();
+        let mut service = LifecycleLayer::new(worker.clone())
+            .layer(task_fn(|_: u32| ready(Ok::<_, BoxDynError>(()))));
+        let old = Arc::new(CountWake(AtomicUsize::new(0)));
+        let old_weak = Arc::downgrade(&old);
+        assert!(
+            service
+                .poll_ready(&mut Context::from_waker(&old.into()))
+                .is_pending()
+        );
+        let latest = Arc::new(CountWake(AtomicUsize::new(0)));
+        let waker = Waker::from(latest.clone());
+        for _ in 0..32 {
+            assert!(
+                service
+                    .poll_ready(&mut Context::from_waker(&waker))
+                    .is_pending()
+            );
+        }
+        assert!(old_weak.upgrade().is_none());
+        worker.stop().unwrap();
+        assert_eq!(latest.0.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn shutdown_finishes_readiness_even_when_inner_service_is_pending() {
+        struct NotReady;
+        impl Service<Task<u32>> for NotReady {
+            type Response = ();
+            type Error = BoxDynError;
+            type Future = Ready<Result<(), BoxDynError>>;
+
+            fn poll_ready(&mut self, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+                Poll::Pending
+            }
+
+            fn call(&mut self, _: Task<u32>) -> Self::Future {
+                panic!("a pending service must not receive a task");
+            }
+        }
+
+        let mut worker = WorkerContext::new("pending-at-stop");
+        worker.start().unwrap();
+        let mut service = LifecycleLayer::new(worker.clone()).layer(NotReady);
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(service.poll_ready(&mut cx).is_pending());
+        worker.stop().unwrap();
+        let Poll::Ready(Err(error)) = service.poll_ready(&mut cx) else {
+            panic!("stopped readiness must finish even if the inner service is pending");
+        };
+        assert!(error.is::<AbortError>());
+        assert!(!worker.is_ready());
+        assert_eq!(worker.task_count(), 0);
+    }
+
+    #[test]
     fn synchronous_call_panic_releases_registration_and_wakes_worker() {
         let worker = WorkerContext::new("call-panic");
         let observer = worker.clone();
@@ -449,16 +691,30 @@ mod tests {
         assert!(future.as_mut().poll(&mut cx).is_pending());
         assert_eq!(task.attempt(), 1);
         assert_eq!(task.status(), Status::Running);
+        #[cfg(feature = "task-context")]
+        let context = worker.get_task("tracked").unwrap();
         drop(future);
         assert_eq!(worker.task_count(), 0);
-        assert_eq!(task.status(), Status::Running);
+        assert_eq!(task.status(), Status::Killed);
+        #[cfg(feature = "task-context")]
+        assert!(context.is_cancelled());
 
-        let unpolled = task.into_builder().attempt(0).build();
+        let unpolled = task
+            .into_builder()
+            .attempt(0)
+            .status(Status::Pending)
+            .build();
         let future = service.call(unpolled.clone());
         assert_eq!(worker.task_count(), 1);
+        assert_eq!(unpolled.status(), Status::Pending);
+        #[cfg(feature = "task-context")]
+        let context = worker.get_task("tracked").unwrap();
         drop(future);
         assert_eq!(worker.task_count(), 0);
         assert_eq!(unpolled.attempt(), 0);
+        assert_eq!(unpolled.status(), Status::Killed);
+        #[cfg(feature = "task-context")]
+        assert!(context.is_cancelled());
     }
 
     #[test]
@@ -487,9 +743,40 @@ mod tests {
             assert_eq!(task.status(), expected);
             assert_eq!(task.attempt(), 1);
             assert_eq!(worker.task_count(), 1);
+            #[cfg(feature = "task-context")]
+            let context = worker.get_task("tracked").unwrap();
             drop(future);
             assert_eq!(worker.task_count(), 0);
+            assert_eq!(task.status(), expected);
+            #[cfg(feature = "task-context")]
+            assert!(context.is_completed());
         }
+    }
+
+    #[test]
+    fn dropping_a_finished_future_preserves_a_later_execution() {
+        let first_worker = WorkerContext::new("first-execution");
+        let next_worker = WorkerContext::new("next-execution");
+        let mut first_service = LifecycleLayer::new(first_worker.clone())
+            .layer(task_fn(|_: u32| ready(Ok::<_, BoxDynError>(()))));
+        let mut next_service = LifecycleLayer::new(next_worker.clone())
+            .layer(task_fn(|_: u32| pending::<Result<(), BoxDynError>>()));
+        let task = task();
+        let mut first = Box::pin(first_service.call(task.clone()));
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(matches!(first.as_mut().poll(&mut cx), Poll::Ready(Ok(()))));
+        let mut next = Box::pin(next_service.call(task.clone()));
+        assert!(next.as_mut().poll(&mut cx).is_pending());
+        assert_eq!(task.status(), Status::Running);
+        drop(first);
+        assert_eq!(first_worker.task_count(), 0);
+        assert_eq!(next_worker.task_count(), 1);
+        assert_eq!(task.status(), Status::Running);
+        #[cfg(feature = "task-context")]
+        assert!(!next_worker.get_task("tracked").unwrap().is_executed());
+        drop(next);
+        assert_eq!(next_worker.task_count(), 0);
+        assert_eq!(task.status(), Status::Killed);
     }
 
     #[cfg(feature = "task-context")]
