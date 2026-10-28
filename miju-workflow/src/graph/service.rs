@@ -3,9 +3,10 @@
 //! A [`GraphFlow`] becomes a [`RootGraphService`] through [`IntoWorkerService`].
 //! Requests carry the backend's compact arguments and [`GraphFlowContext`]
 //! metadata. The service injects the codec before invoking a node adapter.
-//! A request without readable context starts a new execution at the sole entry
-//! node. Multiple entries require a codec-encoded list of compact inputs in
-//! ascending entry-node index order.
+//! A request without graph context fields starts a new execution at the sole
+//! entry node. Existing but unreadable graph context returns a metadata error.
+//! Multiple entries require a codec-encoded list of compact inputs in ascending
+//! entry-node index order.
 //!
 //! Fan-in is handled by the predecessor with the greatest node index. It waits
 //! for stored [`GraphNodeResponse`] results and presents their values in incoming
@@ -69,12 +70,14 @@ use crate::graph::response::GraphNodeResponse;
 ///
 /// Missing dependency IDs can produce a waiting response with no rescheduling.
 /// Fan-out records fresh IDs for newly enqueued nodes and retains other mappings.
-/// A single-edge continuation into a join records the current predecessor's task
-/// ID when available. Other single-edge continuations leave mappings unchanged,
-/// and independently extended branches do not merge them. Joins across longer
+/// Each continuation into a join records the current predecessor's task ID when
+/// available. Other continuations retain their existing mapping behavior, and
+/// independently extended branches do not merge them. Joins across longer
 /// branches remain limited.
 /// Progress positions are counters, not a reliable topological cursor, and
 /// completed-node sets are not advanced.
+/// If the next position cannot be represented, the completed node returns a
+/// metadata error without enqueueing successors.
 pub struct RootGraphService<B>
 where
     B: Backend + WireFormatBackend,
@@ -260,7 +263,12 @@ where
 
         async move {
             let current_task_id = req.task_id().cloned();
-            let ctx = req.extract::<Meta<GraphFlowContext>>().await;
+            let ctx = match req.extract::<Meta<GraphFlowContext>>().await {
+                Err(error) if GraphFlowContext::has_metadata(req.metadata()) => {
+                    return Err(error.into());
+                }
+                context => context,
+            };
             let ((compact, response), context) = if let Ok(Meta(context)) = ctx {
                 #[cfg(feature = "tracing")]
                 tracing::debug!(
@@ -495,7 +503,10 @@ where
                     let mut new_context = context.clone();
                     new_context.prev_node = Some(current_node);
                     new_context.current_node = next_node;
-                    new_context.current_position += 1;
+                    new_context.current_position =
+                        new_context.current_position.checked_add(1).ok_or_else(|| {
+                            GraphFlowError::Metadata("Graph progress position overflow".into())
+                        })?;
                     new_context.is_initial = false;
                     if graph
                         .neighbors_directed(next_node, Direction::Incoming)
@@ -523,12 +534,28 @@ where
                     // Multiple outgoing nodes, fan out
                     let mut new_context = context.clone();
                     new_context.prev_node = Some(current_node);
-                    new_context.current_position += 1;
+                    new_context.current_position =
+                        new_context.current_position.checked_add(1).ok_or_else(|| {
+                            GraphFlowError::Metadata("Graph progress position overflow".into())
+                        })?;
                     new_context.is_initial = false;
 
-                    let next_task_ids =
-                        fan_out_next_nodes(&backend, outgoing_nodes, &new_context, &compact)
-                            .await?;
+                    let outgoing_nodes = outgoing_nodes
+                        .into_iter()
+                        .map(|node| {
+                            let is_join =
+                                graph.neighbors_directed(node, Direction::Incoming).count() > 1;
+                            (node, is_join)
+                        })
+                        .collect();
+                    let next_task_ids = fan_out_next_nodes(
+                        &backend,
+                        outgoing_nodes,
+                        &new_context,
+                        current_task_id.as_ref(),
+                        &compact,
+                    )
+                    .await?;
                     return Ok(GraphNodeResponse::FanOut {
                         response,
                         node_task_ids: next_task_ids,
@@ -543,8 +570,9 @@ where
 
 async fn fan_out_next_nodes<B, Err, CdcErr>(
     backend: &B,
-    outgoing_nodes: Vec<NodeIndex>,
+    outgoing_nodes: Vec<(NodeIndex, bool)>,
     context: &GraphFlowContext,
+    current_task_id: Option<&TaskId>,
     input: &B::Compact,
 ) -> Result<HashMap<NodeIndex, TaskId>, GraphFlowError>
 where
@@ -558,26 +586,36 @@ where
     B::Id: FromStr + Display,
     <B::Id as FromStr>::Err: std::error::Error + Send + Sync + 'static,
 {
+    let current_position = context
+        .current_position
+        .checked_add(1)
+        .ok_or_else(|| GraphFlowError::Metadata("Graph progress position overflow".into()))?;
     let mut enqueue_futures = vec![];
     let next_nodes = outgoing_nodes
         .iter()
-        .map(|node| (*node, B::Id::generate()))
+        .map(|(node, _)| (*node, B::Id::generate()))
         .collect::<HashMap<NodeIndex, TaskId>>();
     let mut node_task_ids = context.node_task_ids.clone();
     node_task_ids.extend(next_nodes.clone());
-    for outgoing_node in outgoing_nodes.into_iter() {
+    for (outgoing_node, is_join) in outgoing_nodes.into_iter() {
         let task_id = next_nodes
             .get(&outgoing_node)
             .ok_or(GraphFlowError::Service(GraphServiceError::MissingNextNode))?
             .clone();
+        let mut child_node_task_ids = node_task_ids.clone();
+        if is_join {
+            if let Some(current_task_id) = current_task_id {
+                child_node_task_ids.insert(context.current_node, current_task_id.clone());
+            }
+        }
         let task = TaskBuilder::new(input.clone())
             .task_id(task_id)
             .metadata(&GraphFlowContext {
                 prev_node: context.prev_node,
                 current_node: outgoing_node,
                 completed_nodes: context.completed_nodes.clone(),
-                node_task_ids: node_task_ids.clone(),
-                current_position: context.current_position + 1,
+                node_task_ids: child_node_task_ids,
+                current_position,
                 is_initial: context.is_initial,
                 root_task_id: context.root_task_id.clone(),
             })

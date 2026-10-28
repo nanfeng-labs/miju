@@ -210,7 +210,7 @@ impl Future for MonitoredWorker {
         loop {
             let mut this = self.as_mut().project();
             let worker = this.worker;
-            let _name = worker.name().to_owned();
+            let _name = worker.name();
             debug!(name = ?_name, "polling worker");
 
             // There is no future to poll.
@@ -432,11 +432,9 @@ impl Monitor {
             factory: Box::new(move |worker| {
                 let mut new_worker = factory(worker.restarts());
 
-                // Replace current worker name with new name
-                if worker.name().ne(new_worker.context.name()) {
-                    let name = Arc::make_mut(&mut worker.name);
-                    *name = new_worker.context.name().to_owned();
-                }
+                // Publish the factory's name to every retained context before restarting.
+                let name = new_worker.context.name();
+                *worker.name.write().unwrap() = name;
 
                 // Reuse the current context
                 new_worker.context = worker.clone();
