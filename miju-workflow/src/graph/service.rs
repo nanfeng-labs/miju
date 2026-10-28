@@ -70,9 +70,9 @@ use crate::graph::response::GraphNodeResponse;
 ///
 /// Missing dependency IDs can produce a waiting response with no rescheduling.
 /// Fan-out records fresh IDs for newly enqueued nodes and retains other mappings.
-/// A single-edge continuation into a join records the current predecessor's task
-/// ID when available. Other single-edge continuations leave mappings unchanged,
-/// and independently extended branches do not merge them. Joins across longer
+/// Each continuation into a join records the current predecessor's task ID when
+/// available. Other continuations retain their existing mapping behavior, and
+/// independently extended branches do not merge them. Joins across longer
 /// branches remain limited.
 /// Progress positions are counters, not a reliable topological cursor, and
 /// completed-node sets are not advanced.
@@ -532,9 +532,22 @@ where
                     new_context.current_position += 1;
                     new_context.is_initial = false;
 
-                    let next_task_ids =
-                        fan_out_next_nodes(&backend, outgoing_nodes, &new_context, &compact)
-                            .await?;
+                    let outgoing_nodes = outgoing_nodes
+                        .into_iter()
+                        .map(|node| {
+                            let is_join =
+                                graph.neighbors_directed(node, Direction::Incoming).count() > 1;
+                            (node, is_join)
+                        })
+                        .collect();
+                    let next_task_ids = fan_out_next_nodes(
+                        &backend,
+                        outgoing_nodes,
+                        &new_context,
+                        current_task_id.as_ref(),
+                        &compact,
+                    )
+                    .await?;
                     return Ok(GraphNodeResponse::FanOut {
                         response,
                         node_task_ids: next_task_ids,
@@ -549,8 +562,9 @@ where
 
 async fn fan_out_next_nodes<B, Err, CdcErr>(
     backend: &B,
-    outgoing_nodes: Vec<NodeIndex>,
+    outgoing_nodes: Vec<(NodeIndex, bool)>,
     context: &GraphFlowContext,
+    current_task_id: Option<&TaskId>,
     input: &B::Compact,
 ) -> Result<HashMap<NodeIndex, TaskId>, GraphFlowError>
 where
@@ -567,22 +581,28 @@ where
     let mut enqueue_futures = vec![];
     let next_nodes = outgoing_nodes
         .iter()
-        .map(|node| (*node, B::Id::generate()))
+        .map(|(node, _)| (*node, B::Id::generate()))
         .collect::<HashMap<NodeIndex, TaskId>>();
     let mut node_task_ids = context.node_task_ids.clone();
     node_task_ids.extend(next_nodes.clone());
-    for outgoing_node in outgoing_nodes.into_iter() {
+    for (outgoing_node, is_join) in outgoing_nodes.into_iter() {
         let task_id = next_nodes
             .get(&outgoing_node)
             .ok_or(GraphFlowError::Service(GraphServiceError::MissingNextNode))?
             .clone();
+        let mut child_node_task_ids = node_task_ids.clone();
+        if is_join {
+            if let Some(current_task_id) = current_task_id {
+                child_node_task_ids.insert(context.current_node, current_task_id.clone());
+            }
+        }
         let task = TaskBuilder::new(input.clone())
             .task_id(task_id)
             .metadata(&GraphFlowContext {
                 prev_node: context.prev_node,
                 current_node: outgoing_node,
                 completed_nodes: context.completed_nodes.clone(),
-                node_task_ids: node_task_ids.clone(),
+                node_task_ids: child_node_task_ids,
                 current_position: context.current_position + 1,
                 is_initial: context.is_initial,
                 root_task_id: context.root_task_id.clone(),
