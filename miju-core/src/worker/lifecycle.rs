@@ -494,6 +494,57 @@ mod tests {
     }
 
     #[test]
+    fn readiness_notifications_do_not_recurse_through_remaining_waiters() {
+        struct ReenterStop {
+            worker: WorkerContext,
+            depth: Arc<AtomicUsize>,
+            maximum: Arc<AtomicUsize>,
+            calls: Arc<AtomicUsize>,
+        }
+        impl Wake for ReenterStop {
+            fn wake(self: Arc<Self>) {
+                let depth = self.depth.fetch_add(1, Ordering::SeqCst) + 1;
+                self.maximum.fetch_max(depth, Ordering::SeqCst);
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                assert!(depth <= 64);
+                self.worker.stop().unwrap();
+                self.depth.fetch_sub(1, Ordering::SeqCst);
+            }
+        }
+
+        let mut worker = WorkerContext::new("reentrant-readiness");
+        worker.start().unwrap();
+        worker.register_waker(&Context::from_waker(Waker::noop()));
+        worker.pause().unwrap();
+        let depth = Arc::new(AtomicUsize::new(0));
+        let maximum = Arc::new(AtomicUsize::new(0));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut services = Vec::new();
+        for _ in 0..64 {
+            let mut service = LifecycleLayer::new(worker.clone())
+                .layer(task_fn(|_: u32| ready(Ok::<_, BoxDynError>(()))));
+            let waker = Waker::from(Arc::new(ReenterStop {
+                worker: worker.clone(),
+                depth: depth.clone(),
+                maximum: maximum.clone(),
+                calls: calls.clone(),
+            }));
+            assert!(
+                service
+                    .poll_ready(&mut Context::from_waker(&waker))
+                    .is_pending()
+            );
+            services.push(service);
+        }
+        worker.stop().unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 64);
+        assert_eq!(maximum.load(Ordering::SeqCst), 1);
+        assert_eq!(depth.load(Ordering::SeqCst), 0);
+        drop(services);
+        assert!(worker.readiness_waiters.lock().unwrap().is_empty());
+    }
+
+    #[test]
     fn repolling_readiness_replaces_its_waker() {
         let mut worker = WorkerContext::new("replace-readiness");
         worker.start().unwrap();

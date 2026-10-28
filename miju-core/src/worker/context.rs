@@ -409,8 +409,10 @@ impl WorkerContext {
         }
         // A queued retry has its own waker; waking only the worker cannot re-poll it.
         let waiters = self.readiness_waiters.lock().unwrap().clone();
-        for waiter in waiters {
-            waiter.wake();
+        // Consume the batch before callbacks can reenter worker controls.
+        let wakers: Vec<_> = waiters.iter().filter_map(|waiter| waiter.take()).collect();
+        for waker in wakers {
+            waker.wake();
         }
     }
 
