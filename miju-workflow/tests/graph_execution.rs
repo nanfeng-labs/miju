@@ -184,6 +184,180 @@ async fn single_edge_into_join_records_current_predecessor_id() {
     assert_empty(&mut queue);
 }
 
+async fn assert_fan_out_join_uses_current_predecessor(stale_predecessor: bool) {
+    let graph = GraphFlow::new("fan-out-into-join");
+    let entry = graph.add_task(|value: u32| async move { value });
+    let left = graph
+        .add_task(|value: u32| async move { value * 2 })
+        .depends_on(&entry);
+    let right = graph
+        .add_task(|value: u32| async move { value + 3 })
+        .depends_on(&entry);
+    let tail = graph
+        .add_task(|value: u32| async move { value * 3 })
+        .depends_on(&right);
+    let join = graph
+        .add_task(|(left, right): (u32, u32)| async move { left * 100 + right })
+        .depends_on((&left, &tail));
+    let side = graph
+        .add_task(|value: u32| async move { value + 1 })
+        .depends_on(&tail);
+    graph.validate().unwrap();
+    let mut backend = InMemoryWorkflow::<u32>::create();
+    let store = backend
+        .middleware(&mut WorkerContext::new("results"))
+        .store();
+    let mut queue = backend.clone();
+    let service = graph.into_service(backend).service;
+    service
+        .clone()
+        .oneshot(TaskBuilder::new(b"7".to_vec()).build())
+        .await
+        .unwrap();
+    let mut joins = Vec::new();
+    let mut predecessor_ids = Vec::new();
+    let mut side_history = None;
+    let mut side_results = Vec::new();
+    for _ in 0..6 {
+        let mut task = next_task(&mut queue).await;
+        let mut context = GraphFlowContext::extract(task.metadata()).unwrap();
+        if context.current_node == tail.id() && stale_predecessor {
+            context
+                .node_task_ids
+                .insert(tail.id(), TaskId::from_string("stale-tail"));
+            store_result(
+                &store,
+                "stale-tail",
+                Status::Done,
+                Ok(
+                    serde_json::to_value(GraphNodeResponse::Complete { result: json!(900) })
+                        .unwrap(),
+                ),
+            );
+            let id = task.task_id().cloned().unwrap();
+            task = TaskBuilder::new(task.args)
+                .task_id(id)
+                .metadata(&context)
+                .build();
+        }
+        if context.current_node == join.id() {
+            joins.push(task);
+            continue;
+        }
+        let id = task.task_id().unwrap().to_string();
+        if context.current_node == left.id() || context.current_node == tail.id() {
+            predecessor_ids.push(TaskId::from_string(&id));
+        }
+        if context.current_node == side.id() {
+            assert_eq!(Some(&context.node_task_ids), side_history.as_ref());
+        }
+        let response = service.clone().oneshot(task).await.unwrap();
+        if context.current_node == tail.id() {
+            let GraphNodeResponse::FanOut { node_task_ids, .. } = &response else {
+                panic!("tail must enqueue both successors")
+            };
+            assert_eq!(node_task_ids.len(), 2);
+            assert!(node_task_ids.contains_key(&join.id()));
+            assert!(node_task_ids.contains_key(&side.id()));
+            let mut expected = context.node_task_ids;
+            expected.extend(node_task_ids.clone());
+            side_history = Some(expected);
+        }
+        if context.current_node == side.id() {
+            side_results.push(response.clone());
+        }
+        store_result(
+            &store,
+            &id,
+            Status::Done,
+            Ok(serde_json::to_value(response).unwrap()),
+        );
+    }
+    assert_eq!(
+        side_results,
+        vec![GraphNodeResponse::Complete { result: json!(31) }]
+    );
+    assert_eq!(joins.len(), 2);
+    assert_eq!(predecessor_ids.len(), 2);
+    for id in predecessor_ids {
+        assert_eq!(store.get(&id).unwrap().status, Status::Done);
+    }
+    let mut complete = Vec::new();
+    for task in joins {
+        let response = tokio::time::timeout(DEADLINE, service.clone().oneshot(task))
+            .await
+            .unwrap()
+            .unwrap();
+        if let GraphNodeResponse::Complete { result } = response {
+            complete.push(result);
+        }
+    }
+    assert_eq!(complete, vec![json!(1430)]);
+    assert_empty(&mut queue);
+}
+
+#[tokio::test]
+async fn fan_out_into_join_preserves_current_predecessor_without_changing_side_history() {
+    assert_fan_out_join_uses_current_predecessor(false).await;
+}
+
+#[tokio::test]
+async fn fan_out_into_join_replaces_stale_predecessor_without_changing_side_history() {
+    assert_fan_out_join_uses_current_predecessor(true).await;
+}
+
+#[tokio::test]
+async fn fan_out_side_accepts_current_id_with_comma() {
+    let graph = GraphFlow::new("fan-out-side-custom-id");
+    let entry = graph.add_task(|value: u32| async move { value });
+    let left = graph
+        .add_task(|value: u32| async move { value })
+        .depends_on(&entry);
+    let tail = graph
+        .add_task(|value: u32| async move { value + 1 })
+        .depends_on(&entry);
+    let side = graph
+        .add_task(|value: u32| async move { value * 2 })
+        .depends_on(&tail);
+    graph
+        .add_task(|(left, right): (u32, u32)| async move { left + right })
+        .depends_on((&left, &tail));
+    graph.validate().unwrap();
+    let backend = InMemoryWorkflow::<u32>::create();
+    let mut queue = backend.clone();
+    let service = graph.into_service(backend).service;
+    let mut context = GraphFlowContext::new(None);
+    context.current_node = tail.id();
+    context.is_initial = false;
+    let response = service
+        .clone()
+        .oneshot(
+            TaskBuilder::new(b"7".to_vec())
+                .task_id(TaskId::from_string("current,tail"))
+                .metadata(&context)
+                .build(),
+        )
+        .await
+        .unwrap();
+    let GraphNodeResponse::FanOut { node_task_ids, .. } = response else {
+        panic!("tail must enqueue both successors")
+    };
+    let mut completed = Vec::new();
+    for _ in 0..2 {
+        let task = next_task(&mut queue).await;
+        if task.task_id() == node_task_ids.get(&side.id()) {
+            let context = GraphFlowContext::extract(task.metadata()).unwrap();
+            assert!(!context.node_task_ids.contains_key(&tail.id()));
+            completed.push(service.clone().oneshot(task).await.unwrap());
+        }
+    }
+    assert_eq!(
+        completed,
+        vec![GraphNodeResponse::Complete { result: json!(16) }]
+    );
+    assert_empty(&mut queue);
+}
+
 #[tokio::test]
 async fn worker_executes_fan_out_and_fan_in_with_stored_results() {
     let graph = GraphFlow::new("branches");
