@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- fix(sentry): finish transactions when task futures are dropped ([#83](https://github.com/nanfeng-labs/miju/pull/83))
 - fix(workflow): reject overflowing graph progress ([#82](https://github.com/nanfeng-labs/miju/pull/82))
 - fix(retry): bound failures before task execution ([#81](https://github.com/nanfeng-labs/miju/pull/81))
 - fix(core): finish retry readiness during shutdown ([#80](https://github.com/nanfeng-labs/miju/pull/80))
