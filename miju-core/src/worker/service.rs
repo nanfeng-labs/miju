@@ -57,6 +57,32 @@ where
 /// conform to the signatures supported by worker services.
 ///
 /// The module is available when the `test-utils` feature is enabled.
+///
+/// A single extractor is passed directly to the handler:
+///
+/// ```rust
+/// use miju_core::{
+///     backend::memory::MemoryStorage,
+///     task::attempt::Attempt,
+///     worker::service::task_fn_validator::check_fn_1,
+/// };
+///
+/// async fn handle(value: u32, _: Attempt) -> u32 { value }
+/// check_fn_1::<_, MemoryStorage<u32>, u32, Attempt>(handle);
+/// ```
+///
+/// A different extractor type is rejected:
+///
+/// ```compile_fail
+/// use miju_core::{
+///     backend::memory::MemoryStorage,
+///     task::{attempt::Attempt, data::Data},
+///     worker::service::task_fn_validator::check_fn_1,
+/// };
+///
+/// async fn handle(value: u32, _: Data<u32>) -> u32 { value }
+/// check_fn_1::<_, MemoryStorage<u32>, u32, Attempt>(handle);
+/// ```
 #[cfg(feature = "test-utils")]
 pub mod task_fn_validator {
     use crate::backend::Backend;
@@ -72,6 +98,7 @@ pub mod task_fn_validator {
         ($($num:tt => $($arg:ident),+);+ $(;)?) => {
             $(
                 #[inline]
+                #[allow(unused_parens)]
                 #[doc = concat!("A helper for checking that the builder can build a worker with the provided service (", stringify!($num), " arguments)")]
                 pub fn $num<
                     F, B, Args,
@@ -79,7 +106,7 @@ pub mod task_fn_validator {
                 >(
                     _: F,
                 ) where
-                    TaskFn<F, Args,  ($($arg,)+)>: Service<Task<Args>>,
+                    TaskFn<F, Args,  ($($arg),+)>: Service<Task<Args>>,
                     B: Backend + BackendConfig<Args = Args>
                 {
                 }
