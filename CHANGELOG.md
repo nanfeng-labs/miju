@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- fix(workflow): reject unregistered sequential steps ([#87](https://github.com/nanfeng-labs/miju/pull/87))
 - fix(core): preserve shared persistence event channels ([#78](https://github.com/nanfeng-labs/miju/pull/78))
 - fix(core): finalize interrupted task executions ([#77](https://github.com/nanfeng-labs/miju/pull/77))
 - fix(core): share worker names across restarts ([#76](https://github.com/nanfeng-labs/miju/pull/76))
