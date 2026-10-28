@@ -364,25 +364,21 @@ where
                 // Handle collector state
                 async move {
                     let filter_ctx: FilterContext = Metadata::extract(request.metadata())?;
-                    let res: Vec<Output> = ctx
+                    let results = ctx
                         .backend
                         .wait_for(filter_ctx.task_ids)
                         .collect::<Vec<_>>()
                         .await
                         .into_iter()
-                        .collect::<Result<Vec<_>, _>>()?
-                        .into_iter()
-                        .filter_map(|res| {
-                            let res = res.take().ok();
-                            match res {
-                                Some(GoTo::Break(val)) => {
-                                    let opt: Result<Option<Output>, _> = from_value(val.result);
-                                    opt.ok().flatten()
-                                }
-                                _ => None,
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let mut res = Vec::new();
+                    for result in results {
+                        if let GoTo::Break(value) = result.take()? {
+                            if let Some(output) = from_value::<Option<Output>>(value.result)? {
+                                res.push(output);
                             }
-                        })
-                        .collect();
+                        }
+                    }
                     if res.is_empty() {
                         return Ok(GoTo::Break(StepResponse {
                             result: to_value(&res)
@@ -476,9 +472,9 @@ impl<Start, C, L, I: IntoIterator<Item = C>, B: Backend> SteppedFlow<Start, I, B
     /// nonempty collection returns [`GoTo::Done`], which does not retain outputs.
     ///
     /// Missing or invalid filter-state metadata starts a new collection. An
-    /// invalid element payload returns a decoding error. Result-stream errors
-    /// propagate; malformed collected values or unexpected transitions are
-    /// currently skipped.
+    /// invalid element payload returns a decoding error. Result-stream errors,
+    /// child-result errors, and malformed collected values propagate. Collected
+    /// transitions other than [`GoTo::Break`] are currently skipped.
     ///
     /// ```rust
     /// use miju_core::backend::ext::shared::Shared;
