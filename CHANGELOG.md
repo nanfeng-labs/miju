@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- fix(core): share worker names across restarts ([#76](https://github.com/nanfeng-labs/miju/pull/76))
 - fix(workflow): reject invalid graph continuation indices ([#75](https://github.com/nanfeng-labs/miju/pull/75))
 - fix(workflow): complete empty folds with their accumulator ([#74](https://github.com/nanfeng-labs/miju/pull/74))
 - fix(core): preserve the full pagination offset range ([#73](https://github.com/nanfeng-labs/miju/pull/73))
