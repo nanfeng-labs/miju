@@ -119,8 +119,7 @@ where
 
     /// Export the current graph topology as DOT text.
     ///
-    /// Node names are inserted into labels without escaping. Quotes, backslashes
-    /// or newlines in names may produce invalid or unintended DOT text.
+    /// Quotes and backslashes in node names are escaped so labels retain their text.
     ///
     /// # Panics
     /// Panics if an internal graph or name-map lock is poisoned.
@@ -135,7 +134,12 @@ where
         let get_node_attributes = |_, (index, _)| {
             format!(
                 "label=\"{}\"",
-                names.get(&index).cloned().unwrap_or_default()
+                names
+                    .get(&index)
+                    .cloned()
+                    .unwrap_or_default()
+                    .replace('\\', "\\\\")
+                    .replace('"', "\\\"")
             )
         };
         let graph = self.graph.lock().expect("could not lock graph");

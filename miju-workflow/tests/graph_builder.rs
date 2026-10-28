@@ -231,11 +231,10 @@ fn custom_dependency_indices_allow_empty_input_but_invalid_indices_poison_the_lo
 }
 
 #[test]
-fn duplicate_names_keep_nodes_but_only_label_the_newest_and_labels_are_not_escaped() {
+fn duplicate_names_keep_nodes_but_only_label_the_newest() {
     let graph = Graph::new("labels");
     let _first = graph.add_node("same", task_fn(increment));
     let _second = graph.add_node("same", task_fn(increment));
-    let _quoted = graph.add_node("unescaped\"label", task_fn(increment));
     let dot = graph.to_dot();
     let first = dot
         .lines()
@@ -247,6 +246,44 @@ fn duplicate_names_keep_nodes_but_only_label_the_newest_and_labels_are_not_escap
         .unwrap();
     assert!(first.contains("label=\"\""));
     assert!(second.contains("label=\"same\""));
-    assert!(dot.contains("label=\"unescaped\"label\""));
+    graph.validate().unwrap();
+}
+
+#[test]
+fn dot_names_are_escaped_as_literal_labels() {
+    for (name, label) in [
+        ("quoted\"label", r#"quoted\"label"#),
+        (r"literal\N\G\n\l\r\path", r"literal\\N\\G\\n\\l\\r\\path"),
+        ("trailing\\", r"trailing\\"),
+        ("slash\\\"quote", r#"slash\\\"quote"#),
+        ("普通 name <&>", "普通 name <&>"),
+        ("line\nbreak", "line\nbreak"),
+        ("tab\treturn\r", "tab\treturn\r"),
+        ("", ""),
+    ] {
+        let graph = Graph::new("labels");
+        let _node = graph.add_node(name, task_fn(increment));
+
+        assert_eq!(
+            graph.to_dot(),
+            format!("digraph {{\n    0 [ label=\"{label}\"]\n}}\n"),
+            "node name: {name:?}"
+        );
+        graph.validate().unwrap();
+    }
+}
+
+#[test]
+fn dot_name_cannot_add_nodes_or_edges() {
+    let graph = Graph::new("labels");
+    let _node = graph.add_node(
+        "original\"]; 1 [label=\"injected\"]; 0 -> 1; 2 [label=\"suffix",
+        task_fn(increment),
+    );
+
+    assert_eq!(
+        graph.to_dot(),
+        "digraph {\n    0 [ label=\"original\\\"]; 1 [label=\\\"injected\\\"]; 0 -> 1; 2 [label=\\\"suffix\"]\n}\n"
+    );
     graph.validate().unwrap();
 }
