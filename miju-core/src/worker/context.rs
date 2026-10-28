@@ -52,6 +52,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use futures_util::task::AtomicWaker;
+
 #[cfg(feature = "task-context")]
 use crate::task::context::{TaskContext, TaskStateError};
 
@@ -78,6 +80,7 @@ pub struct WorkerContext {
     pub(crate) name: Arc<RwLock<String>>,
     /// The waker used to wake the worker when tasks complete or shutdown is triggered.
     waker: Arc<Mutex<Option<Waker>>>,
+    pub(super) readiness_waiters: Arc<Mutex<Vec<Arc<AtomicWaker>>>>,
     state: Arc<WorkerState>,
     pub(crate) shutdown: Option<Shutdown>,
     event_handler: EventListener,
@@ -116,6 +119,7 @@ impl WorkerContext {
             name: Arc::new(RwLock::new(name.to_owned())),
             service: "Unspecified".to_owned().into(),
             waker: Default::default(),
+            readiness_waiters: Default::default(),
             state: Default::default(),
             shutdown: Default::default(),
             event_handler: Arc::new(Box::new(|_, _| {
@@ -406,6 +410,13 @@ impl WorkerContext {
             if let Some(waker) = &*waker {
                 waker.wake_by_ref();
             }
+        }
+        // A queued retry has its own waker; waking only the worker cannot re-poll it.
+        let waiters = self.readiness_waiters.lock().unwrap().clone();
+        // Consume the batch before callbacks can reenter worker controls.
+        let wakers: Vec<_> = waiters.iter().filter_map(|waiter| waiter.take()).collect();
+        for waker in wakers {
+            waker.wake();
         }
     }
 

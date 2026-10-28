@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- fix(core): finish retry readiness during shutdown ([#80](https://github.com/nanfeng-labs/miju/pull/80))
 - fix(file-storage): preserve CSV completion results ([#79](https://github.com/nanfeng-labs/miju/pull/79))
 - fix(core): preserve shared persistence event channels ([#78](https://github.com/nanfeng-labs/miju/pull/78))
 - fix(core): finalize interrupted task executions ([#77](https://github.com/nanfeng-labs/miju/pull/77))
