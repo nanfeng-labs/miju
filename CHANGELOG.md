@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+- fix(workflow): propagate filter collector errors ([#85](https://github.com/nanfeng-labs/miju/pull/85))
+- fix(core): preserve selected monitor termination errors ([#84](https://github.com/nanfeng-labs/miju/pull/84))
+- fix(sentry): finish transactions when task futures are dropped ([#83](https://github.com/nanfeng-labs/miju/pull/83))
+- fix(workflow): reject overflowing graph progress ([#82](https://github.com/nanfeng-labs/miju/pull/82))
 - fix(retry): bound failures before task execution ([#81](https://github.com/nanfeng-labs/miju/pull/81))
 - fix(core): finish retry readiness during shutdown ([#80](https://github.com/nanfeng-labs/miju/pull/80))
 - fix(file-storage): preserve CSV completion results ([#79](https://github.com/nanfeng-labs/miju/pull/79))
@@ -17,6 +21,7 @@
 - fix(file-storage): preserve CSV metadata keys on reopen ([#69](https://github.com/nanfeng-labs/miju/pull/69))
 - fix(file-storage): preserve application line metadata ([#68](https://github.com/nanfeng-labs/miju/pull/68))
 - fix(workflow): reject unregistered sequential steps ([#87](https://github.com/nanfeng-labs/miju/pull/87))
+- fix(workflow): escape DOT node labels ([#86](https://github.com/nanfeng-labs/miju/pull/86))
 
 ## [0.1.1](https://github.com/nanfeng-labs/miju/releases/tag/v0.1.1)
 

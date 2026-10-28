@@ -13,12 +13,14 @@ use std::{
 
 use futures_util::{FutureExt, future::poll_fn, task::noop_waker_ref};
 use miju_core::{
-    backend::{Backend, BackendConfig, TaskSink, ext::shared::Shared},
+    backend::{Backend, BackendConfig, TaskResult, TaskSink, ext::shared::Shared},
+    error::BoxDynError,
     task::{
         Task,
         builder::TaskBuilder,
         data::Data,
         metadata::{Metadata, MetadataStore},
+        status::Status,
         task_id::{GenerateId, RandomId},
     },
     worker::{builder::WorkerBuilder, context::WorkerContext, service::IntoWorkerService},
@@ -27,11 +29,11 @@ use miju_workflow::{
     SteppedFlow,
     in_memory::InMemoryWorkflow,
     sequential::{
-        GoTo, WorkflowContext,
+        GoTo, StepResponse, WorkflowContext,
         filter_map::{FilterContext, FilterContextError, FilterState, FilterStateError},
     },
 };
-use serde_json::json;
+use serde_json::{Value, json};
 use tower::{Layer, ServiceExt};
 
 const DEADLINE: Duration = Duration::from_secs(5);
@@ -378,4 +380,141 @@ fn filter_metadata_round_trips_and_reports_missing_invalid_and_duplicate_values(
         FilterContext::extract(&metadata),
         Err(FilterContextError::ParseTaskId)
     ));
+}
+
+async fn collect_stored_results(
+    results: Vec<Result<Value, String>>,
+) -> (Result<GoTo<StepResponse>, BoxDynError>, BackendHandle) {
+    let mut backend = InMemoryWorkflow::<Vec<u32>>::create();
+    let mut reader = backend.clone();
+    let layer = backend.middleware(&mut WorkerContext::new("stored-filter-results"));
+    let store = layer.store();
+    let flow = SteppedFlow::new("stored-filter-results")
+        .filter_map(async |n: u32| Some(n))
+        .and_then(async |values: Vec<u32>| values.len());
+    let service = layer.layer(flow.into_service(backend).service);
+    service
+        .clone()
+        .oneshot(
+            TaskBuilder::new(serde_json::to_vec(&vec![2u32; results.len()]).unwrap())
+                .task_id(RandomId::generate())
+                .build(),
+        )
+        .await
+        .unwrap();
+    for result in results {
+        let task = next_task(&mut reader).await;
+        let task_id = task.task_id().unwrap().clone();
+        store.insert(
+            task_id.clone(),
+            TaskResult {
+                task_id,
+                attempt: 0,
+                status: if result.is_ok() {
+                    Status::Done
+                } else {
+                    Status::Failed
+                },
+                result,
+            },
+        );
+    }
+    let collector = next_task(&mut reader).await;
+    let result = tokio::time::timeout(DEADLINE, service.oneshot(collector))
+        .await
+        .unwrap();
+    (result, reader)
+}
+
+#[tokio::test]
+async fn collector_reports_child_result_and_output_decode_errors() {
+    for (bad_result, message) in [
+        (json!({"not-a-transition": 7}), "unknown variant"),
+        (
+            json!({"Break": {"result": "wrong-type", "next_task_id": null}}),
+            "expected u32",
+        ),
+    ] {
+        let bad = Ok(bad_result);
+        let some = Ok(json!({"Break": {"result": 2, "next_task_id": null}}));
+        let none = Ok(json!({"Break": {"result": null, "next_task_id": null}}));
+        for results in [
+            vec![bad.clone()],
+            vec![bad.clone(), none.clone()],
+            vec![none, bad.clone()],
+            vec![bad.clone(), some.clone()],
+            vec![some, bad.clone()],
+        ] {
+            let (result, mut reader) = collect_stored_results(results).await;
+            let error =
+                result.expect_err("an explicit error must not become a successful omission");
+            assert!(error.to_string().contains(message), "{error}");
+            assert_queue_empty(&mut reader);
+        }
+    }
+}
+
+#[tokio::test]
+async fn collector_keeps_outer_stream_error_priority() {
+    for unreadable in [
+        json!({"not-a-transition": 7}),
+        json!({"Break": {"result": "wrong-type", "next_task_id": null}}),
+    ] {
+        let (result, mut reader) = collect_stored_results(vec![
+            Ok(unreadable),
+            Err("outer result-stream failure".into()),
+        ])
+        .await;
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "Failed to add task to storage: outer result-stream failure"
+        );
+        assert_queue_empty(&mut reader);
+    }
+}
+
+#[tokio::test]
+async fn collector_preserves_none_and_non_break_omissions() {
+    for omitted in [
+        GoTo::Break(StepResponse {
+            result: Value::Null,
+            next_task_id: None,
+        }),
+        GoTo::Done,
+        GoTo::Next(StepResponse {
+            result: json!(4),
+            next_task_id: None,
+        }),
+        GoTo::DelayFor(
+            Duration::from_secs(1),
+            StepResponse {
+                result: json!(4),
+                next_task_id: None,
+            },
+        ),
+    ] {
+        let stored = serde_json::to_value(omitted).unwrap();
+        let (result, mut reader) = collect_stored_results(vec![Ok(stored.clone())]).await;
+        let GoTo::Break(response) = result.unwrap() else {
+            panic!("a collection with no retained values keeps its existing empty result");
+        };
+        assert_eq!(response.result, json!([]));
+        assert_queue_empty(&mut reader);
+        let (result, mut reader) = collect_stored_results(vec![
+            Ok(json!({"Break": {"result": 2, "next_task_id": null}})),
+            Ok(stored),
+        ])
+        .await;
+        let GoTo::Next(response) = result.unwrap() else {
+            panic!("the retained value must continue");
+        };
+        assert_eq!(response.result, json!([2]));
+        let next = next_task(&mut reader).await;
+        assert_eq!(
+            serde_json::from_slice::<Value>(&next.args).unwrap(),
+            json!([2])
+        );
+        assert_eq!(next.task_id(), response.next_task_id.as_ref());
+        assert_queue_empty(&mut reader);
+    }
 }
