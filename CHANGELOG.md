@@ -20,6 +20,7 @@
 - fix(workflow): preserve predecessor IDs for single-edge joins ([#70](https://github.com/nanfeng-labs/miju/pull/70))
 - fix(file-storage): preserve CSV metadata keys on reopen ([#69](https://github.com/nanfeng-labs/miju/pull/69))
 - fix(file-storage): preserve application line metadata ([#68](https://github.com/nanfeng-labs/miju/pull/68))
+- fix(workflow): reject unregistered sequential steps ([#87](https://github.com/nanfeng-labs/miju/pull/87))
 - fix(workflow): escape DOT node labels ([#86](https://github.com/nanfeng-labs/miju/pull/86))
 
 ## [0.1.1](https://github.com/nanfeng-labs/miju/releases/tag/v0.1.1)

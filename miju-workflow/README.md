@@ -573,7 +573,8 @@ crash recovery or exactly-once execution.
 In sequential workflows, ordinary handler and decoding failures are returned by the service without
 scheduling the next step. The last ordinary step returns `GoTo::Done`; its output is not retained
 in that response. Missing or malformed workflow metadata currently dispatches to
-step zero. An unknown index or an empty workflow can panic. The service also has
+step zero. An unknown index or an empty workflow returns an `AbortError`; workers
+mark that task as `Killed`, and built-in retry policies do not retry it. The service also has
 inherited readiness limitations, so custom steps must not assume every inner
 service is polled for readiness before its first call.
 
