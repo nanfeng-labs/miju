@@ -1,10 +1,13 @@
 //! Persistence providers, polling state, and task lifecycle events.
 //!
-//! [`Persistence`] supplies storage operations. [`Persisted`] drives registration,
+//! The [`Persistence` trait](crate::backend::persistence::Persistence) supplies storage operations.
+//! The [`Persisted` driver](crate::backend::persistence::Persisted) drives registration,
 //! heartbeats, event processing, and task batches, and implements a submission
 //! sink. A storage integration connects its polling methods to
-//! [`Backend`](crate::backend::Backend) and installs its [`TaskPersistLayer`]
-//! as backend middleware. The driver itself does not implement `Backend`.
+//! [`Backend`](crate::backend::Backend) and uses
+//! [`Persisted::shared_layer`](crate::backend::persistence::Persisted::shared_layer) for
+//! backend middleware that can be initialized by multiple workers. The driver
+//! itself does not implement `Backend`.
 //!
 //! Providers are responsible for atomic task claims and storage guarantees.
 //! Cloning a driver clones the provider and resets all local polling, event,
@@ -20,7 +23,7 @@ use std::{
     time::Duration,
 };
 
-use futures_channel::mpsc::{self, Receiver};
+use futures_channel::mpsc::{self, Receiver, Sender};
 use futures_timer::Delay;
 use futures_util::FutureExt;
 
@@ -96,6 +99,7 @@ where
     state: State<Task<P::Compact>, P::Error>,
     heartbeat_timer: Option<Delay>,
     receiver: Option<Receiver<TaskEvent<P::Response>>>,
+    shared_sender: Option<Sender<TaskEvent<P::Response>>>,
     sink_buffer: Vec<Task<P::Compact>>,
     sink_future: Option<BoxSyncFuture<Result<(), P::Error>>>,
 }
@@ -110,6 +114,7 @@ where
             state: State::NotBootstrapped,
             heartbeat_timer: None,
             receiver: None,
+            shared_sender: None,
             sink_buffer: Vec::new(),
             sink_future: None,
         }
@@ -164,6 +169,7 @@ where
             inner,
             heartbeat_timer: None,
             receiver: None,
+            shared_sender: None,
             state: State::NotBootstrapped,
             sink_buffer: Vec::new(),
             sink_future: None,
@@ -217,13 +223,39 @@ where
     ///
     /// The channel capacity is `batch_size * 4`. Calling this again replaces
     /// the receiver and disconnects services built from the previous layer.
+    /// This also replaces a channel installed by [`shared_layer`](Self::shared_layer).
+    /// Use `shared_layer` for repeated backend middleware initialization.
     /// Result persistence and task locking are disabled until explicitly enabled.
     pub fn layer<C>(&mut self, codec: C, batch_size: usize) -> TaskPersistLayer<C, P::Response> {
         // The service currently emits only Lock and Complete.
         let buffer = batch_size * 4;
         let (tx, rx) = mpsc::channel(buffer);
         self.receiver = Some(rx);
+        self.shared_sender = None;
         TaskPersistLayer::new(tx, codec)
+    }
+
+    /// Builds a task event layer that shares this driver's event channel.
+    ///
+    /// Use this in backend middleware that may be initialized by multiple workers.
+    /// The first call installs a channel with buffer size `batch_size * 4`,
+    /// replacing any previous [`layer`](Self::layer). Later calls reuse the
+    /// channel and its buffer size, even after all returned layers are dropped.
+    /// Each call uses its own codec, with result persistence and locking disabled.
+    ///
+    /// Calling `layer` explicitly replaces the shared channel and disconnects
+    /// its services. Cloning the driver starts with no event channel.
+    pub fn shared_layer<C>(
+        &mut self,
+        codec: C,
+        batch_size: usize,
+    ) -> TaskPersistLayer<C, P::Response> {
+        let sender = self.shared_sender.get_or_insert_with(|| {
+            let (sender, receiver) = mpsc::channel(batch_size * 4);
+            self.receiver = Some(receiver);
+            sender
+        });
+        TaskPersistLayer::new(sender.clone(), codec)
     }
 
     /// Drives the provider's internal state machine (bootstrap, heartbeat,
@@ -865,7 +897,7 @@ mod tests {
     fn clone_resets_driver_state_channels_and_submission_buffers() {
         let (provider, mut driver, worker) = fixture();
         ready(&mut driver, &worker);
-        let _layer = driver.layer(NumberCodec { fail: false }, 2);
+        let _layer = driver.shared_layer(NumberCodec { fail: false }, 2);
         driver.start_send_unpin(task(1)).unwrap();
         driver.state = State::Buffered(VecDeque::from([task(2)]));
         let clone = driver.clone();
@@ -873,9 +905,202 @@ mod tests {
         assert!(matches!(clone.state(), State::NotBootstrapped));
         assert!(clone.heartbeat_timer.is_none());
         assert!(clone.receiver.is_none());
+        assert!(clone.shared_sender.is_none());
         assert!(clone.sink_buffer.is_empty());
         assert!(clone.sink_future.is_none());
         assert_eq!(driver.sink_buffer.len(), 1);
+    }
+
+    #[test]
+    fn shared_layers_keep_their_codecs_and_options_and_close_without_sender_eof() {
+        let (provider, mut driver, worker) = fixture();
+        let mut first = driver
+            .shared_layer(NumberCodec { fail: false }, 2)
+            .persist_results(true)
+            .layer(tower::service_fn(|req: Task<u32>| async move {
+                Ok::<_, io::Error>(req.args)
+            }));
+        let mut cx = Context::from_waker(noop_waker_ref());
+        assert!(matches!(first.poll_ready(&mut cx), Poll::Ready(Ok(()))));
+        assert!(matches!(
+            first.call(task(7)).poll_unpin(&mut cx),
+            Poll::Ready(Ok(7))
+        ));
+        let mut second = driver
+            .shared_layer(NumberCodec { fail: true }, 1)
+            .lock_tasks(true)
+            .persist_results(true)
+            .layer(tower::service_fn(|req: Task<u32>| async move {
+                Ok::<_, io::Error>(req.args)
+            }));
+        assert!(matches!(second.poll_ready(&mut cx), Poll::Ready(Ok(()))));
+        assert!(matches!(
+            second.call(task(8)).poll_unpin(&mut cx),
+            Poll::Ready(Ok(8))
+        ));
+        let mut default =
+            driver
+                .shared_layer(NumberCodec { fail: true }, 1)
+                .layer(tower::service_fn(|req: Task<u32>| async move {
+                    Ok::<_, io::Error>(req.args)
+                }));
+        assert!(matches!(default.poll_ready(&mut cx), Poll::Ready(Ok(()))));
+        assert!(matches!(
+            default.call(task(9)).poll_unpin(&mut cx),
+            Poll::Ready(Ok(9))
+        ));
+        drop((first, second, default));
+
+        let release = provider.gate("events");
+        assert!(driver.poll_ready(&mut cx, &worker, HEARTBEAT).is_pending());
+        assert!(driver.poll_close(&mut cx, &worker).is_pending());
+        release.send(()).unwrap();
+        assert!(matches!(
+            driver.poll_close(&mut cx, &worker),
+            Poll::Ready(Ok(()))
+        ));
+        let records = provider.0.lock().unwrap();
+        assert!(
+            matches!(&records.events[..], [TaskEvent::Complete(first), TaskEvent::Lock { task_id }, TaskEvent::Complete(second)]
+            if first.result == Ok(7) && *task_id == 8u64.into() && second.result == Err("encode".to_owned()))
+        );
+    }
+
+    #[test]
+    fn shared_channel_retains_the_same_backpressure_as_direct_layers() {
+        for shared in [false, true] {
+            for batch in [0, 1, 2] {
+                let (provider, mut driver, worker) = fixture();
+                let layer = if shared {
+                    driver.shared_layer(NumberCodec { fail: false }, batch)
+                } else {
+                    driver.layer(NumberCodec { fail: false }, batch)
+                };
+                let mut service = layer.persist_results(true).layer(tower::service_fn(
+                    |req: Task<u32>| async move { Ok::<_, io::Error>(req.args) },
+                ));
+                let mut cx = Context::from_waker(noop_waker_ref());
+                for _ in 0..batch * 4 {
+                    assert!(matches!(service.poll_ready(&mut cx), Poll::Ready(Ok(()))));
+                    assert!(matches!(
+                        service.call(task(1)).poll_unpin(&mut cx),
+                        Poll::Ready(Ok(1))
+                    ));
+                }
+                assert!(matches!(service.poll_ready(&mut cx), Poll::Ready(Ok(()))));
+                let mut waiting = service.call(task(2));
+                assert!(waiting.poll_unpin(&mut cx).is_pending());
+                if shared {
+                    let _later = driver.shared_layer(NumberCodec { fail: false }, usize::MAX);
+                    assert!(waiting.poll_unpin(&mut cx).is_pending());
+                }
+                ready(&mut driver, &worker);
+                assert!(matches!(waiting.poll_unpin(&mut cx), Poll::Ready(Ok(2))));
+                assert_eq!(provider.0.lock().unwrap().events.len(), batch * 4 + 1);
+            }
+        }
+    }
+
+    #[test]
+    fn shared_capacity_survives_layer_drop_and_driver_close() {
+        let (provider, mut driver, worker) = fixture();
+        drop(driver.shared_layer(NumberCodec { fail: false }, 0));
+        ready(&mut driver, &worker);
+        let mut cx = Context::from_waker(noop_waker_ref());
+        assert!(matches!(
+            driver.poll_close(&mut cx, &worker),
+            Poll::Ready(Ok(()))
+        ));
+        let mut service = driver
+            .shared_layer(NumberCodec { fail: false }, usize::MAX)
+            .persist_results(true)
+            .layer(tower::service_fn(|req: Task<u32>| async move {
+                Ok::<_, io::Error>(req.args)
+            }));
+        assert!(matches!(service.poll_ready(&mut cx), Poll::Ready(Ok(()))));
+        let mut pending = service.call(task(1));
+        assert!(pending.poll_unpin(&mut cx).is_pending());
+        assert!(matches!(
+            driver.poll_close(&mut cx, &worker),
+            Poll::Ready(Ok(()))
+        ));
+        assert!(matches!(pending.poll_unpin(&mut cx), Poll::Ready(Ok(1))));
+        assert_eq!(provider.0.lock().unwrap().events.len(), 1);
+    }
+
+    #[test]
+    fn explicit_layer_replaces_shared_channel_and_next_shared_call_starts_fresh() {
+        let (_, mut driver, _) = fixture();
+        let mut direct = driver
+            .layer(NumberCodec { fail: false }, 0)
+            .layer(tower::service_fn(|_: Task<u32>| async {
+                Ok::<_, io::Error>(1)
+            }));
+        let mut shared =
+            driver
+                .shared_layer(NumberCodec { fail: false }, 1)
+                .layer(tower::service_fn(|_: Task<u32>| async {
+                    Ok::<_, io::Error>(1)
+                }));
+        let mut cx = Context::from_waker(noop_waker_ref());
+        assert!(matches!(direct.poll_ready(&mut cx), Poll::Ready(Err(_))));
+        assert!(matches!(shared.poll_ready(&mut cx), Poll::Ready(Ok(()))));
+        let mut replacement =
+            driver
+                .layer(NumberCodec { fail: false }, 0)
+                .layer(tower::service_fn(|_: Task<u32>| async {
+                    Ok::<_, io::Error>(1)
+                }));
+        assert!(matches!(shared.poll_ready(&mut cx), Poll::Ready(Err(_))));
+        assert!(matches!(
+            replacement.poll_ready(&mut cx),
+            Poll::Ready(Ok(()))
+        ));
+        let mut restarted = driver
+            .shared_layer(NumberCodec { fail: false }, 1)
+            .persist_results(true)
+            .layer(tower::service_fn(|_: Task<u32>| async {
+                Ok::<_, io::Error>(1)
+            }));
+        assert!(matches!(
+            replacement.poll_ready(&mut cx),
+            Poll::Ready(Err(_))
+        ));
+        assert!(matches!(restarted.poll_ready(&mut cx), Poll::Ready(Ok(()))));
+        assert!(matches!(
+            restarted.call(task(1)).poll_unpin(&mut cx),
+            Poll::Ready(Ok(1))
+        ));
+    }
+
+    #[test]
+    fn cloned_driver_shared_channels_disconnect_independently_on_drop() {
+        let (_, mut driver, _) = fixture();
+        let mut original =
+            driver
+                .shared_layer(NumberCodec { fail: false }, 1)
+                .layer(tower::service_fn(|_: Task<u32>| async {
+                    Ok::<_, io::Error>(1)
+                }));
+        let mut cloned = driver.clone();
+        let mut independent =
+            cloned
+                .shared_layer(NumberCodec { fail: false }, 1)
+                .layer(tower::service_fn(|_: Task<u32>| async {
+                    Ok::<_, io::Error>(1)
+                }));
+        let mut cx = Context::from_waker(noop_waker_ref());
+        drop(driver);
+        assert!(matches!(original.poll_ready(&mut cx), Poll::Ready(Err(_))));
+        assert!(matches!(
+            independent.poll_ready(&mut cx),
+            Poll::Ready(Ok(()))
+        ));
+        drop(cloned);
+        assert!(matches!(
+            independent.poll_ready(&mut cx),
+            Poll::Ready(Err(_))
+        ));
     }
 
     #[test]
@@ -1219,7 +1444,7 @@ mod tests {
             }
             fn middleware(&mut self, _: &mut WorkerContext) -> Self::Layer {
                 self.driver
-                    .layer(self.codec.clone(), 1)
+                    .shared_layer(self.codec.clone(), 1)
                     .lock_tasks(true)
                     .persist_results(true)
             }
