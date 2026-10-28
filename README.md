@@ -34,6 +34,8 @@
   <a href="README.zh-CN.md">简体中文</a>
 </div>
 
+<br />
+
 ## Features
 
 - **Typed task handlers**: write asynchronous functions whose arguments are extracted from task data and worker context.
@@ -129,58 +131,62 @@ Browse the [example guide](examples/README.md) for dependency injection, worker 
 ## How miju works
 
 ```mermaid
-sequenceDiagram
-    participant App as Application
-    participant Backend
-    participant Worker
-    participant Handler
-
-    App->>Backend: Submit a typed task
-    Worker->>Backend: Poll for work
-    Backend-->>Worker: Return task and execution context
-    Worker->>Handler: Invoke extracted handler
-    Handler-->>Worker: Return response or error
-    Worker->>Backend: Complete task or enqueue continuation
-    Worker-->>App: Emit lifecycle events
+flowchart LR
+    app["Application producer<br/>Build typed tasks"] -->|If TaskSink is supported| backend["Backend · Task source<br/>Return Task and execution context"]
+    subgraph execution["Worker · Drive tasks and execution"]
+        direction LR
+        dispatch["Task dispatch<br/>Check readiness → fetch → call"] --> middleware["Service pipeline<br/>Compose configured middleware"]
+        middleware --> handler["Typed handler<br/>Extract arguments · return outcome"]
+    end
+    backend -->|Task and context| dispatch
+    monitor["Monitor (optional)<br/>Manage workers · coordinate shutdown"] -.->|Manage| execution
+    execution -.->|Lifecycle events| events["Event listeners<br/>Receive worker lifecycle events"]
+    classDef source fill:#eff6ff,stroke:#3b82f6,color:#172554
+    classDef control fill:#f5f3ff,stroke:#8b5cf6,color:#2e1065
+    classDef action fill:#ecfdf5,stroke:#10b981,color:#064e3b
+    class app,backend source
+    class monitor,events control
+    class dispatch,middleware,handler action
 ```
 
-Backend capabilities determine how tasks are stored, completed, observed, and queried. Middleware wraps task execution, while a monitor coordinates multiple workers.
+Solid arrows show task flow; dotted arrows show management or event relationships. Response paths are omitted. Backends implementing `TaskSink` accept submitted tasks; other backends can generate tasks directly. Persistence, acknowledgement, result storage, and workflow continuations depend on the integration. Workers drive the configured execution pipeline; an optional monitor coordinates multiple workers.
 
 ### Task execution in detail
 
-The worker passes each task from its backend through middleware to the application handler. The following diagram follows one task through a worker configured with rate limiting, concurrency control, and retries.
+The following diagram shows task dispatch, waiting, and normal shutdown. Polling by `run()` or the consumer of `stream()` drives execution. Error exits and forced termination are not shown.
 
 ```mermaid
-sequenceDiagram
-    participant Backend
-    participant Worker
-    participant Middleware
-    participant Handler
-
-    Worker->>Middleware: Check execution readiness
-    Middleware-->>Worker: Ready to accept work
-    Worker->>Backend: Fetch a task
-    Backend-->>Worker: Task data and context
-    Worker->>+Middleware: Dispatch task
-
-    loop Execution attempts
-        Middleware->>+Handler: Extract arguments and call handler
-        Handler-->>-Middleware: Response or error
-        Middleware->>Middleware: Check retry policy
+flowchart LR
+    start(["Start"]) --> run
+    subgraph run["Running · driven by run() or the stream() consumer"]
+        direction LR
+        drive["Poll in-flight futures<br/>Result: yield event and return"] -->|No result and no shutdown request| ready["Check readiness in order<br/>Backend → Service"]
+        ready --> take["Poll task source"]
+        take -->|Task available| dispatch["Service::call(task)<br/>Add future to in-flight queue"]
+        dispatch --> drive
+        ready -.->|Pending| wait["Return Pending<br/>Poll again after wakeup"]
+        take -.->|Pending| wait
+        wait -.-> drive
     end
-
-    Middleware-->>-Worker: Return final outcome
-    opt If supported
-        Worker->>Backend: Acknowledge outcome
-    end
-    Worker->>Worker: Notify event listeners
+    take -->|EOF| drain["Stop fetching tasks<br/>Continue polling and drain in-flight work"]
+    stop["Worker shutdown request"] --> drain
+    drain --> close["Complete Backend::poll_close<br/>Wait for worker cleanup"]
+    close --> done(["Exit"])
+    classDef action fill:#ecfdf5,stroke:#10b981,color:#064e3b
+    classDef waiting fill:#fffbeb,stroke:#d97706,color:#78350f
+    classDef ending fill:#eff6ff,stroke:#3b82f6,color:#172554
+    class drive,ready,take,dispatch action
+    class wait waiting
+    class start,stop,drain,close,done ending
 ```
 
-**Fetching work.** The worker fetches a task only when both the backend and the execution pipeline are ready. Rate limiting controls how frequently tasks start, while concurrency limiting bounds the number being processed at once. When either limit is reached, the worker waits before fetching more work.
+**Driving and fetching work.** The worker polls in-flight futures first. A completed result yields an event and ends the current poll. If no result is ready and shutdown has not been requested, it checks backend readiness, then service readiness, before fetching a task. Calling the pipeline adds its future to the in-flight queue; fetching another task does not require the previous one to finish. Rate limiting controls how frequently tasks start, while concurrency limiting bounds the number being processed at once. When either limit is reached, the worker waits before fetching more work.
 
 **Execution and retries.** Requests enter middleware in the order the layers were added; responses return in reverse order. On failure, the retry layer checks the error, remaining attempts, and task and worker state before calling the inner handler again. These retries happen within the worker without re-enqueuing the task. In [`basic`](examples/basic/src/main.rs), rate and concurrency limits wrap retry, while tracing sits inside it: retries retain the task's concurrency slot, and each attempt gets its own span.
 
-**Completion and shutdown.** Once processing reaches a final outcome, the backend performs any acknowledgement or result storage it supports, and the worker reports success or failure through `on_event`. During normal shutdown, the worker stops fetching tasks and waits for active work and backend cleanup. Handlers that need to save progress can check `WorkerContext::is_shutting_down()` and finish their cleanup, as shown in [`graceful-shutdown`](examples/graceful-shutdown/src/main.rs).
+**Waiting and exhaustion.** `Pending` means execution cannot currently advance; the worker waits for a wakeup before polling again. EOF means the task source has ended and starts draining.
+
+**Completion and shutdown.** Configured backend integrations can provide acknowledgement or result storage, and the worker reports success or failure through `on_event`. On normal shutdown or backend EOF, the worker stops fetching tasks, drains in-flight work, completes `Backend::poll_close`, waits for worker cleanup, and emits `Exit`. Handlers that need to save progress can check `WorkerContext::is_shutting_down()` and finish their cleanup, as shown in [`graceful-shutdown`](examples/graceful-shutdown/src/main.rs).
 
 ## Observability
 

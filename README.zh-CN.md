@@ -34,6 +34,8 @@
   <a href="README.md">English</a>
 </div>
 
+<br />
+
 ## 特性
 
 - **类型化任务处理器**：编写异步函数，参数从任务数据和 worker 上下文中提取。
@@ -129,58 +131,62 @@ cargo run -p basic --locked
 ## miju 的运行方式
 
 ```mermaid
-sequenceDiagram
-    participant App as 应用
-    participant Backend as 后端
-    participant Worker as Worker
-    participant Handler as 处理器
-
-    App->>Backend: 提交类型化任务
-    Worker->>Backend: 轮询任务
-    Backend-->>Worker: 返回任务和执行上下文
-    Worker->>Handler: 调用参数已提取的处理器
-    Handler-->>Worker: 返回响应或错误
-    Worker->>Backend: 完成任务或提交后续任务
-    Worker-->>App: 发出生命周期事件
+flowchart LR
+    app["应用生产者<br/>构建类型化任务"] -->|支持 TaskSink 时| backend["Backend · 任务来源<br/>返回 Task 与执行上下文"]
+    subgraph execution["Worker · 驱动任务与执行链"]
+        direction LR
+        dispatch["任务分派<br/>就绪检查 → 领取 → 调用"] --> middleware["Service 执行链<br/>按配置组合中间件"]
+        middleware --> handler["类型化 Handler<br/>提取参数 · 返回响应或错误"]
+    end
+    backend -->|任务与上下文| dispatch
+    monitor["Monitor（可选）<br/>管理 Worker · 协调关闭"] -.->|管理| execution
+    execution -.->|生命周期事件| events["事件监听器<br/>接收 Worker 生命周期事件"]
+    classDef source fill:#eff6ff,stroke:#3b82f6,color:#172554
+    classDef control fill:#f5f3ff,stroke:#8b5cf6,color:#2e1065
+    classDef action fill:#ecfdf5,stroke:#10b981,color:#064e3b
+    class app,backend source
+    class monitor,events control
+    class dispatch,middleware,handler action
 ```
 
-后端能力决定任务如何存储、完成、观测和查询。中间件包裹任务执行，monitor 可协调多个 worker。
+实线表示任务流向，虚线表示管理或事件关系；响应返回路径未展开。支持 `TaskSink` 的后端允许应用提交任务，其他后端也可以直接生成任务。持久化、完成确认、结果存储和工作流续接取决于具体集成。Worker 驱动配置好的执行链，Monitor 则可选地协调多个 worker。
 
 ### 任务执行详解
 
-Worker 将从后端领取的任务交给中间件，最终调用业务处理器。下面以配置了限流、并发限制和重试的 worker 为例，展示一次任务处理的过程。
+下图展示 Worker 的任务调度、等待与正常关闭过程。`run()` 或 `stream()` 的消费端持续轮询，推动任务执行；错误退出与强制终止路径未展开。
 
 ```mermaid
-sequenceDiagram
-    participant Backend as 后端
-    participant Worker as Worker
-    participant Middleware as 中间件
-    participant Handler as 处理器
-
-    Worker->>Middleware: 检查执行链是否就绪
-    Middleware-->>Worker: 可接收新任务
-    Worker->>Backend: 领取任务
-    Backend-->>Worker: 任务数据与上下文
-    Worker->>+Middleware: 分派任务
-
-    loop 执行尝试
-        Middleware->>+Handler: 提取参数并调用处理器
-        Handler-->>-Middleware: 响应或错误
-        Middleware->>Middleware: 判断是否继续重试
+flowchart LR
+    start(["启动 · Start"]) --> run
+    subgraph run["运行中 · run() 或 stream() 的消费端持续驱动"]
+        direction LR
+        drive["推进执行中 Future<br/>有结果：产出事件并返回"] -->|无完成结果且未请求关闭| ready["按顺序检查就绪<br/>Backend → Service"]
+        ready --> take["轮询任务来源"]
+        take -->|有任务| dispatch["Service::call(task)<br/>将 Future 加入执行中队列"]
+        dispatch --> drive
+        ready -.->|Pending| wait["返回 Pending<br/>等待唤醒后再轮询"]
+        take -.->|Pending| wait
+        wait -.-> drive
     end
-
-    Middleware-->>-Worker: 返回最终结果
-    opt 后端支持时
-        Worker->>Backend: 确认处理结果
-    end
-    Worker->>Worker: 通知事件监听器
+    take -->|EOF| drain["停止接收新任务<br/>继续推进并排空执行中队列"]
+    stop["Worker 关闭请求"] --> drain
+    drain --> close["完成 Backend::poll_close<br/>等待 Worker 清理完成"]
+    close --> done(["Exit"])
+    classDef action fill:#ecfdf5,stroke:#10b981,color:#064e3b
+    classDef waiting fill:#fffbeb,stroke:#d97706,color:#78350f
+    classDef ending fill:#eff6ff,stroke:#3b82f6,color:#172554
+    class drive,ready,take,dispatch action
+    class wait waiting
+    class start,stop,drain,close,done ending
 ```
 
-**领取任务。** Worker 在后端和执行链都就绪后才领取任务。速率限制控制任务开始的频率，并发限制控制同时处理的任务数量；当额度或名额耗尽时，worker 会等待其恢复后再领取任务。
+**推进与领取。** Worker 优先推进执行中的 Future；有完成结果时，产出事件并结束本次轮询。没有完成结果且未请求关闭时，依次检查后端和执行链是否就绪，再领取任务。调用执行链后，返回的 Future 加入执行中队列，无需等该任务完成才领取下一项。速率限制控制任务开始的频率，并发限制控制同时处理的任务数量；当额度或名额耗尽时，worker 会等待其恢复后再领取任务。
 
 **执行与重试。** 请求按中间件的添加顺序进入，响应按相反顺序返回。执行失败时，重试层根据错误、剩余次数和任务及 worker 状态决定是否再次调用内层处理器。重试在当前 worker 中完成，无需重新入队。[`basic`](examples/basic/src/main.rs) 将限流和并发限制放在 retry 外层，将 tracing 放在内层：同一任务重试时沿用并发名额，每次尝试都有独立的 span。
 
-**完成与关闭。** 任务返回最终结果后，后端执行其支持的完成确认或结果保存，worker 通过 `on_event` 通知成功或错误。正常关闭时，worker 停止领取新任务，等待执行中的任务与后端清理完成。需要保存业务进度的处理器可通过 `WorkerContext::is_shutting_down()` 检测关闭请求并收尾，见 [`graceful-shutdown`](examples/graceful-shutdown/src/main.rs)。
+**等待与结束。** `Pending` 表示当前无法继续推进，Worker 等待唤醒后再次轮询；EOF 表示任务来源结束，进入排空流程。
+
+**完成与关闭。** 配置的后端集成可提供完成确认或结果保存，worker 通过 `on_event` 通知成功或错误。正常关闭或后端 EOF 后，Worker 停止领取新任务，排空执行中队列，完成 `Backend::poll_close`，再等待 Worker 清理完成并发出 `Exit`。需要保存业务进度的处理器可通过 `WorkerContext::is_shutting_down()` 检测关闭请求并收尾，见 [`graceful-shutdown`](examples/graceful-shutdown/src/main.rs)。
 
 ## 可观测性
 
