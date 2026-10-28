@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- fix(workflow): propagate filter collector errors ([#85](https://github.com/nanfeng-labs/miju/pull/85))
 - fix(core): preserve selected monitor termination errors ([#84](https://github.com/nanfeng-labs/miju/pull/84))
 - fix(sentry): finish transactions when task futures are dropped ([#83](https://github.com/nanfeng-labs/miju/pull/83))
 - fix(workflow): reject overflowing graph progress ([#82](https://github.com/nanfeng-labs/miju/pull/82))
