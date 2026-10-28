@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- fix(workflow)!: return errors for invalid tuple input counts ([#91](https://github.com/nanfeng-labs/miju/pull/91))
 - docs: add bilingual architecture guides ([#88](https://github.com/nanfeng-labs/miju/pull/88))
 - fix(workflow): propagate filter collector errors ([#85](https://github.com/nanfeng-labs/miju/pull/85))
 - fix(core): preserve selected monitor termination errors ([#84](https://github.com/nanfeng-labs/miju/pull/84))
