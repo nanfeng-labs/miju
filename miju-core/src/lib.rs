@@ -5,6 +5,8 @@
 //! monitoring. Workers execute handlers with middleware and lifecycle tracking;
 //! backends supply tasks and define their storage capabilities.
 //!
+//! [简体中文指南](https://github.com/nanfeng-labs/miju/blob/main/miju-core/README.zh-CN.md)
+//!
 //! # Core Concepts
 //!
 //! - **[`Tasks`](#tasks)**: Type-safe task data structures with processing metadata

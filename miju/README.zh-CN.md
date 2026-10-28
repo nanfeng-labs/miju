@@ -1,59 +1,17 @@
 <p align="center">
-  <img src="../assets/miju-header.svg" alt="miju" width="480" />
+  <img src="https://raw.githubusercontent.com/nanfeng-labs/miju/main/assets/miju-header.svg" alt="miju" width="480" />
 </p>
 
 <h1 align="center">miju</h1>
 
-<br />
+<p align="center">
+  <a href="https://github.com/nanfeng-labs/miju/blob/main/miju/README.md">English</a>
+</p>
 
-<div align="center">
-  <a href="README.md">English</a>
-</div>
+miju 是后台任务处理的应用入口，将任务、后端、Worker 和 Monitor API
+汇集到一个 [`prelude`] 中，并为 [`WorkerBuilder`](prelude::WorkerBuilder) 扩展中间件组合方法。
 
-<br />
-
-miju 是后台任务处理的应用入口，将任务、后端、Worker 和 Monitor API 汇集到
-一个 [`prelude`] 中，并为 [`WorkerBuilder`](prelude::WorkerBuilder) 扩展中间件组合方法。
 底层类型与 `miju-core` 共享，因此应用与后端集成可以直接交换任务，无需转换。
-
-## 应用集成门面
-
-```mermaid
-flowchart LR
-    app["应用代码<br/>定义 Handler 与任务数据<br/>选择后端、策略及观测配置"] -->|通过统一入口使用| facade
-    subgraph facade["miju · 应用集成门面"]
-        api["公共 API · prelude<br/>Task / Backend<br/>Worker / Monitor<br/>核心类型与扩展"]
-        policy["服务组合 · WorkerBuilderExt<br/>并发 / 限流 / 超时 / 重试<br/>过滤 / panic 捕获<br/>请求、响应与错误映射"]
-        observe["可观测性集成 · layers<br/>任务 tracing / 计数与耗时<br/>上下文传播<br/>错误与事务上报"]
-    end
-    api -->|重新导出 · 共享类型身份| core["miju-core<br/>任务与后端契约<br/>Worker 执行与生命周期<br/>Monitor 协调"]
-    policy -->|按声明顺序组合服务层| middleware["Tower 与 miju 中间件<br/>Layer 包装 Service<br/>组合顺序决定策略作用范围"]
-    observe -->|按 feature 与运行配置接入| telemetry["遥测库与系统<br/>tracing / Prometheus<br/>OpenTelemetry / Sentry"]
-    classDef source fill:#eff6ff,stroke:#3b82f6,color:#172554
-    classDef action fill:#ecfdf5,stroke:#10b981,color:#064e3b
-    classDef support fill:#f5f3ff,stroke:#8b5cf6,color:#2e1065
-    class app,core source
-    class api,policy,observe action
-    class middleware,telemetry support
-    style facade fill:#f8fafc,stroke:#94a3b8,color:#0f172a
-```
-
-图中箭头表示 API 依赖与组合关系，不表示任务执行顺序。
-执行策略与可观测性按职责分列，两者都通过服务层集成。
-
-**共享核心类型。** prelude 重新导出选定的核心 API，保留与 `miju-core` 相同的类型身份。
-应用与后端集成可以直接交换任务，无需转换。具体支持哪些查询与管理操作，
-仍取决于所选后端实现的能力接口。
-
-**有序的服务组合。** `WorkerBuilderExt` 为核心 `WorkerBuilder` 添加中间件，以及请求、响应和错误转换。
-先添加的层包裹后添加的层：请求按添加顺序进入，响应与错误反向返回。
-因此，组合顺序决定重试、超时和观测的作用范围。
-panic 捕获适用于栈展开 panic，具体边界见 [Panic 处理](#panic-处理)。
-
-**显式配置集成。** feature 使对应 API 可用；应用仍需挂载中间件，
-并配置 subscriber、recorder、provider 或客户端。
-OpenTelemetry 追踪上下文传播还需要启用 `tracing`，并完成 [OpenTelemetry](#opentelemetry) 一节中的配置。
-可选的 `config` feature 提供 Worker 与中间件的[配置驱动构建入口](#worker-配置)。
 
 ## 快速开始
 
@@ -133,19 +91,46 @@ miju = { version = "0.1.1", default-features = false, features = ["timeout"] }
 `full` 不会启用 `shared` 或 `docsrs`；Cargo 的 `--all-features` 会同时启用它们。
 核心序列化能力通过 `miju-core/serde` 提供。
 
-## 任务处理
+## 应用集成门面
+
+```mermaid
+flowchart LR
+    app["应用代码<br/>定义 Handler 与任务数据<br/>选择后端、策略及观测配置"] -->|通过统一入口使用| facade
+    subgraph facade["miju · 应用集成门面"]
+        api["公共 API · prelude<br/>Task / Backend<br/>Worker / Monitor<br/>核心类型与扩展"]
+        policy["服务组合 · WorkerBuilderExt<br/>并发 / 限流 / 超时 / 重试<br/>过滤 / panic 捕获<br/>请求、响应与错误映射"]
+        observe["可观测性集成 · layers<br/>任务 tracing / 计数与耗时<br/>上下文传播<br/>错误与事务上报"]
+    end
+    api -->|重新导出 · 共享类型身份| core["miju-core<br/>任务与后端契约<br/>Worker 执行与生命周期<br/>Monitor 协调"]
+    policy -->|按声明顺序组合服务层| middleware["Tower 与 miju 中间件<br/>Layer 包装 Service<br/>组合顺序决定策略作用范围"]
+    observe -->|按 feature 与运行配置接入| telemetry["遥测库与系统<br/>tracing / Prometheus<br/>OpenTelemetry / Sentry"]
+    classDef source fill:#eff6ff,stroke:#3b82f6,color:#172554
+    classDef action fill:#ecfdf5,stroke:#10b981,color:#064e3b
+    classDef support fill:#f5f3ff,stroke:#8b5cf6,color:#2e1065
+    class app,core source
+    class api,policy,observe action
+    class middleware,telemetry support
+    style facade fill:#f8fafc,stroke:#94a3b8,color:#0f172a
+```
+
+图中箭头表示 API 依赖与组合关系，不表示任务执行顺序。
+执行策略与可观测性按职责分列，两者都通过服务层集成。
+
+### 任务与 Worker
 
 - [`Task`](prelude::Task) 保存载荷和执行上下文。
   [`TaskBuilder`](prelude::TaskBuilder) 在任务经 [`TaskSink`](prelude::TaskSink) 提交前设置队列与执行元数据。
 - [`WorkerBuilder`](prelude::WorkerBuilder) 将后端与异步处理器连接起来。
   [`Data`](prelude::Data) 让处理器除了参数和 [`WorkerContext`](prelude::WorkerContext) 之外，还能访问应用状态。
 - [`WorkerBuilderExt`](layers::WorkerBuilderExt) 提供可选层、函数层，以及对请求、响应、错误和 Future 的转换。
-  先添加的层包裹后添加的层：请求按添加顺序经过各层，结果则按相反顺序返回。
+  先添加的层包裹后添加的层：请求按添加顺序经过各层，响应与错误反向返回。
+  组合顺序决定重试、超时和观测的作用范围。
 - [`Monitor`](prelude::Monitor) 协调多个 Worker 及其关闭。
   [`EventListenerExt`](prelude::EventListenerExt) 观察 Worker 生命周期和处理事件。
 
 应用代码可使用 `miju::prelude::*`。也可以从 [`task`]、[`backend`] 和 [`error`] 模块显式导入。
 实现后端或 Worker 内部功能的库可以直接依赖 `miju-core`。
+查询与管理操作取决于所选后端实现的能力接口。
 
 ## 执行控制
 
@@ -259,6 +244,8 @@ async fn main() -> Result<(), BoxDynError> {
 使用 `.with_backoff(...)` 在重试之间等待，使用 `.retry_if(...)` 选择可重试的错误。
 将 `.retry(...)` 放在需要重试其错误的层之前。`layers::retry` 模块重新导出 Tower 的重试与退避 API。
 
+### 重试元数据与失败处理
+
 `RetryMetadataExt::retries` 将 `RetryConfig` 存入任务，通过 `.from_task_config()` 启用读取。
 这个包装器将配置值与包含首次执行及执行前失败的总尝试次数比较，同时应用内层策略的限制。
 执行前失败会消耗预算，但不会推进任务共享的尝试计数器。
@@ -279,7 +266,9 @@ async fn main() -> Result<(), BoxDynError> {
 就绪检查、自定义 panic 处理器，以及独立派生任务中的 panic 不在此层的捕获范围内。
 Rust 的 panic hook 仍会运行；使用 `panic = "abort"` 的构建无法通过此中间件恢复。
 
-## 任务追踪
+## 可观测性
+
+### 任务追踪
 
 使用默认的 `tracing` feature 时，调用 `enable_tracing()`，将处理过程包裹在带有开始、成功和失败事件的 span 中。
 在应用中配置 tracing subscriber，以收集这些事件和 core 生命周期日志。
@@ -321,7 +310,7 @@ worker.run().await?;
 同时启用 `opentelemetry` 时，`ContextualTaskSpan` 可以恢复已存储的远程父上下文。
 默认工厂仍使用当前活跃的 span。
 
-## Prometheus 指标
+### Prometheus 指标
 
 启用 `prometheus`，并通过 Worker builder 的 `.layer(...)` 方法添加
 `miju::layers::prometheus::PrometheusLayer::default()`，以记录已完成任务及其耗时。
@@ -332,7 +321,7 @@ worker.run().await?;
 启用 `prometheus` feature 才能访问该模块。Exporter 的传输 feature 默认关闭，
 因此启用此中间件不会启动 HTTP 监听器或推送网关。
 
-## OpenTelemetry
+### OpenTelemetry
 
 启用 `opentelemetry`，并通过 `.layer(...)` 添加
 `miju::layers::opentelemetry::OpenTelemetryMetricsLayer::default()`，以记录已完成任务数和处理耗时。
@@ -346,7 +335,7 @@ Exporter 及其 flush、shutdown 生命周期仍由应用管理。
 `OtelTraceContext` 文档包含可运行的传播示例。
 仅启用 `opentelemetry` 不会启用 tracing 模块，也不会切换默认 span 工厂。
 
-## Sentry
+### Sentry
 
 启用 `sentry`，并通过 `.layer(...)` 添加 `miju::layers::sentry::SentryLayer::new()`，
 以报告任务错误和 transaction。此 feature 启用 UUID 任务 ID 转换，因此要求 Rust 1.89。
