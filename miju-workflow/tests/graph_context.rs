@@ -164,6 +164,41 @@ fn missing_required_fields_and_invalid_indices_or_task_ids_are_reported() {
 }
 
 #[test]
+fn node_indices_reject_values_above_their_storage_range() {
+    for (key, value) in [
+        ("miju_workflow.graph.current_node", "4294967296"),
+        ("miju_workflow.graph.prev_node", "4294967296"),
+        ("miju_workflow.graph.completed_nodes", "0,4294967296"),
+        ("miju_workflow.graph.node_task_ids", "4294967296=task"),
+    ] {
+        let mut metadata = required_metadata();
+        metadata.replace(key, value);
+        assert!(
+            matches!(
+                GraphFlowContext::extract(&metadata),
+                Err(GraphFlowContextError::ParseNodeIndex(_))
+            ),
+            "{key} must not alias a different node"
+        );
+    }
+}
+
+#[test]
+fn largest_node_index_and_host_sized_position_round_trip() {
+    let context = GraphFlowContext {
+        prev_node: Some(NodeIndex::from(u32::MAX)),
+        current_node: NodeIndex::from(u32::MAX),
+        completed_nodes: HashSet::from([NodeIndex::from(u32::MAX)]),
+        node_task_ids: HashMap::from([(NodeIndex::from(u32::MAX), TaskId::from_int(42))]),
+        current_position: usize::MAX,
+        ..GraphFlowContext::default()
+    };
+    let mut metadata = MetadataStore::new();
+    context.inject(&mut metadata).unwrap();
+    assert_context_eq(&GraphFlowContext::extract(&metadata).unwrap(), &context);
+}
+
+#[test]
 fn duplicate_keys_return_errors_without_overwriting_existing_values() {
     let context = GraphFlowContext::new(Some(TaskId::from_string("root")));
     let mut metadata = MetadataStore::new();
