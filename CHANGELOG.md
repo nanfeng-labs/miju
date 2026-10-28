@@ -2,7 +2,8 @@
 
 ## [Unreleased]
 
-- fix(workflow): reject unregistered sequential steps ([#87](https://github.com/nanfeng-labs/miju/pull/87))
+- fix(core): finish retry readiness during shutdown ([#80](https://github.com/nanfeng-labs/miju/pull/80))
+- fix(file-storage): preserve CSV completion results ([#79](https://github.com/nanfeng-labs/miju/pull/79))
 - fix(core): preserve shared persistence event channels ([#78](https://github.com/nanfeng-labs/miju/pull/78))
 - fix(core): finalize interrupted task executions ([#77](https://github.com/nanfeng-labs/miju/pull/77))
 - fix(core): share worker names across restarts ([#76](https://github.com/nanfeng-labs/miju/pull/76))
@@ -14,6 +15,7 @@
 - fix(workflow): preserve predecessor IDs for single-edge joins ([#70](https://github.com/nanfeng-labs/miju/pull/70))
 - fix(file-storage): preserve CSV metadata keys on reopen ([#69](https://github.com/nanfeng-labs/miju/pull/69))
 - fix(file-storage): preserve application line metadata ([#68](https://github.com/nanfeng-labs/miju/pull/68))
+- fix(workflow): reject unregistered sequential steps ([#87](https://github.com/nanfeng-labs/miju/pull/87))
 
 ## [0.1.1](https://github.com/nanfeng-labs/miju/releases/tag/v0.1.1)
 

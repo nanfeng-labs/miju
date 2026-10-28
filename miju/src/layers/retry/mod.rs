@@ -95,8 +95,10 @@
 //! whether it should be retried.
 //!
 //! Shutdown is checked when deciding on a retry. If a worker stops during an
-//! already scheduled backoff, the retry can remain waiting for service readiness.
-//! Bound the worker's run future when shutdown requires a deadline.
+//! already scheduled backoff, that wait is allowed to finish. When polled for
+//! readiness, the worker's lifecycle rejects the retry with an [`AbortError`]
+//! without executing the task again. Bound the worker's run future when shutdown
+//! requires a deadline.
 
 use miju_core::error::{AbortError, BoxDynError};
 
