@@ -136,9 +136,9 @@
 //!
 //! ## Error Handling
 //!
-//! Without a terminator, worker failures are collected into `MonitorError`.
-//! The terminator branch of `run_with_signal` returns `Ok(())` after either branch
-//! completes, including when that branch produced an error.
+//! Worker failures are collected into `MonitorError`.
+//! With a terminator, `run_with_signal` returns the result of whichever branch
+//! completes first: the workers, or the shutdown signal followed by the terminator.
 //! You can inspect the error to see which workers failed and why.
 //!
 //! [Worker]: crate::worker::Worker
@@ -152,7 +152,7 @@ use std::{
 
 use futures_util::{
     Future, FutureExt, StreamExt,
-    future::{BoxFuture, Shared},
+    future::{BoxFuture, Either, Shared},
     stream::FuturesUnordered,
 };
 use tower_layer::Layer;
@@ -210,7 +210,7 @@ impl Future for MonitoredWorker {
         loop {
             let mut this = self.as_mut().project();
             let worker = this.worker;
-            let _name = worker.name().to_owned();
+            let _name = worker.name();
             debug!(name = ?_name, "polling worker");
 
             // There is no future to poll.
@@ -432,11 +432,9 @@ impl Monitor {
             factory: Box::new(move |worker| {
                 let mut new_worker = factory(worker.restarts());
 
-                // Replace current worker name with new name
-                if worker.name().ne(new_worker.context.name()) {
-                    let name = Arc::make_mut(&mut worker.name);
-                    *name = new_worker.context.name().to_owned();
-                }
+                // Publish the factory's name to every retained context before restarting.
+                let name = new_worker.context.name();
+                *worker.name.write().unwrap() = name;
 
                 // Reuse the current context
                 new_worker.context = worker.clone();
@@ -513,7 +511,10 @@ impl Monitor {
     ///
     /// # Errors
     ///
-    /// If the monitor fails to shutdown gracefully, an `std::io::Error` will be returned.
+    /// Worker failures return [`MonitorError::ExitError`], and signal failures
+    /// return [`MonitorError::ShutdownSignal`]. With a terminator, only the first
+    /// completed branch's result is returned; the signal branch still waits for
+    /// the terminator before completing.
     ///
     /// # Remarks
     ///
@@ -532,7 +533,7 @@ impl Monitor {
             res
         };
         if let Some(terminator) = self.terminator {
-            let _res = futures_util::future::select(
+            let res = futures_util::future::select(
                 Self::run_all_workers(self.workers, shutdown).boxed(),
                 async {
                     let res = shutdown_after.await;
@@ -542,6 +543,9 @@ impl Monitor {
                 .boxed(),
             )
             .await;
+            match res {
+                Either::Left((result, _)) | Either::Right((result, _)) => result?,
+            }
         } else {
             let runner = self.run();
             let res = futures_util::join!(shutdown_after, runner); // If no terminator is provided, we wait for both the shutdown call and all workers to complete
@@ -949,7 +953,7 @@ mod tests {
     fn assert_send_sync<T: Send + Sync>() {}
 
     #[tokio::test]
-    async fn terminator_branch_discards_worker_and_signal_errors() {
+    async fn terminator_branch_preserves_selected_result() {
         fn failing_monitor() -> Monitor {
             Monitor::new().register(|_| {
                 let backend =
@@ -964,18 +968,19 @@ mod tests {
             failing_monitor().run().await,
             Err(MonitorError::ExitError(_))
         ));
-        assert!(
+        assert!(matches!(
             failing_monitor()
                 .with_terminator(std::future::pending())
                 .run_with_signal(std::future::pending())
-                .await
-                .is_ok()
-        );
+                .await,
+            Err(MonitorError::ExitError(_))
+        ));
         let signal = || async { Err::<(), _>(io::Error::other("signal")) };
         assert!(matches!(
             Monitor::new().run_with_signal(signal()).await,
             Err(MonitorError::ShutdownSignal(_))
         ));
+        // An empty monitor's worker branch completes before polling the signal.
         assert!(
             Monitor::new()
                 .with_terminator(std::future::ready(()))

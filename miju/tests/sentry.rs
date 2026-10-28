@@ -3,20 +3,67 @@
 #![cfg(feature = "sentry")]
 
 use std::{
-    future::{Ready, ready},
+    future::{Future, Ready, ready},
     io,
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     },
-    task::{Context, Poll},
+    task::{Context, Poll, Waker},
 };
 
 use miju::{
-    layers::sentry::{SentryLayer, SentryTaskError},
+    layers::sentry::{SentryHttpFuture, SentryLayer, SentryTaskError},
     prelude::*,
 };
 use tower::{Service, ServiceExt, service_fn};
+
+#[test]
+fn cancellation_releases_the_inner_future_before_and_after_polling() {
+    struct PendingTask(Arc<AtomicUsize>);
+
+    impl Future for PendingTask {
+        type Output = Result<(), BoxDynError>;
+
+        fn poll(self: std::pin::Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
+            Poll::Pending
+        }
+    }
+
+    impl Drop for PendingTask {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    for poll in [false, true] {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let observed = drops.clone();
+        let mut service =
+            SentryLayer::new().layer(service_fn(move |_: Task<()>| PendingTask(observed.clone())));
+        let mut future = Box::pin(service.call(TaskBuilder::new(()).task_id(1u64.into()).build()));
+        if poll {
+            assert!(
+                future
+                    .as_mut()
+                    .poll(&mut Context::from_waker(Waker::noop()))
+                    .is_pending()
+            );
+        }
+        drop(future);
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+    }
+}
+
+#[test]
+fn future_retains_auto_traits_for_a_ready_inner_future() {
+    fn assert_traits<
+        T: Send + Sync + Unpin + std::panic::UnwindSafe + std::panic::RefUnwindSafe,
+    >() {
+    }
+
+    assert_traits::<SentryHttpFuture<Ready<Result<(), std::convert::Infallible>>>>();
+}
 
 #[tokio::test]
 async fn boxed_results_are_preserved_or_wrapped_without_requiring_a_client() {

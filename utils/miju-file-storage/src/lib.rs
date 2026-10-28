@@ -584,6 +584,9 @@ where
 }
 
 /// A CSV adapter for serializing and deserializing tasks.
+///
+/// New files store results in a single versioned column. Existing files
+/// without that column retain the legacy result representation and its limits.
 #[derive(Debug, Clone, Default)]
 pub struct CsvAdapter {
     /// Column names, in BTreeMap (alphabetical) order.
@@ -593,6 +596,39 @@ pub struct CsvAdapter {
 
 /// A `FileStorage` using `CsvAdapter` for line encoding.
 pub type CsvStorage<Args> = FileStorage<Args, CsvAdapter>;
+
+impl CsvAdapter {
+    fn decode_result(encoded: &str) -> io::Result<Option<Value>> {
+        if !encoded.is_ascii() || encoded.len() % 2 != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid CSV result",
+            ));
+        }
+        let bytes = (0..encoded.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&encoded[i..i + 2], 16))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let mut values: Vec<Value> = serde_json::from_slice(&bytes)?;
+        if values.len() > 1 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid CSV result",
+            ));
+        }
+        Ok(values.pop())
+    }
+
+    fn legacy_line(line: &BTreeMap<String, String>) -> io::Result<BTreeMap<String, String>> {
+        let mut line = line.clone();
+        if let Some(encoded) = line.remove("result_v1") {
+            let result = Self::decode_result(&encoded)?.unwrap_or(Value::Null);
+            line.extend(util::from_value(Some("result"), &result));
+        }
+        Ok(line)
+    }
+}
 
 impl Adapter for CsvAdapter {
     type Line = BTreeMap<String, String>;
@@ -606,6 +642,18 @@ impl Adapter for CsvAdapter {
             .header
             .lock()
             .map_err(|_| io::Error::other("header mutex poisoned"))?;
+
+        // Keep writing loaded legacy files in their existing representation.
+        let legacy;
+        let line = if header
+            .as_ref()
+            .is_some_and(|cols| !cols.iter().any(|col| col == "result_v1"))
+        {
+            legacy = Self::legacy_line(line)?;
+            &legacy
+        } else {
+            line
+        };
 
         if header.is_none() {
             let cols: Vec<String> = line.keys().cloned().collect();
@@ -653,11 +701,25 @@ impl Adapter for CsvAdapter {
     fn to_entry(&self, line: Self::Line) -> Result<RawTask, Self::Error> {
         let args = util::to_value(Some("args"), &line);
 
-        let mut result = None;
-
-        if line.contains_key("result") {
-            result = Some(util::to_value(Some("result"), &line));
-        }
+        let result = if let Some(encoded) = line.get("result_v1") {
+            Self::decode_result(encoded)?
+        } else {
+            let header = self
+                .header
+                .lock()
+                .map_err(|_| io::Error::other("header mutex poisoned"))?;
+            if header
+                .as_ref()
+                .is_some_and(|cols| cols.iter().any(|col| col == "result_v1"))
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "missing CSV result",
+                ));
+            }
+            line.contains_key("result")
+                .then(|| util::to_value(Some("result"), &line))
+        };
 
         let idempotency_key = line.get("idempotency_key").cloned();
 
@@ -691,13 +753,12 @@ impl Adapter for CsvAdapter {
 
         line.extend(args);
 
-        let result = entry
-            .result
-            .as_ref()
-            .map(|r| util::from_value(Some("result"), r))
-            .unwrap_or_else(|| util::from_value(Some("result"), &serde_json::Value::Null));
-
-        line.extend(result);
+        // A zero/one-element array distinguishes pending from a stored JSON null.
+        let result = serde_json::to_vec(entry.result.as_slice())?
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        line.insert("result_v1".to_owned(), result);
 
         if let Some(idempotency_key) = &entry.idempotency_key {
             line.insert("idempotency_key".to_owned(), idempotency_key.clone());
@@ -735,7 +796,16 @@ impl Adapter for CsvAdapter {
     fn header(&self, entries: &Vec<RawTask>) -> Option<Vec<u8>> {
         let first = entries.first()?;
 
-        let line = Self::from_entry(first).ok()?;
+        let mut line = Self::from_entry(first).ok()?;
+        if self
+            .header
+            .lock()
+            .ok()?
+            .as_ref()
+            .is_some_and(|cols| !cols.iter().any(|col| col == "result_v1"))
+        {
+            line = Self::legacy_line(&line).ok()?;
+        }
 
         let cols: Vec<String> = line.keys().cloned().collect();
         Some(format!("{}\n", cols.join(",")).as_bytes().to_vec())
