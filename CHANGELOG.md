@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- fix(workflow): complete empty folds with their accumulator ([#74](https://github.com/nanfeng-labs/miju/pull/74))
 - fix(core): preserve the full pagination offset range ([#73](https://github.com/nanfeng-labs/miju/pull/73))
 - fix(core): accept single-extractor handler validation ([#72](https://github.com/nanfeng-labs/miju/pull/72))
 - fix(workflow): preserve predecessor IDs in fan-out joins ([#71](https://github.com/nanfeng-labs/miju/pull/71))
