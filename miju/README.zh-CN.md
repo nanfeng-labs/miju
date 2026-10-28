@@ -260,7 +260,8 @@ async fn main() -> Result<(), BoxDynError> {
 将 `.retry(...)` 放在需要重试其错误的层之前。`layers::retry` 模块重新导出 Tower 的重试与退避 API。
 
 `RetryMetadataExt::retries` 将 `RetryConfig` 存入任务，通过 `.from_task_config()` 启用读取。
-这个包装器将配置值与包含首次执行在内的总尝试次数比较，同时应用内层策略的限制。
+这个包装器将配置值与包含首次执行及执行前失败的总尝试次数比较，同时应用内层策略的限制。
+执行前失败会消耗预算，但不会推进任务共享的尝试计数器。
 元数据缺失或无效时，原样使用内层策略。
 
 默认 panic 处理器返回 `AbortError`，两种重试策略都能识别它，包括装箱后的错误。
@@ -351,7 +352,9 @@ Exporter 及其 flush、shutdown 生命周期仍由应用管理。
 以报告任务错误和 transaction。此 feature 启用 UUID 任务 ID 转换，因此要求 Rust 1.89。
 应用负责配置 Sentry SDK 客户端、传输、采样和关闭；仅启用 feature 不会启用客户端。
 
-Transaction 在首次轮询时开始，在任务 Future 完成时结束。
+Transaction 在首次轮询时开始，在任务 Future 完成或已启动的 Future 被丢弃时结束。
+丢弃已启动的 Future 会恢复原 hub 上先前的 span；未设置的 transaction 状态会变为 `Cancelled`，显式设置的状态则保持不变。
+丢弃尚未轮询的 Future 不会启动 transaction。
 该层使用当前 hub，因此应为每个任务提供独立 hub，以隔离 scope 变更。
 取消和自定义 transaction 状态会影响报告。
 `miju::layers::sentry` 模块说明了这些边界，以及直接使用 Tower 服务时的装箱错误要求。

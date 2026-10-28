@@ -289,8 +289,10 @@ errors. Put `.retry(...)` before a layer whose errors should be retried. The
 
 `RetryMetadataExt::retries` stores `RetryConfig` on a task. Enable its use with
 `.from_task_config()`. This wrapper compares the configured value against the
-total attempt count, including the first execution, and also applies the inner
-policy's limit. Missing or invalid metadata uses the inner policy unchanged.
+total attempt count, including the first execution and failures before execution,
+and also applies the inner policy's limit. Pre-execution failures consume the
+budget without advancing the task's shared attempt counter. Missing or invalid
+metadata uses the inner policy unchanged.
 
 The default panic handler returns an `AbortError`, which both retry policies
 recognize even when boxed. Use `.retry_if(...)` to exclude custom panic errors
@@ -399,7 +401,11 @@ Rust 1.89 because it enables UUID task-ID conversion. The application configures
 its Sentry SDK client, transport, sampling, and shutdown; the feature alone does
 not enable a client.
 
-Transactions start on the first poll and finish when the task Future completes.
+Transactions start on the first poll and finish when the task Future completes
+or a started Future is dropped. Dropping a started Future restores the previous
+span on its original hub; an unset transaction status becomes `Cancelled`, while
+an explicitly set status is preserved. Dropping an unpolled Future starts no
+transaction.
 The layer uses the current hub, so provide a separate hub for each task to
 isolate scope changes. Cancellation and custom transaction statuses affect
 reporting. The `miju::layers::sentry` module documents these boundaries and the

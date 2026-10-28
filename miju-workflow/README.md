@@ -190,9 +190,9 @@ Empty inputs and all-filtered collections currently stop at the collector with
 `GoTo::Break([])`; subsequent steps do not run. The entry task returns `GoTo::Done`
 after enqueueing, so waiting for its ID alone does not observe collection
 completion. Fan-out is not transactional: an enqueue failure can leave already
-created element tasks without a collector. Invalid element payloads can panic
-during decoding. Result-stream errors propagate, while malformed collected
-values or unexpected transitions are skipped.
+created element tasks without a collector. Invalid element payloads return decoding errors.
+Result-stream errors, child-result errors, and malformed collected values propagate;
+collected transitions other than `GoTo::Break` are skipped.
 
 ## Fold collections
 
