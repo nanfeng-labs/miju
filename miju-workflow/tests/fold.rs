@@ -228,7 +228,7 @@ async fn malformed_payloads_and_handler_errors_do_not_enqueue_continuations() {
 }
 
 #[tokio::test]
-async fn empty_collection_currently_panics_before_calling_the_handler() {
+async fn empty_collection_returns_default_without_calling_the_handler() {
     let backend = InMemoryWorkflow::<Vec<u32>>::create();
     let mut reader = backend.clone();
     let calls = Arc::new(AtomicUsize::new(0));
@@ -251,20 +251,106 @@ async fn empty_collection_currently_panics_before_calling_the_handler() {
         serde_json::from_slice::<(u64, Vec<u32>)>(&task.args).unwrap(),
         (0, vec![])
     );
-    let panic = AssertUnwindSafe(service.oneshot(task))
-        .catch_unwind()
-        .await
-        .unwrap_err();
-    let message = panic
-        .downcast_ref::<&str>()
-        .copied()
-        .or_else(|| panic.downcast_ref::<String>().map(String::as_str));
-    assert!(
-        message
-            .unwrap()
-            .contains("called `Option::unwrap()` on a `None` value")
-    );
+    let outcome = AssertUnwindSafe(service.oneshot(task)).catch_unwind().await;
+    assert!(outcome.is_ok(), "accepted empty fold must not panic");
+    let GoTo::Break(result) = outcome.unwrap().unwrap() else {
+        panic!("expected terminal accumulator")
+    };
+    assert_eq!(result.result, json!(0));
+    assert!(result.next_task_id.is_none());
     assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert_queue_empty(&mut reader);
+}
+
+#[tokio::test]
+async fn empty_fold_forwards_its_custom_default_in_a_worker() {
+    #[derive(Clone, Debug, Deserialize, Serialize)]
+    struct Total(u64);
+
+    impl Default for Total {
+        fn default() -> Self {
+            Self(13)
+        }
+    }
+
+    let backend = InMemoryWorkflow::create();
+    let mut producer = backend.clone();
+    producer.push(Vec::<u32>::new()).await.unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let handler_calls = calls.clone();
+    let seen = Arc::new(AtomicUsize::new(0));
+    let observed = seen.clone();
+    let flow = SteppedFlow::new("empty-worker")
+        .and_then(async |items: Vec<u32>| items)
+        .fold(move |(sum, item): (Total, u32)| {
+            handler_calls.fetch_add(1, Ordering::SeqCst);
+            async move { Ok::<_, BoxDynError>(Total(sum.0 + u64::from(item))) }
+        })
+        .and_then(move |sum: Total, worker: WorkerContext| {
+            let observed = observed.clone();
+            async move {
+                assert_eq!(sum.0, 13);
+                observed.fetch_add(1, Ordering::SeqCst);
+                worker.stop().unwrap();
+            }
+        });
+    let worker = WorkerBuilder::new("empty-worker")
+        .backend(backend)
+        .build(flow);
+    tokio::time::timeout(DEADLINE, worker.run())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert_eq!(seen.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn empty_restored_collection_forwards_its_existing_accumulator() {
+    let backend = InMemoryWorkflow::<Vec<u32>>::create();
+    let mut reader = backend.clone();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let handler_calls = calls.clone();
+    let seen = Arc::new(AtomicUsize::new(0));
+    let observed = seen.clone();
+    let flow = SteppedFlow::new("restored-empty")
+        .fold(move |(sum, item): (u64, u32)| {
+            handler_calls.fetch_add(1, Ordering::SeqCst);
+            async move { sum + u64::from(item) }
+        })
+        .and_then(move |sum: u64| {
+            let observed = observed.clone();
+            async move {
+                assert_eq!(sum, 41);
+                observed.fetch_add(1, Ordering::SeqCst);
+                sum
+            }
+        });
+    let service: WorkflowService<_, _, Vec<u32>> = flow.into_service(backend).service;
+    let task = TaskBuilder::new(b"[41,[]]".to_vec())
+        .metadata(&FoldState::Collection)
+        .build();
+    let GoTo::Break(result) = service.clone().oneshot(task).await.unwrap() else {
+        panic!("empty restored collection must complete")
+    };
+    assert_eq!(result.result, json!(41));
+    let next = next_task(&mut reader).await;
+    assert_eq!(next.task_id(), result.next_task_id.as_ref());
+    assert_eq!(serde_json::from_slice::<u64>(&next.args).unwrap(), 41);
+    assert_eq!(
+        WorkflowContext::extract(next.metadata())
+            .unwrap()
+            .step_index,
+        1
+    );
+    assert!(matches!(
+        FoldState::extract(next.metadata()),
+        Err(FoldStateError::MissingKey)
+    ));
+    assert_queue_empty(&mut reader);
+    assert!(matches!(service.oneshot(next).await.unwrap(), GoTo::Done));
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert_eq!(seen.load(Ordering::SeqCst), 1);
     assert_queue_empty(&mut reader);
 }
 
