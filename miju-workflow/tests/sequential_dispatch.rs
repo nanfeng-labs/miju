@@ -1,12 +1,25 @@
 //! Sequential dispatch through registered routes and queued continuations.
 
-use std::{collections::HashMap, panic::AssertUnwindSafe, task::Context, time::Duration};
+use std::{
+    collections::HashMap,
+    panic::AssertUnwindSafe,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    task::Context,
+    time::Duration,
+};
 
 use futures_util::{FutureExt, future::poll_fn};
 use miju_core::{
     backend::{Backend, ext::shared::Shared},
-    error::BoxDynError,
-    task::{Task, metadata::Metadata},
+    error::{AbortError, BoxDynError},
+    task::{
+        Task,
+        builder::TaskBuilder,
+        metadata::{Metadata, MetadataStore},
+    },
     worker::context::WorkerContext,
 };
 use miju_workflow::{
@@ -132,4 +145,110 @@ async fn continuation_into_maximum_step_finishes_without_wrapping() {
     );
     let mut cx = Context::from_waker(futures_util::task::noop_waker_ref());
     assert!(Backend::poll_next(&mut backend, &mut cx, &WorkerContext::new("empty")).is_pending());
+}
+
+async fn reject_missing_route(index: usize, empty: bool) {
+    let mut backend = InMemoryWorkflow::<u32>::create();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let observed = Arc::clone(&calls);
+    let step: StepService = BoxCloneSyncService::new(AndThenService::<_, BackendHandle, u32>::new(
+        service_fn(move |task: Task<u32>| {
+            observed.fetch_add(1, Ordering::SeqCst);
+            async move { Ok::<_, BoxDynError>(GoTo::Next(task.args + 1)) }
+        }),
+    ));
+    let services = if empty {
+        HashMap::new()
+    } else {
+        HashMap::from([(0, step), (1, report_context())])
+    };
+    let mut workflow = WorkflowService::<_, u32, u32>::new(services, backend.clone());
+    backend.push_step(7_u32, index).await.unwrap();
+    let task = next_task(&mut backend).await;
+    workflow.ready().await.unwrap();
+    let outcome = AssertUnwindSafe(async { workflow.call(task).await })
+        .catch_unwind()
+        .await;
+    assert!(
+        outcome.is_ok(),
+        "a missing route must return an error without unwinding"
+    );
+    assert!(outcome.unwrap().unwrap_err().is::<AbortError>());
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    let mut cx = Context::from_waker(futures_util::task::noop_waker_ref());
+    assert!(Backend::poll_next(&mut backend, &mut cx, &WorkerContext::new("empty")).is_pending());
+
+    if !empty {
+        backend.push_step(7_u32, 0).await.unwrap();
+        let result = workflow
+            .ready()
+            .await
+            .unwrap()
+            .call(next_task(&mut backend).await)
+            .await
+            .unwrap();
+        let GoTo::Next(response) = result else {
+            panic!("known route must schedule its successor")
+        };
+        assert_eq!(response.result, json!(8));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let continuation = next_task(&mut backend).await;
+        assert_eq!(continuation.args, b"8");
+        assert_eq!(
+            WorkflowContext::extract(continuation.metadata())
+                .unwrap()
+                .step_index,
+            1
+        );
+        let GoTo::Break(response) = workflow
+            .ready()
+            .await
+            .unwrap()
+            .call(continuation)
+            .await
+            .unwrap()
+        else {
+            panic!("successor must remain usable")
+        };
+        assert_eq!(response.result, json!({"index": 1, "has_next": false}));
+    }
+}
+
+#[tokio::test]
+async fn unknown_step_is_rejected_without_disrupting_registered_steps() {
+    reject_missing_route(9, false).await;
+}
+
+#[tokio::test]
+async fn unknown_maximum_step_is_rejected_without_wrapping() {
+    reject_missing_route(usize::MAX, false).await;
+}
+
+#[tokio::test]
+async fn empty_workflow_rejects_tasks_after_successful_readiness() {
+    reject_missing_route(0, true).await;
+}
+
+#[tokio::test]
+async fn missing_and_malformed_metadata_keep_dispatching_to_zero() {
+    let mut metadata = MetadataStore::new();
+    metadata
+        .insert("miju_workflow.context.step_index", "invalid")
+        .unwrap();
+    let mut workflow = WorkflowService::<_, u32, u32>::new(
+        HashMap::from([(0, report_context())]),
+        InMemoryWorkflow::<u32>::create(),
+    );
+    for task in [
+        Task::new(b"7".to_vec()),
+        TaskBuilder::new(b"7".to_vec())
+            .with_metadata(metadata)
+            .build(),
+    ] {
+        let GoTo::Break(response) = workflow.ready().await.unwrap().call(task).await.unwrap()
+        else {
+            panic!("step zero must run")
+        };
+        assert_eq!(response.result, json!({"index": 0, "has_next": false}));
+    }
 }

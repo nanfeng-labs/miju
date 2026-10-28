@@ -1,7 +1,7 @@
 use futures_util::{FutureExt, Sink, SinkExt, future::BoxFuture};
 use miju_core::{
     backend::{Backend, BackendConfig, TaskSinkError, WireFormatBackend, codec::Codec},
-    error::BoxDynError,
+    error::{AbortError, BoxDynError},
     task::{Task, builder::TaskBuilder, metadata::Metadata, task_id::GenerateId},
 };
 use serde::Serialize;
@@ -22,6 +22,9 @@ use crate::{
 };
 
 /// The main workflow service that orchestrates the execution of workflow steps.
+///
+/// Requests for unregistered steps return an [`AbortError`], including when no
+/// steps are registered.
 #[derive(Debug)]
 pub struct WorkflowService<B, Input, Output>
 where
@@ -115,10 +118,12 @@ where
             .is_some_and(|next| self.services.contains_key(&next));
         let step_ctx: StepContext<B> = StepContext::new(self.backend.clone(), idx, has_next);
 
-        let svc = self
-            .services
-            .get_mut(&idx)
-            .expect("Attempted to run a step that doesn't exist");
+        let Some(svc) = self.services.get_mut(&idx) else {
+            return async {
+                Err(AbortError::new("Attempted to run a step that doesn't exist").into())
+            }
+            .boxed();
+        };
 
         req.inject_data(step_ctx);
 
