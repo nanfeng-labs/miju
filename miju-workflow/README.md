@@ -436,10 +436,11 @@ results must have `Done` status and contain `FanOut`, `EnqueuedNext` or `Complet
 their values are supplied in incoming edge insertion order. The backend must
 store these responses and implement `WaitForCompletion<GraphNodeResponse>`.
 
-A task without readable graph context starts at the sole entry node, regardless
-of node registration order. Missing or malformed graph metadata takes the
-initial-task path; reinjecting context into partial metadata can fail or panic on
-duplicate keys. Use fresh initial metadata.
+A task without graph context fields starts at the sole entry node, regardless
+of node registration order. If any graph context field is present, extraction
+errors are returned without starting new entry tasks. Node indices must fit in
+`u32`; the progress position remains `usize`. Use fresh metadata for an initial
+task.
 
 The root service clones node services for each call and waits for the selected
 node to be ready before invoking it. Clone-local mutable state does not persist
