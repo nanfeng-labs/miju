@@ -562,7 +562,9 @@ including for fan-in inputs.
 
 Single inputs use `graph::decode::GraphCodec`. Scalars, options and results pass
 through the backend codec. Tuples with two to twelve elements use a list of
-individually encoded elements and panic if its decoded length is wrong. Vectors
+individually encoded elements and return `GraphFlowError::InputCountMismatch` if
+its decoded length is wrong. Their codec errors are wrapped in
+`GraphFlowError::Codec` and retain the original error as their source. Vectors
 and one-element tuples have asymmetric encoding/decoding; for example, byte JSON
 cannot round-trip a nonempty `Vec<u32>` or `(u32,)` through this trait. Node output
 uses ordinary codec encoding, which can differ from the graph tuple layout.

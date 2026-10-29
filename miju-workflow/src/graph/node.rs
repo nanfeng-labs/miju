@@ -30,10 +30,12 @@ use crate::graph::decode::GraphCodec;
 /// Input errors skip the inner service. Handler and output serialization errors
 /// are returned as [`BoxDynError`]. Output encoding uses [`Codec::encode`], not
 /// [`GraphCodec::encode`], so tuple wire layouts may differ for a later node.
+/// Incorrect element counts in tuple input return an error before calling the
+/// inner service.
 ///
 /// # Panics
 /// Calling the service without its codec in task data panics before returning a
-/// future. Single-input tuple decoding can also panic on an incorrect element count.
+/// future.
 pub struct GraphNodeService<S, B, Input>
 where
     S: Service<Task<Input>>,
@@ -94,7 +96,8 @@ where
         + Send
         + Sync
         + Clone,
-    Input: GraphCodec<B, Error = CdcErr> + DeserializeOwned,
+    Input: GraphCodec<B> + DeserializeOwned,
+    <Input as GraphCodec<B>>::Error: Into<BoxDynError>,
     CdcErr: Into<BoxDynError> + Send + 'static,
     S::Future: Send + 'static,
     S::Response: Serialize,
@@ -120,7 +123,7 @@ where
         let req = req.try_map_args(|args| match args {
             NodeInput::Single(args) => match Input::decode(&args, &codec) {
                 Ok(decoded) => Ok(decoded),
-                Err(e) => Err(CdcErr::into(e)),
+                Err(e) => Err(e.into()),
             },
             NodeInput::FanIn(fan_in) => {
                 let value = serde_json::Value::Array(fan_in);

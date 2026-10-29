@@ -245,7 +245,7 @@ async fn ordinary_tuple_output_differs_from_single_input_graph_encoding() {
         .oneshot(input(NodeInput::Single(compact)))
         .await
         .unwrap_err();
-    assert!(error.is::<serde_json::Error>());
+    assert!(error.source().unwrap().is::<serde_json::Error>());
     let (_, output) = next
         .oneshot(input(NodeInput::FanIn(vec![json!(7), json!("next")])))
         .await

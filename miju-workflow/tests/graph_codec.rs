@@ -5,7 +5,10 @@ use std::{collections::BTreeMap, fmt::Debug, panic::catch_unwind};
 use miju_codec::json::JsonCodec;
 use miju_core::backend::codec::Codec;
 use miju_file_storage::JsonStorage;
-use miju_workflow::{graph::decode::GraphCodec, in_memory::InMemoryWorkflow};
+use miju_workflow::{
+    graph::{decode::GraphCodec, error::GraphFlowError},
+    in_memory::InMemoryWorkflow,
+};
 use serde_json::{Value, json};
 
 type BytesBackend = InMemoryWorkflow<u32>;
@@ -13,7 +16,8 @@ type ValueBackend = JsonStorage<u32>;
 
 fn assert_bytes_round_trip<T>(value: T)
 where
-    T: GraphCodec<BytesBackend, Error = serde_json::Error> + Clone + PartialEq + Debug,
+    T: GraphCodec<BytesBackend> + Clone + PartialEq + Debug,
+    T::Error: Debug,
 {
     let codec = JsonCodec::default();
     let expected = value.clone();
@@ -111,9 +115,15 @@ fn codec_errors_from_elements_and_envelopes_are_returned() {
     assert!(error.to_string().contains("key must be a string"));
 
     type Pair = (u32, String);
+    let GraphFlowError::Codec(error) =
+        <Pair as GraphCodec<BytesBackend>>::decode(&b"]".to_vec(), &codec).unwrap_err()
+    else {
+        panic!("expected codec error");
+    };
     assert!(
-        <Pair as GraphCodec<BytesBackend>>::decode(&b"]".to_vec(), &codec)
-            .unwrap_err()
+        error
+            .downcast_ref::<serde_json::Error>()
+            .unwrap()
             .is_syntax()
     );
     let encoded = Codec::encode(
@@ -121,24 +131,25 @@ fn codec_errors_from_elements_and_envelopes_are_returned() {
         &vec![b"\"wrong type\"".to_vec(), b"\"name\"".to_vec()],
     )
     .unwrap();
-    assert!(
-        <Pair as GraphCodec<BytesBackend>>::decode(&encoded, &codec)
-            .unwrap_err()
-            .is_data()
-    );
+    let GraphFlowError::Codec(error) =
+        <Pair as GraphCodec<BytesBackend>>::decode(&encoded, &codec).unwrap_err()
+    else {
+        panic!("expected codec error");
+    };
+    assert!(error.downcast_ref::<serde_json::Error>().unwrap().is_data());
 }
 
 #[test]
-fn tuple_length_mismatches_currently_panic() {
+fn tuple_length_mismatches_return_the_expected_and_actual_counts() {
     let codec = JsonCodec::default();
     for count in [0, 1, 3] {
         let encoded = Codec::encode(&codec, &vec![b"1".to_vec(); count]).unwrap();
-        let panic =
+        let result =
             catch_unwind(|| <(u32, u32) as GraphCodec<BytesBackend>>::decode(&encoded, &codec))
-                .unwrap_err();
-        assert_eq!(
-            panic.downcast_ref::<String>().unwrap(),
-            &format!("Expected 2 elements, got {count}")
-        );
+                .expect("invalid tuple length must not unwind");
+        assert!(matches!(
+            result,
+            Err(GraphFlowError::InputCountMismatch { expected: 2, actual }) if actual == count
+        ));
     }
 }
