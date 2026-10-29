@@ -10,7 +10,7 @@ repository.workspace = true
 description = "Compares local worker spans with producer context propagated through task metadata"
 
 [dependencies]
-miju = { version = "0.1.1", default-features = false, features = ["tracing", "opentelemetry"] }
+miju = { version = "0.2.0", default-features = false, features = ["tracing", "opentelemetry"] }
 email-service = { path = "../email-service", version = "0.1.0" }
 opentelemetry = { version = "0.33.1", default-features = false, features = ["trace"] }
 opentelemetry_sdk = { version = "0.33.1", default-features = false, features = ["trace"] }

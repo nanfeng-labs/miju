@@ -10,8 +10,8 @@ repository.workspace = true
 description = "Demonstrates a typed three-step workflow with delayed continuation and shared state"
 
 [dependencies]
-miju = { version = "0.1.1", default-features = false, features = ["limit", "shared", "tracing"] }
-miju-workflow = { version = "0.1.1" }
+miju = { version = "0.2.0", default-features = false, features = ["limit", "shared", "tracing"] }
+miju-workflow = { version = "0.2.0" }
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1.53.2", default-features = false, features = ["macros", "rt-multi-thread", "time"] }
 tracing = { version = "0.1.44", default-features = false, features = ["std"] }

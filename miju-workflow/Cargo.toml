@@ -1,6 +1,6 @@
 [package]
 name = "miju-workflow"
-version = "0.1.1"
+version = "0.2.0"
 publish = ["crates-io"]
 authors.workspace = true
 edition.workspace = true
@@ -15,8 +15,8 @@ default = ["tracing"]
 tracing = ["dep:tracing", "miju-core/tracing"]
 
 [dependencies]
-miju-core = { version = "0.1.1", default-features = false, features = ["serde", "shared"] }
-miju-codec = { version = "0.1.1" }
+miju-core = { version = "0.2.0", default-features = false, features = ["serde", "shared"] }
+miju-codec = { version = "0.2.0" }
 petgraph = { version = "0.8.3", features = ["serde-1"] }
 dashmap = "6.2.1"
 tracing = { version = "0.1.44", default-features = false, optional = true }
@@ -28,7 +28,7 @@ futures-util = { version = "0.3.34", features = ["sink", "std"], default-feature
 futures-sink = { version = "0.3.34", default-features = false }
 
 [dev-dependencies]
-miju-file-storage = { version = "0.1.1" }
+miju-file-storage = { version = "0.2.0" }
 tokio = { version = "1.53.2", features = ["macros", "rt-multi-thread", "time"] }
 
 [lints]

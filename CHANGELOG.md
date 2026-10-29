@@ -2,13 +2,23 @@
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/nanfeng-labs/miju/releases/tag/v0.2.0)
+
+### Upgrading to v0.2.0
+
+Tuple `GraphCodec` implementations now use `GraphFlowError` as the associated error type for both `encode` and `decode`. Codec failures are preserved as the source, and custom codec errors must implement `Into<BoxDynError>`. Callers that downcast node errors to a codec error should follow the `GraphFlowError` source chain. Invalid tuple input counts return `GraphFlowError::InputCountMismatch` before decoding or invoking the node handler. ([#91](https://github.com/nanfeng-labs/miju/pull/91))
+
+### PR breakdown
+
 - fix(file-storage): avoid shared receiver panics during writes ([#94](https://github.com/nanfeng-labs/miju/pull/94))
+- docs: fix README links and improve reading flow ([#93](https://github.com/nanfeng-labs/miju/pull/93))
 - fix(core): return errors on memory sink lock contention ([#92](https://github.com/nanfeng-labs/miju/pull/92))
 - fix(workflow)!: return errors for invalid tuple input counts ([#91](https://github.com/nanfeng-labs/miju/pull/91))
 - fix(core): renew exhausted circuit probe budgets after cooldown ([#90](https://github.com/nanfeng-labs/miju/pull/90))
 - fix(core): keep backoff polling wakeups active ([#89](https://github.com/nanfeng-labs/miju/pull/89))
-- docs: fix README links and improve reading flow ([#93](https://github.com/nanfeng-labs/miju/pull/93))
 - docs: add bilingual architecture guides ([#88](https://github.com/nanfeng-labs/miju/pull/88))
+- fix(workflow): reject unregistered sequential steps ([#87](https://github.com/nanfeng-labs/miju/pull/87))
+- fix(workflow): escape DOT node labels ([#86](https://github.com/nanfeng-labs/miju/pull/86))
 - fix(workflow): propagate filter collector errors ([#85](https://github.com/nanfeng-labs/miju/pull/85))
 - fix(core): preserve selected monitor termination errors ([#84](https://github.com/nanfeng-labs/miju/pull/84))
 - fix(sentry): finish transactions when task futures are dropped ([#83](https://github.com/nanfeng-labs/miju/pull/83))
@@ -27,8 +37,10 @@
 - fix(workflow): preserve predecessor IDs for single-edge joins ([#70](https://github.com/nanfeng-labs/miju/pull/70))
 - fix(file-storage): preserve CSV metadata keys on reopen ([#69](https://github.com/nanfeng-labs/miju/pull/69))
 - fix(file-storage): preserve application line metadata ([#68](https://github.com/nanfeng-labs/miju/pull/68))
-- fix(workflow): reject unregistered sequential steps ([#87](https://github.com/nanfeng-labs/miju/pull/87))
-- fix(workflow): escape DOT node labels ([#86](https://github.com/nanfeng-labs/miju/pull/86))
+
+### Breaking Changes
+
+- **workflow**: Tuple `GraphCodec::encode` and `decode` now expose `GraphFlowError` as their associated error type. See the upgrading notes above for the required custom-codec and error-inspection changes. ([#91](https://github.com/nanfeng-labs/miju/pull/91))
 
 ## [0.1.1](https://github.com/nanfeng-labs/miju/releases/tag/v0.1.1)
 

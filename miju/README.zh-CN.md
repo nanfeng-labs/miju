@@ -19,7 +19,7 @@ miju 是后台任务处理的应用入口，将任务、后端、Worker 和 Moni
 
 ```toml
 [dependencies]
-miju = "0.1.1"
+miju = "0.2.0"
 tokio = { version = "1", features = ["macros", "rt", "time"] }
 ```
 
@@ -85,7 +85,7 @@ tracing subscriber 和其他遥测客户端由应用安装。
 如需精简配置，仅选择应用使用的 feature：
 
 ```toml
-miju = { version = "0.1.1", default-features = false, features = ["timeout"] }
+miju = { version = "0.2.0", default-features = false, features = ["timeout"] }
 ```
 
 `full` 不会启用 `shared` 或 `docsrs`；Cargo 的 `--all-features` 会同时启用它们。
@@ -145,7 +145,7 @@ flowchart LR
 例如，在默认 feature 基础上添加过滤：
 
 ```toml
-miju = { version = "0.1.1", features = ["filter"] }
+miju = { version = "0.2.0", features = ["filter"] }
 ```
 
 以下 Worker 最多允许四个执行中的调用，每秒最多启动十次调用，并拒绝参数为零的任务。

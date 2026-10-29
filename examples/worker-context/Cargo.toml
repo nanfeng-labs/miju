@@ -10,7 +10,7 @@ repository.workspace = true
 description = "Demonstrates inspecting a running task through a shared worker context"
 
 [dependencies]
-miju = { version = "0.1.1", default-features = false, features = ["task-context", "tracing"] }
+miju = { version = "0.2.0", default-features = false, features = ["task-context", "tracing"] }
 tokio = { version = "1.53.2", default-features = false, features = ["macros", "rt-multi-thread", "time"] }
 tracing = { version = "0.1.44", default-features = false, features = ["std"] }
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["env-filter", "fmt"] }

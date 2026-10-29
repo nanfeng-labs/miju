@@ -1,6 +1,6 @@
 [package]
 name = "miju"
-version = "0.1.1"
+version = "0.2.0"
 publish = ["crates-io"]
 authors.workspace = true
 edition.workspace = true
@@ -72,7 +72,7 @@ full = [
 docsrs = ["dep:document-features"]
 
 [dependencies]
-miju-core = { version = "0.1.1", default-features = false }
+miju-core = { version = "0.2.0", default-features = false }
 tower = { version = "0.5.3", features = ["util"], default-features = false }
 document-features = { version = "0.2", optional = true }
 futures-util = { version = "0.3.34", optional = true, default-features = false }

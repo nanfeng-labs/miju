@@ -10,8 +10,8 @@ repository.workspace = true
 description = "Coordinates worker factories, lifecycle events, and shutdown with a monitor"
 
 [dependencies]
-miju = { version = "0.1.1", default-features = false, features = ["tracing", "opentelemetry"] }
-miju-file-storage = "0.1.1"
+miju = { version = "0.2.0", default-features = false, features = ["tracing", "opentelemetry"] }
+miju-file-storage = "0.2.0"
 email-service = { path = "../email-service", version = "0.1.0" }
 tempfile = "3.27.0"
 tokio = { version = "1.53.2", default-features = false, features = ["macros", "rt-multi-thread", "signal", "time"] }
