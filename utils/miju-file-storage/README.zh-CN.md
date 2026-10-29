@@ -1,18 +1,15 @@
 <p align="center">
-  <img src="../../assets/miju-file-storage-header.svg" alt="miju-file-storage" width="480" />
+  <img src="https://raw.githubusercontent.com/nanfeng-labs/miju/main/assets/miju-file-storage-header.svg" alt="miju-file-storage" width="480" />
 </p>
 
 <h1 align="center">miju-file-storage</h1>
 
-<br />
-
-<div align="center">
-  <a href="README.md">English</a>
-</div>
-
-<br />
+<p align="center">
+  <a href="https://github.com/nanfeng-labs/miju/blob/main/utils/miju-file-storage/README.md">English</a>
+</p>
 
 基于文件的任务存储，实现 `miju-core` 的后端契约。
+
 `JsonStorage<Args>` 存储 JSON 记录，`CsvStorage<Args>` 则使用扁平化的 CSV 表示。
 两者均使用 JSON 编解码器处理任务参数。
 
@@ -66,16 +63,23 @@ flowchart LR
 克隆共享 `entries`、`pending` 和当前文件句柄，但各自维护读取游标，不提供独占任务领取。
 后端的确认层将处理器结果转为 JSON，其中错误表示为字符串，再按内部行标识调用 `set_result`。
 
-`WaitForCompletion` 查询共享内存记录，不会重新打开文件。`wait_for` 每 100 ms 轮询一次，
-对于未知 ID 可能持续等待。`check_status` 省略未知 ID，将无结果记录报告为 `Pending`，
-并按已存结果的成功或失败分类为 `Done` 或 `Failed`。这些状态不跟踪 Worker 实时的 `Running` 状态。
+`WaitForCompletion` 查询共享内存记录，不会重新打开文件：
+
+- `wait_for` 每 100 ms 轮询一次，对于未知 ID 可能持续等待。
+- `check_status` 省略未知 ID，将无结果记录报告为 `Pending`，
+  并按已存结果的成功或失败分类为 `Done` 或 `Failed`。
+  这些状态不跟踪 Worker 实时的 `Running` 状态。
 
 内存更新发生在刷新之前。即使文件写入失败，结果仍可能可见，因此查询到结果不代表已经成功写入文件。
+
+### 打开与重新读取文件
 
 `new` 和 `try_new` 加载现有记录及结果，不会截断文件。
 遇到无效记录时会返回错误，不改变文件内容。每个新实例都会从第一条记录开始读取，
 包括已有结果的记录。`new_temp` 保留临时文件的严格访问权限，
 并在最后一个存储克隆被释放时删除该文件。
+
+### CSV 结果格式与兼容性
 
 新建 CSV 文件将每个结果存入固定的 `result_v1` 列：将 UTF-8 JSON 转为十六进制表示，
 其中空数组表示待处理任务，单元素数组表示已存储的结果。
@@ -110,6 +114,8 @@ flowchart LR
 应保持存储实例存活，处理错误后重试 `flush`。文件操作同步执行；刷新不会将文件或目录同步到持久介质，释放实例也不会刷新待写入变更。
 
 追加任务会唤醒等待中的读取者。
+
+### 共享 JSON 存储
 
 `SharedJsonStore` 基于一个临时 JSON 存储创建类型化的 `MemoryStorage` 句柄，
 通过任务类型元数据区分不同的流。这些句柄采用内存后端的执行契约，
