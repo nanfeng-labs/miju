@@ -21,10 +21,15 @@
 //! let compact = <Input as GraphCodec<Backend>>::encode((7, "ready".to_owned()), &codec)?;
 //! let restored = <Input as GraphCodec<Backend>>::decode(&compact, &codec)?;
 //! assert_eq!(restored, (7, "ready".to_owned()));
-//! # Ok::<(), serde_json::Error>(())
+//! # Ok::<(), miju_workflow::graph::error::GraphFlowError>(())
 //! ```
 
-use miju_core::backend::{Backend, WireFormatBackend, codec::Codec};
+use miju_core::{
+    backend::{Backend, WireFormatBackend, codec::Codec},
+    error::BoxDynError,
+};
+
+use crate::graph::error::GraphFlowError;
 
 /// Convert graph inputs using a backend's compact representation.
 ///
@@ -37,14 +42,15 @@ pub trait GraphCodec<B: WireFormatBackend>: Sized {
 
     /// Encode the input, including any collection envelope used by its implementation.
     ///
-    /// Codec failures are returned without changing their error type.
+    /// Tuple implementations with two or more elements wrap codec errors in
+    /// [`GraphFlowError::Codec`]; other built-in implementations retain their codec error type.
     fn encode(self, codec: &B::Codec) -> Result<B::Compact, Self::Error>;
 
     /// Decode a compact input according to this type's wire layout.
     ///
-    /// # Panics
-    /// Tuple implementations with two or more elements panic when the decoded
-    /// list has the wrong length. Codec decoding failures are returned as errors.
+    /// Tuple implementations with two or more elements return
+    /// [`GraphFlowError::InputCountMismatch`] when the decoded list has the wrong
+    /// length. Their codec errors remain available through [`GraphFlowError::Codec`].
     fn decode(response: &B::Compact, codec: &B::Codec) -> Result<Self, Self::Error>;
 }
 
@@ -100,40 +106,44 @@ macro_rules! impl_entry_for_tuple {
             B: Backend + WireFormatBackend,
             B::Codec: Codec<$T1, Compact = B::Compact, Error = Err> + Codec<Vec<B::Compact>, Compact = B::Compact, Error = Err>,
             $(B::Codec: Codec<$T, Compact = B::Compact, Error = Err>,)+
+            Err: Into<BoxDynError>,
             // Ensure all errors are the same type as T1's error
             $(
                 <B::Codec as Codec<$T>>::Error: Into<<B::Codec as Codec<$T1>>::Error>,
             )+
         {
-            type Error = <B::Codec as Codec<$T1>>::Error;
+            type Error = GraphFlowError;
 
             fn encode(self, codec: &B::Codec) -> Result<B::Compact, Self::Error> {
                 #[allow(non_snake_case)]
                 let ($T1, $($T),+) = self;
 
-                let mut result = vec![B::Codec::encode(codec, &$T1)?];
+                let mut result = vec![B::Codec::encode(codec, &$T1).map_err(|e: Err| GraphFlowError::Codec(e.into()))?];
                 $(
-                    result.push(B::Codec::encode(codec, &$T).map_err(Into::into)?);
+                    result.push(B::Codec::encode(codec, &$T).map_err(|e: Err| GraphFlowError::Codec(e.into()))?);
                 )+
-                let compact = B::Codec::encode(codec, &result)?;
+                let compact = B::Codec::encode(codec, &result).map_err(|e: Err| GraphFlowError::Codec(e.into()))?;
                 Ok(compact)
             }
 
-            fn decode(response: &B::Compact, codec: &B::Codec) -> Result<Self, Err> {
-                let decoded: Vec<B::Compact> = B::Codec::decode(codec, response)?;
+            fn decode(response: &B::Compact, codec: &B::Codec) -> Result<Self, Self::Error> {
+                let decoded: Vec<B::Compact> = B::Codec::decode(codec, response).map_err(|e: Err| GraphFlowError::Codec(e.into()))?;
                 // Count the number of types in the tuple
                 let expected_len = 1 $(+ {let _ = stringify!($T); 1})+;
                 if decoded.len() != expected_len {
-                    panic!("Expected {} elements, got {}", expected_len, decoded.len());
+                    return Err(GraphFlowError::InputCountMismatch {
+                        expected: expected_len,
+                        actual: decoded.len(),
+                    });
                 }
 
                 let mut iter = decoded.into_iter();
 
                 #[allow(non_snake_case)]
-                let $T1 = B::Codec::decode(codec, &iter.next().unwrap())?;
+                let $T1 = B::Codec::decode(codec, &iter.next().unwrap()).map_err(|e: Err| GraphFlowError::Codec(e.into()))?;
                 $(
                     #[allow(non_snake_case)]
-                    let $T = B::Codec::decode(codec, &iter.next().unwrap()).map_err(Into::into)?;
+                    let $T = B::Codec::decode(codec, &iter.next().unwrap()).map_err(|e: Err| GraphFlowError::Codec(e.into()))?;
                 )+
 
                 Ok(($T1, $($T),+))
