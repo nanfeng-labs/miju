@@ -103,9 +103,12 @@ impl<S> CircuitBreakerService<S> {
         }
     }
 
+    /// Return a consistent snapshot, waiting for concurrent statistics updates.
+    ///
+    /// # Panics
+    /// Panics if the statistics lock is poisoned.
     pub fn get_stats(&self) -> CircuitBreakerStats {
-        let res = self.stats.try_read().unwrap();
-        res.stats.clone()
+        self.stats.read().unwrap().stats.clone()
     }
 
     fn should_allow_request(&self) -> bool {
@@ -205,6 +208,14 @@ impl<S> CircuitBreakerService<S> {
     }
 
     fn can_make_request(&mut self, cx: &mut Context<'_>) -> bool {
+        // Closed circuits do not need to mutate the shared recovery state. Keep
+        // readiness polling on the read side so stats readers can proceed.
+        if let Ok(shared) = self.stats.read() {
+            if shared.stats.state == CircuitState::Closed {
+                return true;
+            }
+        }
+
         let Ok(mut shared) = self.stats.write() else {
             return false; // If poisoned, reject request
         };
