@@ -1,18 +1,15 @@
 <p align="center">
-  <img src="../../assets/miju-file-storage-header.svg" alt="miju-file-storage" width="480" />
+  <img src="https://raw.githubusercontent.com/nanfeng-labs/miju/main/assets/miju-file-storage-header.svg" alt="miju-file-storage" width="480" />
 </p>
 
 <h1 align="center">miju-file-storage</h1>
 
-<br />
-
-<div align="center">
-  <a href="README.zh-CN.md">简体中文</a>
-</div>
-
-<br />
+<p align="center">
+  <a href="https://github.com/nanfeng-labs/miju/blob/main/utils/miju-file-storage/README.zh-CN.md">简体中文</a>
+</p>
 
 File-backed task storage implementing the backend contracts in `miju-core`.
+
 `JsonStorage<Args>` stores JSON records, while `CsvStorage<Args>` uses a flattened
 CSV representation. Both use the JSON codec for task arguments.
 
@@ -71,20 +68,25 @@ has its own read cursor. They do not claim tasks exclusively. The backend's
 acknowledgement layer converts the handler outcome to JSON, representing errors
 as strings, and calls `set_result` using the internal line identifier.
 
-`WaitForCompletion` reads shared in-memory records rather than reopening the file.
-`wait_for` polls at 100 ms intervals and can keep waiting for an unknown ID.
-`check_status` omits unknown IDs, reports records without results as `Pending`,
-and classifies stored successful or failed results as `Done` or `Failed`.
-These states do not track the worker's live `Running` state.
+`WaitForCompletion` reads shared in-memory records rather than reopening the file:
+
+- `wait_for` polls at 100 ms intervals and can keep waiting for an unknown ID.
+- `check_status` omits unknown IDs, reports records without results as `Pending`,
+  and classifies stored successful or failed results as `Done` or `Failed`.
+  These states do not track the worker's live `Running` state.
 
 Memory updates precede flushing. A result can remain visible even if its file
 write fails, so finding a result does not establish successful file persistence.
+
+### Opening and reopening files
 
 `new` and `try_new` load existing records and results without truncating the
 file. Invalid records return an error without changing its contents. Each new
 instance starts reading at the first record, including records with results.
 `new_temp` retains the temporary file's restrictive permissions and removes it
 when the last storage clone is dropped.
+
+### CSV result format and compatibility
 
 New CSV files store each result in a fixed `result_v1` column: hexadecimal UTF-8
 JSON containing an empty array for a pending task or a one-element array for a
@@ -126,6 +128,8 @@ File operations are synchronous. Flushing does not sync the file or directory
 to durable media, and dropping storage does not flush pending changes.
 
 Appending a task wakes waiting readers.
+
+### Shared JSON storage
 
 `SharedJsonStore` creates typed `MemoryStorage` handles backed by one temporary
 JSON store. It separates streams by task type metadata. These handles use the
