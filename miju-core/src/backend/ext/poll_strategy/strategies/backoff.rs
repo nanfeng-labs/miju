@@ -16,6 +16,7 @@ pub struct BackoffStrategy {
     current_delay: Duration,
     backoff_config: BackoffConfig,
     delay: Option<Delay>,
+    reset_delay: bool,
 }
 
 impl Clone for BackoffStrategy {
@@ -25,6 +26,7 @@ impl Clone for BackoffStrategy {
             current_delay: self.current_delay,
             backoff_config: self.backoff_config.clone(),
             delay: None,
+            reset_delay: false,
         }
     }
 }
@@ -38,19 +40,26 @@ impl BackoffStrategy {
             current_delay: default_delay,
             backoff_config: config,
             delay: None,
+            reset_delay: false,
         }
     }
 }
 
 impl PollStrategy for BackoffStrategy {
     fn poll_drive(&mut self, cx: &mut Context<'_>, _: &PollSnapshot) -> Poll<Option<()>> {
+        self.reset_delay = false;
         let delay = self
             .delay
             .get_or_insert_with(|| Delay::new(self.current_delay));
         match delay.poll_unpin(cx) {
             Poll::Pending => Poll::Pending,
             Poll::Ready(_) => {
-                self.delay = None;
+                // Keep waking even when a combining strategy does not forward on_poll.
+                *delay = Delay::new(self.current_delay);
+                if delay.poll_unpin(cx).is_ready() {
+                    cx.waker().wake_by_ref();
+                }
+                self.reset_delay = true;
                 Poll::Ready(Some(()))
             }
         }
@@ -63,6 +72,12 @@ impl PollStrategy for BackoffStrategy {
         } else {
             self.default_delay
         };
+        if std::mem::take(&mut self.reset_delay) {
+            // Apply this poll's backoff to the successor already registered by poll_drive.
+            if let Some(delay) = &mut self.delay {
+                delay.reset(self.current_delay);
+            }
+        }
     }
 }
 
