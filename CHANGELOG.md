@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- fix(file-storage): avoid shared receiver panics during writes ([#94](https://github.com/nanfeng-labs/miju/pull/94))
 - docs: fix README links and improve reading flow ([#93](https://github.com/nanfeng-labs/miju/pull/93))
 - docs: add bilingual architecture guides ([#88](https://github.com/nanfeng-labs/miju/pull/88))
 - fix(workflow): propagate filter collector errors ([#85](https://github.com/nanfeng-labs/miju/pull/85))
