@@ -1,55 +1,24 @@
 <p align="center">
-  <img src="../assets/miju-workflow-header.svg" alt="miju-workflow" width="480" />
+  <img src="https://raw.githubusercontent.com/nanfeng-labs/miju/main/assets/miju-workflow-header.svg" alt="miju-workflow" width="480" />
 </p>
 
 <h1 align="center">miju-workflow</h1>
 
-<br />
+<p align="center">
+  <a href="https://github.com/nanfeng-labs/miju/blob/main/miju-workflow/README.zh-CN.md">简体中文</a>
+</p>
 
-<div align="center">
-  <a href="README.zh-CN.md">简体中文</a>
-</div>
+Build typed sequences and dependency graphs of tasks for miju workers.
 
-<br />
+- **[Sequential workflows](#sequential-workflows):** ordinary nonterminal steps encode their outputs and
+  enqueue tasks for the next step. Collection steps filter and map elements or
+  reduce them into an accumulator.
+- **[Graph workflows](#graph-workflows):** graph services execute nodes, enqueue outgoing tasks and
+  collect stored results when branches converge.
 
-Build typed sequences and dependency graphs of tasks for miju workers. Ordinary
-nonterminal steps encode their outputs and enqueue tasks for the next step;
-collection steps filter and map elements or reduce them into an accumulator.
-Graph services execute nodes, enqueue outgoing tasks and collect stored results
-when branches converge.
+## Sequential workflows
 
-## Context
-
-`WorkflowContext` stores a step index
-in task metadata; `StepContext<B>` carries a backend, the current step index, and
-whether another step follows.
-
-## Store a step index
-
-Use the core `Metadata` trait to write and read workflow progress:
-
-```rust
-use miju_core::task::metadata::{Metadata, MetadataStore};
-use miju_workflow::sequential::WorkflowContext;
-
-let mut metadata = MetadataStore::new();
-WorkflowContext { step_index: 2 }.inject(&mut metadata)?;
-let restored = WorkflowContext::extract(&metadata)?;
-assert_eq!(restored.step_index, 2);
-# Ok::<(), miju_workflow::sequential::context::WorkflowContextError>(())
-```
-
-The metadata key is `miju_workflow.context.step_index`. Missing keys, invalid
-unsigned integer values, and duplicate writes return `WorkflowContextError`.
-A default context starts at index zero, but extracting from empty metadata returns
-an error. Neither context checks whether its index names an existing step.
-
-Cloning a `StepContext` clones its backend; sharing behavior depends on that
-backend's `Clone` implementation. The context types carry state only;
-`SteppedFlow` constructs the pipeline and its workflow service dispatches tasks
-to their steps.
-
-## Sequential execution
+### Sequential execution
 
 This diagram follows ordinary `and_then` steps with valid step metadata.
 Each continuation is a new queued task, rather than a direct call to the next
@@ -124,7 +93,36 @@ read `Data<StepContext<B>>` for its position and backend. Each continuation has
 a fresh task ID and step metadata; arbitrary metadata and application data from
 the preceding task are not automatically copied.
 
-## Delay steps
+### Step context
+
+`WorkflowContext` stores a step index
+in task metadata; `StepContext<B>` carries a backend, the current step index, and
+whether another step follows.
+
+Use the core `Metadata` trait to write and read workflow progress:
+
+```rust
+use miju_core::task::metadata::{Metadata, MetadataStore};
+use miju_workflow::sequential::WorkflowContext;
+
+let mut metadata = MetadataStore::new();
+WorkflowContext { step_index: 2 }.inject(&mut metadata)?;
+let restored = WorkflowContext::extract(&metadata)?;
+assert_eq!(restored.step_index, 2);
+# Ok::<(), miju_workflow::sequential::context::WorkflowContextError>(())
+```
+
+The metadata key is `miju_workflow.context.step_index`. Missing keys, invalid
+unsigned integer values, and duplicate writes return `WorkflowContextError`.
+A default context starts at index zero, but extracting from empty metadata returns
+an error. Neither context checks whether its index names an existing step.
+
+Cloning a `StepContext` clones its backend; sharing behavior depends on that
+backend's `Clone` implementation. The context types carry state only;
+`SteppedFlow` constructs the pipeline and its workflow service dispatches tasks
+to their steps.
+
+### Delay steps
 
 Use `delay_for` for a fixed duration or `delay_with` to compute it from the
 decoded task. Both add a separate step that re-enqueues the original payload
@@ -150,7 +148,7 @@ A terminal fixed or computed delay returns `GoTo::Done` without scheduling a
 successor. Computed delays still decode the input and invoke the duration
 function before finishing.
 
-## Filter and map collections
+### Filter and map collections
 
 Use `filter_map` on an iterable to run a handler for each element. Returning
 `Some(value)` keeps the mapped value; `None` discards it. The workflow enqueues
@@ -194,7 +192,7 @@ created element tasks without a collector. Invalid element payloads return decod
 Result-stream errors, child-result errors, and malformed collected values propagate;
 collected transitions other than `GoTo::Break` are skipped.
 
-## Fold collections
+### Fold collections
 
 Use `fold` to reduce an iterable into a single value. The handler receives
 `(accumulator, item)` and returns an accumulator of the same type. Its initial
@@ -247,7 +245,7 @@ default value. When composed after `filter_map`, an all-filtered result stops
 before reaching the fold. Missing or unrecognized fold-state metadata starts
 initialization.
 
-## Repeat until a result is ready
+### Repeat until a result is ready
 
 Use `repeat_until` when a step should run again with the same input until its
 handler returns `Some(output)`. Returning `None` creates a new task at the same
@@ -300,68 +298,9 @@ types. Missing repetition metadata defaults to the initial state. Malformed
 metadata also resets the service's state, although a handler requesting
 `Meta<RepeaterState>` receives an extraction error instead.
 
-## In-memory results
+## Graph workflows
 
-`InMemoryWorkflow::create()` returns a cloneable `Shared` handle. Arguments are
-encoded as JSON bytes; a result-storage layer records each executed task. The
-public `ResultStore`, `StoreResultsLayer`, and `StoreResultsService` types also
-allow inspecting or composing that middleware directly. A task passed directly
-to the layer must already have an ID.
-
-`wait_for` yields results for the requested IDs and finishes after every unique
-requested ID has been observed. Repeated IDs yield one result per task. Waiting
-for an entry task does not wait for all subsequent steps; inspect
-`StepResponse.next_task_id` for continuations, including a fold's final
-`GoTo::Break` and a repeater's `GoTo::Break` between iterations.
-`check_status` returns only results currently stored and omits missing IDs.
-
-Handler errors and output serialization errors are returned as stream errors;
-`check_status` fails if a requested stored task failed. A successful value that
-cannot be decoded into the requested output type instead produces an error
-inside `TaskResult.result`.
-
-Results are process-local, unbounded, and retained after being read. There is no
-persistence or automatic eviction. Wait streams own independent registrations
-and remove them when dropped.
-Reusing the in-memory sink after a failed send to a closed channel can also panic;
-the underlying error mapper is consumed by its first failure.
-
-The backend delivers queued tasks without enforcing scheduling timestamps.
-For temporary-file integration, `miju-file-storage::JsonStorage` remains available
-and is exercised by the sequential integration tests.
-
-## Enqueue workflow tasks
-
-Import `WorkflowSink` to encode and send entry, step or node inputs through a
-compatible backend. Each call generates an ID and enqueues one task:
-
-| Method | Encoding | Workflow metadata |
-| --- | --- | --- |
-| `push_start(args)` | Ordinary backend codec | None; execution starts through the service's entry path. |
-| `start_fan_out(args)` | `GraphCodec` | None; the executor distributes multiple entry inputs. |
-| `push_step(args, index)` | Ordinary backend codec | The requested sequential step index. |
-| `push_node(args, index)` | Ordinary backend codec | Fresh graph context rooted at the generated task ID. |
-
-Inputs may differ from the backend's configured argument type, which supports
-later steps accepting a different type. These helpers do not inspect a workflow
-or validate indices, input types or entry counts. `push_node` leaves the previous
-node and dependency IDs empty; it cannot resume a fan-in or restore existing
-execution progress. `start_fan_out` encodes according to the input type rather
-than graph topology. See the [sink module](sink) for a runnable multi-entry example.
-
-For byte-based JSON, a single tuple node with two or more fields needs the graph
-tuple layout from `start_fan_out`. A single vector node instead expects ordinary
-codec encoding from `push_start`; graph vector encoding is for separately encoded
-entry inputs. The existing `GraphCodec` singleton and collection limits apply.
-
-Encoding failures return `TaskSinkError::CodecError` before sending; backend send
-failures return `TaskSinkError::PushError`. Success means the sink's send operation
-completed, not that handlers ran. Cancellation and partial-send behavior depend
-on the backend. The helpers return no task ID and cannot carry caller-supplied
-metadata, scheduling options or application data; use a task builder and a compact
-backend sink when those details are needed.
-
-## Graph construction
+### Graph construction
 
 `GraphFlow` registers task functions or Tower services and connects their outputs
 to dependent inputs. `add_task` uses a function's Rust type name as its label;
@@ -411,7 +350,7 @@ only label the newest one. Use distinct names without quotes, backslashes or
 newlines when relying on DOT output. `RootGraphService::get_node_by_name_mut`
 also selects the most recently registered node when names repeat.
 
-## Graph execution
+### Graph execution
 
 The diagram follows a simple diamond, `A → B, C → D`, with valid dependency
 mappings, predecessor indices `B = 1` and `C = 2`, and backend result storage.
@@ -536,7 +475,7 @@ the result stream ends. Enqueueing several successors has no rollback on partial
 failure, and retries can repeat handler effects or enqueue duplicate work.
 Nested workflow composition is not available yet.
 
-## Graph data types
+### Graph data types
 
 The `graph` module provides progress metadata, response records and error types.
 `GraphFlowContext` tracks the current and previous nodes, completed nodes,
@@ -583,7 +522,7 @@ results and node/task mappings. `graph::error` supplies `GraphFlowError` and
 `GraphServiceError`, including wrapped source errors. `RootGraphService` uses
 these records to report node execution and continuation scheduling.
 
-## Graph node adapters
+### Graph node adapters
 
 `graph::node::GraphNodeService` wraps a typed Tower service. It accepts
 `graph::NodeInput::Single` containing a backend compact value, or
@@ -634,6 +573,69 @@ Fan-in inputs bypass `GraphCodec::decode`: their JSON values are deserialized as
 an array into the handler input. This preserves the supplied order but does not
 fetch results, check readiness or infer which dependency belongs in each position.
 `RootGraphService` performs that dependency lookup before calling the adapter.
+
+## Backends and task submission
+
+### In-memory results
+
+`InMemoryWorkflow::create()` returns a cloneable `Shared` handle. Arguments are
+encoded as JSON bytes; a result-storage layer records each executed task. The
+public `ResultStore`, `StoreResultsLayer`, and `StoreResultsService` types also
+allow inspecting or composing that middleware directly. A task passed directly
+to the layer must already have an ID.
+
+`wait_for` yields results for the requested IDs and finishes after every unique
+requested ID has been observed. Repeated IDs yield one result per task. Waiting
+for an entry task does not wait for all subsequent steps; inspect
+`StepResponse.next_task_id` for continuations, including a fold's final
+`GoTo::Break` and a repeater's `GoTo::Break` between iterations.
+`check_status` returns only results currently stored and omits missing IDs.
+
+Handler errors and output serialization errors are returned as stream errors;
+`check_status` fails if a requested stored task failed. A successful value that
+cannot be decoded into the requested output type instead produces an error
+inside `TaskResult.result`.
+
+Results are process-local, unbounded, and retained after being read. There is no
+persistence or automatic eviction. Wait streams own independent registrations
+and remove them when dropped.
+Reusing the in-memory sink after a failed send to a closed channel can also panic;
+the underlying error mapper is consumed by its first failure.
+
+The backend delivers queued tasks without enforcing scheduling timestamps.
+For temporary-file integration, `miju-file-storage::JsonStorage` remains available
+and is exercised by the sequential integration tests.
+
+### Enqueue workflow tasks
+
+Import `WorkflowSink` to encode and send entry, step or node inputs through a
+compatible backend. Each call generates an ID and enqueues one task:
+
+| Method | Encoding | Workflow metadata |
+| --- | --- | --- |
+| `push_start(args)` | Ordinary backend codec | None; execution starts through the service's entry path. |
+| `start_fan_out(args)` | `GraphCodec` | None; the executor distributes multiple entry inputs. |
+| `push_step(args, index)` | Ordinary backend codec | The requested sequential step index. |
+| `push_node(args, index)` | Ordinary backend codec | Fresh graph context rooted at the generated task ID. |
+
+Inputs may differ from the backend's configured argument type, which supports
+later steps accepting a different type. These helpers do not inspect a workflow
+or validate indices, input types or entry counts. `push_node` leaves the previous
+node and dependency IDs empty; it cannot resume a fan-in or restore existing
+execution progress. `start_fan_out` encodes according to the input type rather
+than graph topology. See the [sink module](sink) for a runnable multi-entry example.
+
+For byte-based JSON, a single tuple node with two or more fields needs the graph
+tuple layout from `start_fan_out`. A single vector node instead expects ordinary
+codec encoding from `push_start`; graph vector encoding is for separately encoded
+entry inputs. The existing `GraphCodec` singleton and collection limits apply.
+
+Encoding failures return `TaskSinkError::CodecError` before sending; backend send
+failures return `TaskSinkError::PushError`. Success means the sink's send operation
+completed, not that handlers ran. Cancellation and partial-send behavior depend
+on the backend. The helpers return no task ID and cannot carry caller-supplied
+metadata, scheduling options or application data; use a task builder and a compact
+backend sink when those details are needed.
 
 ## Features
 

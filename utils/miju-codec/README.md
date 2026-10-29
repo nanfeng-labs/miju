@@ -1,19 +1,17 @@
 <p align="center">
-  <img src="../../assets/miju-codec-header.svg" alt="miju-codec" width="480" />
+  <img src="https://raw.githubusercontent.com/nanfeng-labs/miju/main/assets/miju-codec-header.svg" alt="miju-codec" width="480" />
 </p>
 
 <h1 align="center">miju-codec</h1>
 
-<br />
-
-<div align="center">
-  <a href="README.zh-CN.md">简体中文</a>
-</div>
-
-<br />
+<p align="center">
+  <a href="https://github.com/nanfeng-labs/miju/blob/main/utils/miju-codec/README.zh-CN.md">简体中文</a>
+</p>
 
 Encoding and decoding strategies for task arguments, results, and other values
-used by backends. Each codec implements
+used by backends.
+
+Each codec implements
 [`Codec`](miju_core::backend::codec::Codec) from `miju-core`; the trait is not
 redefined or re-exported by this crate.
 
@@ -22,17 +20,41 @@ redefined or re-exported by this crate.
 JSON is enabled by default. Disable default features to select only the formats
 your application needs, or to build without any codec implementation.
 
-| Feature | Codec | Compact representation | Required traits |
-| --- | --- | --- | --- |
-| `json` (default) | `json::JsonCodec` | `Vec<u8>`, `String`, or `serde_json::Value` | Serde `Serialize` and owned `Deserialize` |
-| `msgpack` | `msgpack::MsgPackCodec` | `Vec<u8>` | Serde `Serialize` and owned `Deserialize` |
-| `bincode` | `bincode::BincodeCodec` | `Vec<u8>` | Bincode `Encode` and `Decode<()>` |
+| Feature | Codec | Compact representation |
+| --- | --- | --- |
+| `json` (default) | `json::JsonCodec` | `Vec<u8>`, `String`, or `serde_json::Value` |
+| `msgpack` | `msgpack::MsgPackCodec` | `Vec<u8>` |
+| `bincode` | `bincode::BincodeCodec` | `Vec<u8>` |
 
 All three formats support Rust 1.85. Enabling `json` or `msgpack` also enables
 serialization support in `miju-core`. Bincode uses its native traits rather than
 the Serde integration.
 
 ## Using a Codec
+
+Import the shared trait to call `encode` and `decode`:
+
+```rust
+# #[cfg(feature = "json")]
+# {
+use miju_codec::json::JsonCodec;
+use miju_core::backend::codec::Codec;
+
+let codec = JsonCodec::<String>::default();
+let arguments = vec!["report".to_owned(), "daily".to_owned()];
+let encoded = codec.encode(&arguments)?;
+let decoded: Vec<String> = codec.decode(&encoded)?;
+assert_eq!(decoded, arguments);
+# }
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+The compact representation must match what the backend stores. For JSON, choose
+`JsonCodec::<Vec<u8>>`, `JsonCodec::<String>`, or
+`JsonCodec::<serde_json::Value>` explicitly when type inference cannot determine
+the output type.
+
+### Conversion behavior
 
 The diagram shows the representations and return values used by this crate's
 codec implementations. Storage and transport remain integration responsibilities.
@@ -67,36 +89,15 @@ flowchart LR
   store, send, or retry operations. Encoding and decoding errors are returned
   to the caller through the implementation's error type.
 
-Import the shared trait to call `encode` and `decode`:
-
-```rust
-# #[cfg(feature = "json")]
-# {
-use miju_codec::json::JsonCodec;
-use miju_core::backend::codec::Codec;
-
-let codec = JsonCodec::<String>::default();
-let arguments = vec!["report".to_owned(), "daily".to_owned()];
-let encoded = codec.encode(&arguments)?;
-let decoded: Vec<String> = codec.decode(&encoded)?;
-assert_eq!(decoded, arguments);
-# }
-# Ok::<(), Box<dyn std::error::Error>>(())
-```
-
-The decoded type must own its data. The compact representation is selected by
-the codec and must match what the backend stores. For JSON, choose
-`JsonCodec::<Vec<u8>>`, `JsonCodec::<String>`, or
-`JsonCodec::<serde_json::Value>` explicitly when type inference cannot determine
-the output type.
-
 ## Formats and Errors
 
-JSON uses `serde_json` and returns its error type directly. MessagePack uses
-`rmp-serde`'s compact representation, which encodes structs as positional arrays.
-Bincode uses version 2's standard configuration; decoding returns the first
-value and discards the consumed-byte count, accepting trailing bytes. A successful
-decode therefore does not verify that the entire input buffer was consumed.
+- **JSON** uses `serde_json` and returns its error type directly.
+- **MessagePack** uses `rmp-serde`'s compact representation, encoding structs as
+  positional arrays.
+- **Bincode** uses version 2's standard configuration. Decoding returns the first
+  value and discards the consumed-byte count, accepting trailing bytes; success
+  does not verify that the entire input buffer was consumed.
+
 Keep compatible types and encoding settings when exchanging or persisting binary data.
 
 MessagePack and Bincode distinguish encoding and decoding failures through
