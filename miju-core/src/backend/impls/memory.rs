@@ -186,6 +186,10 @@ type ArcMemorySink<Args> = Arc<
 type ArcIdempotencySet = Arc<SyncMutex<HashSet<String>>>;
 
 /// Memory sink for sending tasks to the in-memory backend
+///
+/// Lock contention during `start_send` returns [`MemoryStorageError::Other`]
+/// without submitting the task. An idempotency key recorded before contention
+/// remains recorded, as it does after an error from the underlying sink.
 pub struct MemorySink<Args> {
     pub(super) inner: ArcMemorySink<Args>,
     pub(super) idempotency_keys: ArcIdempotencySet,
@@ -273,7 +277,9 @@ impl<Args> Sink<Task<Args>> for MemorySink<Args> {
             item = task.build();
         }
 
-        let mut sink = this.inner.try_lock().unwrap();
+        let mut sink = this.inner.try_lock().ok_or_else(|| {
+            MemoryStorageError::Other("Memory sink is busy; task was not sent".into())
+        })?;
         Pin::new(&mut *sink).start_send_unpin(item)
     }
 

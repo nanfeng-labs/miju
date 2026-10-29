@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - fix(file-storage): avoid shared receiver panics during writes ([#94](https://github.com/nanfeng-labs/miju/pull/94))
+- fix(core): return errors on memory sink lock contention ([#92](https://github.com/nanfeng-labs/miju/pull/92))
 - fix(workflow)!: return errors for invalid tuple input counts ([#91](https://github.com/nanfeng-labs/miju/pull/91))
 - fix(core): renew exhausted circuit probe budgets after cooldown ([#90](https://github.com/nanfeng-labs/miju/pull/90))
 - fix(core): keep backoff polling wakeups active ([#89](https://github.com/nanfeng-labs/miju/pull/89))
