@@ -22,6 +22,9 @@ use crate::JsonStorage;
 /// It is useful for testing, prototyping,
 /// or sharing state between workers in a single process.
 ///
+/// Polling a receiver waits synchronously if a writer holds the shared entry
+/// lock. This can block the polling thread and has no fixed time limit.
+///
 /// # Example
 ///
 /// ```rust,no_run
@@ -130,22 +133,25 @@ impl SharedJsonStore {
         // Create a stream that filters by type T
         let filtered_stream = {
             let queue_config = std::any::type_name::<Args>().to_owned();
-            sender.map(|s| s.unwrap()).filter_map(move |(_, job)| {
-                let queue_config = queue_config.clone();
-                async move {
-                    let queue = job.ctx.get("queue").unwrap_or_default();
-                    if queue == queue_config {
-                        let args = Args::deserialize(&job.args).ok()?;
-                        let task = TaskBuilder::new(args)
-                            .with_metadata(job.ctx)
-                            .task_id(job.task_id)
-                            .build();
-                        Some(task)
-                    } else {
-                        None
+            let mut sender = sender;
+            futures_util::stream::poll_fn(move |cx| sender.poll_next_inner(cx, true))
+                .map(|s| s.unwrap())
+                .filter_map(move |(_, job)| {
+                    let queue_config = queue_config.clone();
+                    async move {
+                        let queue = job.ctx.get("queue").unwrap_or_default();
+                        if queue == queue_config {
+                            let args = Args::deserialize(&job.args).ok()?;
+                            let task = TaskBuilder::new(args)
+                                .with_metadata(job.ctx)
+                                .task_id(job.task_id)
+                                .build();
+                            Some(task)
+                        } else {
+                            None
+                        }
                     }
-                }
-            })
+                })
         };
 
         // Combine the sender and receiver
@@ -169,6 +175,82 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn submission_callbacks_run_outside_the_entry_lock() {
+        use futures_util::FutureExt;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        #[derive(Clone)]
+        struct Args(Option<Arc<dyn Fn() + Send + Sync>>);
+        impl Serialize for Args {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                if let Some(check) = &self.0 {
+                    check();
+                }
+                serializer.serialize_u32(42)
+            }
+        }
+        impl<'de> Deserialize<'de> for Args {
+            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                let _ = u32::deserialize(deserializer)?;
+                Ok(Self(None))
+            }
+        }
+        struct Extension {
+            on_clone: Arc<dyn Fn() + Send + Sync>,
+            on_drop: Arc<dyn Fn() + Send + Sync>,
+        }
+        impl Clone for Extension {
+            fn clone(&self) -> Self {
+                (self.on_clone)();
+                Self {
+                    on_clone: Arc::clone(&self.on_clone),
+                    on_drop: Arc::clone(&self.on_drop),
+                }
+            }
+        }
+        impl Drop for Extension {
+            fn drop(&mut self) {
+                (self.on_drop)();
+            }
+        }
+        let mut factory = SharedJsonStore::new();
+        let mut producer: MemoryStorage<Args> = factory.create().unwrap();
+        let serialized = Arc::new(AtomicUsize::new(0));
+        let cloned = Arc::new(AtomicUsize::new(0));
+        let dropped = Arc::new(AtomicUsize::new(0));
+        let locked = Arc::new(AtomicUsize::new(0));
+        let observe = |count: &Arc<AtomicUsize>| -> Arc<dyn Fn() + Send + Sync> {
+            let count = Arc::clone(count);
+            let locked = Arc::clone(&locked);
+            let entries = Arc::clone(&factory.inner.entries);
+            Arc::new(move || {
+                count.fetch_add(1, Ordering::SeqCst);
+                if entries.try_write().is_err() {
+                    locked.fetch_add(1, Ordering::SeqCst);
+                }
+            })
+        };
+        // Missing task ID exercises raw start_send's into_builder, including
+        // extension cloning and destruction through the real public send path.
+        let task = TaskBuilder::new(Args(Some(observe(&serialized))))
+            .data(Extension {
+                on_clone: observe(&cloned),
+                on_drop: observe(&dropped),
+            })
+            .build();
+        assert!(task.task_id().is_none());
+        // Keep a shared context so into_builder cannot simply unwrap its Arc.
+        let retained = task.clone();
+        producer.push_task(task).now_or_never().unwrap().unwrap();
+        assert!(dropped.load(Ordering::SeqCst) > 0);
+        drop(retained);
+        assert!(serialized.load(Ordering::SeqCst) > 0);
+        assert!(cloned.load(Ordering::SeqCst) > 0);
+        assert!(dropped.load(Ordering::SeqCst) > 0);
+        assert_eq!(locked.load(Ordering::SeqCst), 0);
+    }
 
     const ITEMS: u32 = 10;
 

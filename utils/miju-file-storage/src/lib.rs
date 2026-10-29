@@ -462,15 +462,22 @@ impl<A: Adapter, Args> FileStorage<Args, A> {
     }
 }
 
-impl<A: Adapter + Unpin, Args: Unpin> Stream for FileStorage<Args, A> {
-    type Item = Result<(usize, RawTask), FileStorageError<A>>;
-
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = self.get_mut();
-        let raw_tasks = this
-            .entries
-            .try_read()
-            .map_err(|_| FileStorageError::WouldBlockLock)?;
+impl<A: Adapter + Unpin, Args: Unpin> FileStorage<Args, A> {
+    fn poll_next_inner(
+        &mut self,
+        cx: &Context<'_>,
+        wait_for_writer: bool,
+    ) -> Poll<Option<Result<(usize, RawTask), FileStorageError<A>>>> {
+        let this = self;
+        let raw_tasks = if wait_for_writer {
+            this.entries
+                .read()
+                .map_err(|_| FileStorageError::WouldBlockLock)?
+        } else {
+            this.entries
+                .try_read()
+                .map_err(|_| FileStorageError::WouldBlockLock)?
+        };
         if this.read_cursor < raw_tasks.len() {
             let line_id = this.read_cursor;
             let job = raw_tasks[line_id].clone();
@@ -490,6 +497,14 @@ impl<A: Adapter + Unpin, Args: Unpin> Stream for FileStorage<Args, A> {
             }
             Poll::Pending
         }
+    }
+}
+
+impl<A: Adapter + Unpin, Args: Unpin> Stream for FileStorage<Args, A> {
+    type Item = Result<(usize, RawTask), FileStorageError<A>>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        self.get_mut().poll_next_inner(cx, false)
     }
 }
 
@@ -1028,6 +1043,43 @@ mod tests {
         assert_eq!(line_id, 0);
         assert_eq!(entry.task_id, id);
         assert_eq!(entry.args, 42);
+    }
+
+    #[test]
+    fn public_stream_keeps_contention_errors_and_cursor() {
+        let mut store = JsonStorage::<u32>::new_temp().unwrap();
+        let entries = Arc::clone(&store.entries);
+        let guard = entries.write().unwrap();
+        let mut cx = Context::from_waker(futures_util::task::noop_waker_ref());
+        assert!(matches!(
+            store.poll_next_unpin(&mut cx),
+            Poll::Ready(Some(Err(FileStorageError::WouldBlockLock)))
+        ));
+        assert_eq!(store.read_cursor, 0);
+        drop(guard);
+        assert!(store.poll_next_unpin(&mut cx).is_pending());
+    }
+
+    #[test]
+    fn both_read_modes_preserve_poison_errors() {
+        let mut store = JsonStorage::<u32>::new_temp().unwrap();
+        let entries = Arc::clone(&store.entries);
+        assert!(
+            std::thread::spawn(move || {
+                let _guard = entries.write().unwrap();
+                panic!("poison entries for the read error check");
+            })
+            .join()
+            .is_err()
+        );
+        let cx = Context::from_waker(futures_util::task::noop_waker_ref());
+        for wait_for_writer in [false, true] {
+            assert!(matches!(
+                store.poll_next_inner(&cx, wait_for_writer),
+                Poll::Ready(Some(Err(FileStorageError::WouldBlockLock)))
+            ));
+            assert_eq!(store.read_cursor, 0);
+        }
     }
 
     #[tokio::test]
