@@ -4,6 +4,8 @@
 
 ## [0.2.0](https://github.com/nanfeng-labs/miju/releases/tag/v0.2.0)
 
+- bump: to v0.2.0 ([#96](https://github.com/nanfeng-labs/miju/pull/96))
+
 ### Upgrading to v0.2.0
 
 When upgrading from 0.1.x, check code that uses tuple inputs in graph workflows.
