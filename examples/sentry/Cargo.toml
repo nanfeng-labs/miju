@@ -10,7 +10,7 @@ repository.workspace = true
 description = "Reports task errors, isolated breadcrumbs, and nested performance spans to Sentry"
 
 [dependencies]
-miju = { version = "0.1.1", default-features = false, features = ["sentry", "tracing", "limit"] }
+miju = { version = "0.2.0", default-features = false, features = ["sentry", "tracing", "limit"] }
 email-service = { path = "../email-service", version = "0.1.0" }
 sentry = { version = "0.49.3", default-features = false, features = ["transport"] }
 sentry-tower = { version = "0.49.3", default-features = false }

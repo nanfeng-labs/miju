@@ -75,13 +75,13 @@ Add the facade and an async runtime to your application's `Cargo.toml`:
 
 ```toml
 [dependencies]
-miju = { version = "0.1.1" }
+miju = { version = "0.2.0" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 # Optional: workflows, codecs, and file storage
-# miju-workflow = { version = "0.1.1" }
-# miju-codec = { version = "0.1.1" }
-# miju-file-storage = { version = "0.1.1" }
+# miju-workflow = { version = "0.2.0" }
+# miju-codec = { version = "0.2.0" }
+# miju-file-storage = { version = "0.2.0" }
 ```
 
 ## Usage

@@ -21,7 +21,7 @@ Add `miju` and an async runtime to your application. This example uses Tokio:
 
 ```toml
 [dependencies]
-miju = "0.1.1"
+miju = "0.2.0"
 tokio = { version = "1", features = ["macros", "rt", "time"] }
 ```
 
@@ -92,7 +92,7 @@ Default builds require Rust 1.85. The `sentry` and `full` features require Rust
 For a smaller configuration, select only the features the application uses:
 
 ```toml
-miju = { version = "0.1.1", default-features = false, features = ["timeout"] }
+miju = { version = "0.2.0", default-features = false, features = ["timeout"] }
 ```
 
 `full` does not enable `shared` or `docsrs`; Cargo's `--all-features` enables
@@ -160,7 +160,7 @@ worker needs predicates:
 For example, add filtering to the defaults with:
 
 ```toml
-miju = { version = "0.1.1", features = ["filter"] }
+miju = { version = "0.2.0", features = ["filter"] }
 ```
 
 The following worker allows up to four in-flight calls, starts at most ten calls

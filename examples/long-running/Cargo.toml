@@ -10,7 +10,7 @@ repository.workspace = true
 description = "Demonstrates concurrent data export operations collected through TaskRunner"
 
 [dependencies]
-miju = { version = "0.1.1", default-features = false, features = ["limit", "tracing"] }
+miju = { version = "0.2.0", default-features = false, features = ["limit", "tracing"] }
 futures-util = { version = "0.3.34", default-features = false, features = ["std"] }
 tokio = { version = "1.53.2", default-features = false, features = ["macros", "rt-multi-thread", "signal", "time"] }
 tracing = { version = "0.1.44", default-features = false, features = ["std"] }

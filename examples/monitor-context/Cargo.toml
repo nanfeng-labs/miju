@@ -10,8 +10,8 @@ repository.workspace = true
 description = "Observes live workers through monitor context and a terminal status panel"
 
 [dependencies]
-miju = { version = "0.1.1", default-features = false, features = ["tracing", "opentelemetry", "limit", "task-context"] }
-miju-file-storage = "0.1.1"
+miju = { version = "0.2.0", default-features = false, features = ["tracing", "opentelemetry", "limit", "task-context"] }
+miju-file-storage = "0.2.0"
 email-service = { path = "../email-service", version = "0.1.0" }
 rand = "0.10.3"
 tempfile = "3.27.0"

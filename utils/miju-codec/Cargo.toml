@@ -1,6 +1,6 @@
 [package]
 name = "miju-codec"
-version = "0.1.1"
+version = "0.2.0"
 publish = ["crates-io"]
 authors.workspace = true
 edition.workspace = true
@@ -20,7 +20,7 @@ bincode = ["dep:bincode", "dep:thiserror"]
 msgpack = ["dep:rmp-serde", "dep:serde", "miju-core/serde", "dep:thiserror"]
 
 [dependencies]
-miju-core = { version = "0.1.1", default-features = false }
+miju-core = { version = "0.2.0", default-features = false }
 serde = { version = "1.0", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
 bincode = { version = "=2.0.1", optional = true }

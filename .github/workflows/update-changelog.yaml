@@ -93,6 +93,15 @@ jobs:
           headings = [i for i, line in enumerate(lines) if line.strip() == "## [Unreleased]"]
           if len(headings) != 1:
               sys.exit("CHANGELOG.md must contain exactly one ## [Unreleased] heading")
+          release = re.fullmatch(r"bump: to v([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?)", description)
+          if release:
+              # Release PRs belong directly under their version, even after an earlier insertion.
+              version = release.group(1)
+              lines = [line for line in lines if not (line.startswith("- ") and link in line)]
+              heading = rf"## \[{re.escape(version)}\](?:\([^)]*\))?"
+              headings = [i for i, line in enumerate(lines) if re.fullmatch(heading, line.strip())]
+              if len(headings) != 1:
+                  sys.exit(f"Release PR requires exactly one ## [{version}] heading")
           start = headings[0] + 1
           end = next((i for i in range(start, len(lines)) if lines[i].startswith("## ")), len(lines))
           # Preserve the location of entries already organized into release sections.
@@ -103,7 +112,7 @@ jobs:
                   del lines[index]
           else:
               first = next((i for i in range(start, end) if lines[i].strip()), end)
-              padding = [""] if first == end and end < len(lines) else []
+              padding = [""] if (release or first == end) and first < len(lines) else []
               lines[start:first] = ["", entry, *padding]
           updated = "\n".join(lines) + "\n"
           check(updated)
