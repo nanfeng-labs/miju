@@ -1,16 +1,12 @@
 <p align="center">
-  <img src="../assets/miju-core-header.svg" alt="miju-core" width="480" />
+  <img src="https://raw.githubusercontent.com/nanfeng-labs/miju/main/assets/miju-core-header.svg" alt="miju-core" width="480" />
 </p>
 
 <h1 align="center">miju-core</h1>
 
-<br />
-
-<div align="center">
-  <a href="README.md">English</a>
-</div>
-
-<br />
+<p align="center">
+  <a href="https://github.com/nanfeng-labs/miju/blob/main/miju-core/README.md">English</a>
+</p>
 
 为 Rust 后台处理提供任务后端与 Worker 执行能力。
 

@@ -6,6 +6,9 @@ pub struct CircuitBreakerConfig {
     /// Maximum number of failures before opening the circuit
     pub failure_threshold: u32,
     /// Time to wait before attempting to close the circuit
+    ///
+    /// Also separates probe batches when the half-open budget is exhausted.
+    /// Renewal preserves the accumulated success and failure counts.
     pub recovery_timeout: Duration,
     /// Percentage of successful requests needed to close the circuit (0.0 to 1.0)
     pub success_threshold: f32,
