@@ -75,13 +75,13 @@
 
 ```toml
 [dependencies]
-miju = { version = "0.1.1" }
+miju = { version = "0.2.0" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 # 可选：工作流、编解码与文件存储
-# miju-workflow = { version = "0.1.1" }
-# miju-codec = { version = "0.1.1" }
-# miju-file-storage = { version = "0.1.1" }
+# miju-workflow = { version = "0.2.0" }
+# miju-codec = { version = "0.2.0" }
+# miju-file-storage = { version = "0.2.0" }
 ```
 
 ## 用法

@@ -10,7 +10,7 @@ repository.workspace = true
 description = "Demonstrates custom worker middleware, shared API quotas, and deferred cache maintenance"
 
 [dependencies]
-miju = { version = "0.1.1", default-features = false, features = ["catch-panic", "limit", "retry", "task-context", "tracing"] }
+miju = { version = "0.2.0", default-features = false, features = ["catch-panic", "limit", "retry", "task-context", "tracing"] }
 email-service = { path = "../email-service", version = "0.1.0" }
 thiserror = "2.0.21"
 tokio = { version = "1.53.2", default-features = false, features = ["macros", "rt-multi-thread", "signal", "time"] }
