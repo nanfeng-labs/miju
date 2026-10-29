@@ -38,6 +38,87 @@ fn service_preserves_shared_and_owned_unwind_bounds() {
         });
 }
 
+fn assert_concurrent_stats<S, F>(mut service: S, read_stats: F)
+where
+    S: Service<bool>,
+    F: Fn() + Send,
+{
+    let barrier = std::sync::Barrier::new(2);
+    std::thread::scope(|scope| {
+        let barrier = &barrier;
+        let reader = scope.spawn(move || {
+            barrier.wait();
+            for _ in 0..100_000 {
+                read_stats();
+                std::thread::yield_now();
+            }
+        });
+        barrier.wait();
+        let mut cx = Context::from_waker(Waker::noop());
+        for _ in 0..100_000 {
+            assert!(matches!(service.poll_ready(&mut cx), Poll::Ready(Ok(()))));
+            std::thread::yield_now();
+        }
+        reader
+            .join()
+            .expect("stats reads must tolerate readiness contention");
+    });
+}
+
+#[test]
+fn closed_readiness_and_stats_reads_can_run_concurrently() {
+    let _builder = WorkerBuilder::new("closed-readiness-stats")
+        .backend(MemoryStorage::<bool>::new())
+        .break_circuit()
+        .chain(|layer| {
+            let service = layer.layer(service_fn(|_: bool| async { Ok::<(), BoxDynError>(()) }));
+            let peer = service.clone();
+            assert_concurrent_stats(service, move || {
+                let stats = peer.get_stats();
+                assert_eq!((stats.failure_count, stats.success_count), (0, 0));
+            });
+            layer
+        });
+}
+
+#[tokio::test]
+async fn exhausted_half_open_readiness_and_stats_reads_can_run_concurrently() {
+    let mut service = None;
+    let _builder = WorkerBuilder::new("half-open-readiness-stats")
+        .backend(MemoryStorage::<bool>::new())
+        .break_circuit_with(
+            CircuitBreakerConfig::default()
+                .failure_threshold(1)
+                .recovery_timeout(Duration::ZERO)
+                .half_open_max_calls(0),
+        )
+        .chain(|layer| {
+            service = Some(layer.layer(service_fn(|succeeds: bool| async move {
+                if succeeds {
+                    Ok(())
+                } else {
+                    Err("expected failure")
+                }
+            })));
+            layer
+        });
+    let mut service = service.unwrap();
+    assert!(service.call(false).await.is_err());
+    drop(service.call(true));
+    let peer = service.clone();
+    assert_concurrent_stats(service, move || {
+        let stats = peer.get_stats();
+        assert_eq!(
+            (
+                stats.failure_count,
+                stats.success_count,
+                stats.half_open_calls
+            ),
+            (1, 0, 0)
+        );
+    });
+}
+
 struct Notify(mpsc::Sender<()>);
 
 impl Wake for Notify {
