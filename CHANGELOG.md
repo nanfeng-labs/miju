@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - deps(deps): bump uuid from 1.28.0 to 1.29.0 ([#98](https://github.com/nanfeng-labs/miju/pull/98))
+- deps(deps): bump sentry-core from 0.49.3 to 0.49.5 ([#97](https://github.com/nanfeng-labs/miju/pull/97))
 
 ## [0.2.0](https://github.com/nanfeng-labs/miju/releases/tag/v0.2.0)
 
