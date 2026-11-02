@@ -1,4 +1,14 @@
 
 # cargo-vet audits file
 
-[audits]
+[[audits.sentry-core]]
+who = "Codex (AI-assisted review)"
+criteria = "safe-to-deploy"
+delta = "0.49.3 -> 0.49.5"
+notes = "Reviewed the crates.io package delta. The only Rust source change corrects TransactionData::iter documentation; runtime code is unchanged. Other changes update release metadata, README assets, the Rust requirement to 1.89, and sentry-types to 0.49.5, reviewed separately. The existing 0.49.3 exemption remains the baseline; this is an incremental audit."
+
+[[audits.sentry-types]]
+who = "Codex (AI-assisted review)"
+criteria = "safe-to-deploy"
+delta = "0.49.3 -> 0.49.5"
+notes = "Reviewed the crates.io package delta. Rust source files are unchanged. Changes are limited to release metadata, README assets, and the Rust requirement from 1.88 to 1.89. The existing 0.49.3 exemption remains the baseline; this is an incremental audit."
