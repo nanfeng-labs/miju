@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- deps(deps): bump sentry-core from 0.49.3 to 0.49.5 ([#97](https://github.com/nanfeng-labs/miju/pull/97))
+
 ## [0.2.0](https://github.com/nanfeng-labs/miju/releases/tag/v0.2.0)
 
 - bump: to v0.2.0 ([#96](https://github.com/nanfeng-labs/miju/pull/96))
