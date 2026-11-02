@@ -1,4 +1,8 @@
 
 # cargo-vet audits file
 
-[audits]
+[[audits.uuid]]
+who = "Codex (AI-assisted review)"
+criteria = "safe-to-deploy"
+delta = "1.28.0 -> 1.29.0"
+notes = "Reviewed the crates.io package delta and traced every added NonNilUuid constructor through the existing Uuid constructors, builders, and timestamp encoders. Their fixed nonzero version bits preserve the NonZeroU128 invariant before each new_unchecked call. Other changes are tests, documentation, release metadata, and the optional wasm RNG dependency version; no new I/O or FFI is introduced. The upstream library tests passed with v1, v3, v4, v5, v6, v7, and v8 enabled (99 tests). The existing 1.28.0 exemption remains the baseline; this is an incremental audit."
