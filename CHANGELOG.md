@@ -4,6 +4,8 @@
 
 ## [0.2.1](https://github.com/nanfeng-labs/miju/releases/tag/v0.2.1)
 
+- bump: to v0.2.1 ([#103](https://github.com/nanfeng-labs/miju/pull/103))
+
 ### Fixes
 
 - Preserve observed shutdown signal errors when workers finish before the shutdown timeout, and report them ahead of worker errors. ([#100](https://github.com/nanfeng-labs/miju/pull/100))
