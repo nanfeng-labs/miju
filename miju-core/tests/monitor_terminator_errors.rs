@@ -1,13 +1,14 @@
-//! Monitor termination preserves the result of the branch that finishes first.
+//! Monitor termination preserves observed signal errors while completing shutdown.
 
 use std::{
     future::{Future, pending, ready},
     io,
 };
 
+use futures_channel::oneshot;
 use futures_util::{FutureExt, StreamExt, stream};
 use miju_core::{
-    backend::memory::MemoryStorage,
+    backend::{ext::BackendExt, memory::MemoryStorage},
     monitor::{Monitor, MonitorError},
     worker::builder::WorkerBuilder,
 };
@@ -68,7 +69,155 @@ fn signal_error_is_preserved_when_the_terminator_finishes_first() {
 }
 
 #[test]
-fn worker_error_keeps_priority_when_both_branches_can_finish() {
+fn signal_error_is_preserved_when_workers_finish_before_the_terminator() {
+    let mut run = idle_worker()
+        .with_terminator(pending())
+        .run_with_signal(signal_error())
+        .boxed();
+
+    assert!(run.as_mut().now_or_never().is_none());
+    let result = run
+        .now_or_never()
+        .expect("the idle worker must finish after observing shutdown");
+
+    let Err(MonitorError::ShutdownSignal(error)) = result else {
+        panic!("the observed signal failure must survive worker completion: {result:?}");
+    };
+    assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+    assert_eq!(error.to_string(), "signal unavailable");
+}
+
+#[test]
+fn worker_shutdown_error_is_reported_unless_the_signal_failed() {
+    for signal_failed in [false, true] {
+        let monitor = Monitor::new().register(|_| {
+            WorkerBuilder::new("cleanup-failure")
+                .backend(
+                    stream::pending::<io::Result<u32>>()
+                        .boxed()
+                        .before_stop(|_| ready(Err(io::Error::other("cleanup failed")))),
+                )
+                .build(|_: u32| async {})
+        });
+        let signal = if signal_failed {
+            signal_error().boxed()
+        } else {
+            ready(Ok(())).boxed()
+        };
+        let mut run = monitor
+            .with_terminator(pending())
+            .run_with_signal(signal)
+            .boxed();
+
+        assert!(run.as_mut().now_or_never().is_none());
+        let result = run
+            .now_or_never()
+            .expect("the worker must finish after cleanup fails");
+
+        match result {
+            Err(MonitorError::ShutdownSignal(error)) if signal_failed => {
+                assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+                assert_eq!(error.to_string(), "signal unavailable");
+            }
+            Err(MonitorError::ExitError(error)) if !signal_failed => {
+                assert_eq!(error.0.len(), 1);
+                assert!(error.to_string().contains("cleanup failed"));
+            }
+            result => {
+                panic!("unexpected shutdown result for signal_failed={signal_failed}: {result:?}")
+            }
+        }
+    }
+}
+
+#[test]
+fn signal_error_waits_for_worker_cleanup() {
+    let (finish, cleanup) = oneshot::channel::<()>();
+    let cleanup = cleanup.shared();
+    let monitor = Monitor::new().register(move |_| {
+        let cleanup = cleanup.clone();
+        WorkerBuilder::new("cleanup")
+            .backend(MemoryStorage::<u32>::new().before_stop(move |_| {
+                let cleanup = cleanup.clone();
+                async move {
+                    cleanup.await.unwrap();
+                    Ok(())
+                }
+            }))
+            .build(|_: u32| async {})
+    });
+    let context = monitor.context();
+    let mut run = monitor
+        .with_terminator(pending())
+        .run_with_signal(signal_error())
+        .boxed();
+
+    assert!(run.as_mut().now_or_never().is_none());
+    assert!(context.workers()[0].is_shutting_down());
+    assert!(run.as_mut().now_or_never().is_none());
+    assert!(!context.workers()[0].is_terminated());
+
+    finish.send(()).unwrap();
+    let result = run
+        .now_or_never()
+        .expect("shutdown must finish once cleanup is released");
+    assert!(matches!(result, Err(MonitorError::ShutdownSignal(_))));
+    assert!(context.workers()[0].is_terminated());
+}
+
+#[test]
+fn terminator_can_force_exit_while_worker_cleanup_is_pending() {
+    for signal_failed in [false, true] {
+        let monitor = Monitor::new().register(|_| {
+            WorkerBuilder::new("blocked-cleanup")
+                .backend(MemoryStorage::<u32>::new().before_stop(|_| pending()))
+                .build(|_: u32| async {})
+        });
+        let context = monitor.context();
+        let (terminate, terminator) = oneshot::channel::<()>();
+        let signal = if signal_failed {
+            signal_error().boxed()
+        } else {
+            ready(Ok(())).boxed()
+        };
+        let mut run = monitor
+            .with_terminator(terminator.map(Result::unwrap))
+            .run_with_signal(signal)
+            .boxed();
+
+        assert!(run.as_mut().now_or_never().is_none());
+        assert!(run.as_mut().now_or_never().is_none());
+        terminate.send(()).unwrap();
+        let result = run
+            .now_or_never()
+            .expect("the terminator must end shutdown without waiting for cleanup");
+
+        if signal_failed {
+            assert!(matches!(result, Err(MonitorError::ShutdownSignal(_))));
+        } else {
+            assert!(result.is_ok());
+        }
+        assert!(!context.workers()[0].is_terminated());
+    }
+}
+
+#[cfg(feature = "sleep")]
+#[test]
+fn shutdown_timeout_preserves_signal_error_after_workers_finish() {
+    let mut run = idle_worker()
+        .shutdown_timeout(std::time::Duration::from_secs(60))
+        .run_with_signal(signal_error())
+        .boxed();
+
+    assert!(run.as_mut().now_or_never().is_none());
+    let result = run
+        .now_or_never()
+        .expect("worker completion must not wait for the shutdown timeout");
+    assert!(matches!(result, Err(MonitorError::ShutdownSignal(_))));
+}
+
+#[test]
+fn worker_error_is_returned_before_the_signal_is_polled() {
     let result = failing_worker()
         .with_terminator(ready(()))
         .run_with_signal(signal_error())

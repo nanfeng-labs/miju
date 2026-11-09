@@ -137,8 +137,8 @@
 //! ## Error Handling
 //!
 //! Worker failures are collected into `MonitorError`.
-//! With a terminator, `run_with_signal` returns the result of whichever branch
-//! completes first: the workers, or the shutdown signal followed by the terminator.
+//! `run_with_signal` preserves any signal error observed during shutdown, even if
+//! workers finish before the terminator. Signal errors take precedence over worker errors.
 //! You can inspect the error to see which workers failed and why.
 //!
 //! [Worker]: crate::worker::Worker
@@ -511,10 +511,11 @@ impl Monitor {
     ///
     /// # Errors
     ///
-    /// Worker failures return [`MonitorError::ExitError`], and signal failures
-    /// return [`MonitorError::ShutdownSignal`]. With a terminator, only the first
-    /// completed branch's result is returned; the signal branch still waits for
-    /// the terminator before completing.
+    /// Returns [`MonitorError::ShutdownSignal`] if the signal was polled and returned
+    /// an error, otherwise [`MonitorError::ExitError`] if the workers completed with
+    /// errors. A signal error is preserved while waiting for workers or the terminator.
+    /// With a terminator, workers may finish before the signal is polled; in that case
+    /// their result is returned without waiting for the signal.
     ///
     /// # Remarks
     ///
@@ -533,19 +534,24 @@ impl Monitor {
             res
         };
         if let Some(terminator) = self.terminator {
-            let res = futures_util::future::select(
+            let mut signal_error = None;
+            let result = match futures_util::future::select(
                 Self::run_all_workers(self.workers, shutdown).boxed(),
                 async {
-                    let res = shutdown_after.await;
+                    signal_error = shutdown_after.await.err();
                     terminator.await;
-                    res.map_err(MonitorError::ShutdownSignal)
                 }
                 .boxed(),
             )
-            .await;
-            match res {
-                Either::Left((result, _)) | Either::Right((result, _)) => result?,
+            .await
+            {
+                Either::Left((result, _)) => result,
+                Either::Right(((), _)) => Ok(()),
+            };
+            if let Some(error) = signal_error {
+                return Err(MonitorError::ShutdownSignal(error));
             }
+            result?;
         } else {
             let runner = self.run();
             let res = futures_util::join!(shutdown_after, runner); // If no terminator is provided, we wait for both the shutdown call and all workers to complete
