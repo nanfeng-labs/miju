@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- deps(deps): bump sentry-tracing from 0.49.3 to 0.49.5 ([#106](https://github.com/nanfeng-labs/miju/pull/106))
+
 ## [0.2.1](https://github.com/nanfeng-labs/miju/releases/tag/v0.2.1)
 
 - bump: to v0.2.1 ([#103](https://github.com/nanfeng-labs/miju/pull/103))

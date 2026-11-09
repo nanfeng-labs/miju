@@ -5,7 +5,7 @@ use std::{fmt, time::Duration};
 use email_service::{Email, example_good_email};
 use miju::{layers::sentry::SentryLayer, prelude::*};
 use sentry_tower::NewSentryLayer;
-use tracing_subscriber::prelude::*;
+use tracing_subscriber::{filter::LevelFilter, prelude::*};
 
 #[derive(Debug)]
 struct DeliveryRejected(String);
@@ -114,7 +114,8 @@ async fn main() -> Result<(), BoxDynError> {
         .with(tracing_subscriber::fmt::layer().with_target(false))
         // SentryLayer reports handler errors; tracing adds breadcrumbs, avoiding
         // a duplicate event for the same failure logged by the tracing middleware.
-        .with(sentry_tracing::layer().event_filter(|_| sentry_tracing::EventFilter::Breadcrumb))
+        .with(sentry_tracing::SpanLayer::new().with_filter(LevelFilter::INFO))
+        .with(sentry_tracing::BreadcrumbLayer::new())
         .init();
     tracing::info!("Two simulated tasks will fail; press Ctrl+C after their progress logs");
     run_worker(tokio::signal::ctrl_c()).await
@@ -143,9 +144,9 @@ mod tests {
             Some(Arc::new(options.into())),
             Arc::new(Default::default()),
         ));
-        let subscriber = tracing_subscriber::registry().with(
-            sentry_tracing::layer().event_filter(|_| sentry_tracing::EventFilter::Breadcrumb),
-        );
+        let subscriber = tracing_subscriber::registry()
+            .with(sentry_tracing::SpanLayer::new().with_filter(LevelFilter::INFO))
+            .with(sentry_tracing::BreadcrumbLayer::new());
         let signal = async {
             tokio::time::sleep(Duration::from_secs(3)).await;
             Ok(())
