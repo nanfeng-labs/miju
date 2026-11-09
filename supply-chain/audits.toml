@@ -19,6 +19,12 @@ criteria = "safe-to-deploy"
 delta = "0.49.3 -> 0.49.5"
 notes = "Reviewed the checksum-verified crates.io package delta. The only runtime source change moves HTTP 409 handling ahead of the generic client-error branch so it maps to AlreadyExists; a regression test covers 409 and 400. Per-request hub and future handling are unchanged. Other changes are release metadata, README assets, the Rust 1.89 requirement and sentry-core 0.49.5, covered by its existing audit. The 0.49.3 exemption remains the baseline; this is an incremental audit."
 
+[[audits.sentry-tracing]]
+who = "Codex (AI-assisted review)"
+criteria = "safe-to-deploy"
+delta = "0.49.3 -> 0.49.5"
+notes = "Reviewed the checksum-verified crates.io package delta, tracing converters, span lifecycle and hub guard handling. The legacy combined layer delegates to new SpanLayer, BreadcrumbLayer, ErrorLayer and optional LogLayer implementations; individual layers use subscriber filters. Span lifecycle logic and event conversion are retained, with legacy APIs deprecated. No new unsafe code, transport or third-party dependency is introduced. Reviewed filter defaults and migrated both example subscribers to INFO-filtered spans and breadcrumb-only events. The 0.49.3 exemption remains the baseline; this is an incremental audit."
+
 [[audits.sentry-types]]
 who = "Codex (AI-assisted review)"
 criteria = "safe-to-deploy"
