@@ -2,10 +2,23 @@
 
 ## [Unreleased]
 
-- fix(core): yield after restarting monitored workers ([#102](https://github.com/nanfeng-labs/miju/pull/102))
-- fix(core): preserve signal errors during monitor shutdown ([#100](https://github.com/nanfeng-labs/miju/pull/100))
-- deps(deps): bump uuid from 1.28.0 to 1.29.0 ([#98](https://github.com/nanfeng-labs/miju/pull/98))
-- deps(deps): bump sentry-core from 0.49.3 to 0.49.5 ([#97](https://github.com/nanfeng-labs/miju/pull/97))
+## [0.2.1](https://github.com/nanfeng-labs/miju/releases/tag/v0.2.1)
+
+- bump: to v0.2.1 ([#103](https://github.com/nanfeng-labs/miju/pull/103))
+
+### Fixes
+
+- Preserve observed shutdown signal errors when workers finish before the shutdown timeout, and report them ahead of worker errors. ([#100](https://github.com/nanfeng-labs/miju/pull/100))
+- Yield between monitored worker restarts so other tasks, workers, and shutdown signals can make progress during immediate failures. ([#102](https://github.com/nanfeng-labs/miju/pull/102))
+
+### Upgrading to v0.2.1
+
+`Monitor::run_with_signal` can now return `ShutdownSignal` on paths that previously returned success or a worker error after the signal had failed. Graceful shutdown still waits for workers or the configured terminator. Worker restarts yield execution without adding a timed backoff; `should_restart` continues to control the restart budget.
+
+### Dependencies
+
+- Update the workspace lockfile to sentry-core and sentry-types 0.49.5. ([#97](https://github.com/nanfeng-labs/miju/pull/97))
+- Update the workspace lockfile to uuid 1.29.0. ([#98](https://github.com/nanfeng-labs/miju/pull/98))
 
 ## [0.2.0](https://github.com/nanfeng-labs/miju/releases/tag/v0.2.0)
 
