@@ -1,6 +1,12 @@
 
 # cargo-vet audits file
 
+[[audits.sentry]]
+who = "Codex (AI-assisted review)"
+criteria = "safe-to-deploy"
+delta = "0.49.3 -> 0.49.5"
+notes = "Reviewed the checksum-verified crates.io package delta. Runtime Rust sources are unchanged; changes are release metadata, README assets, examples and tracing integration tests, plus Sentry-family dependency requirements moving to 0.49.5 and Rust 1.89. The selected transport implementation is unchanged. Existing sentry-core and sentry-types audits cover the resolved companion crates. The 0.49.3 exemption remains the baseline; this is an incremental audit."
+
 [[audits.sentry-core]]
 who = "Codex (AI-assisted review)"
 criteria = "safe-to-deploy"
