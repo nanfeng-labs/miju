@@ -290,6 +290,9 @@ impl Future for MonitoredWorker {
                                     error,
                                 }));
                             }
+                            // Let other work progress before polling the restarted worker.
+                            cx.waker().wake_by_ref();
+                            return Poll::Pending;
                         }
                         _ => {
                             return Poll::Ready(Err(MonitoredWorkerError {
