@@ -49,18 +49,22 @@ impl WorkerState {
     }
 
     pub(crate) fn request_stop(&self) -> Result<bool, WorkerError> {
-        match self
-            .inner
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |state| {
-                (state == InnerWorkerState::Running as usize
-                    || state == InnerWorkerState::Paused as usize)
-                    .then_some(InnerWorkerState::Stopped as usize)
-            }) {
-            Ok(_) => Ok(true),
-            Err(value) => match InnerWorkerState::try_from(value)? {
-                InnerWorkerState::Pending => Err(WorkerStateError::NotStarted.into()),
-                _ => Ok(false),
-            },
+        let mut current = self.inner.load(Ordering::SeqCst);
+        loop {
+            match InnerWorkerState::try_from(current)? {
+                InnerWorkerState::Pending => return Err(WorkerStateError::NotStarted.into()),
+                InnerWorkerState::Stopped | InnerWorkerState::Terminated => return Ok(false),
+                InnerWorkerState::Running | InnerWorkerState::Paused => {}
+            }
+            match self.inner.compare_exchange(
+                current,
+                InnerWorkerState::Stopped as usize,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => return Ok(true),
+                Err(observed) => current = observed,
+            }
         }
     }
 
