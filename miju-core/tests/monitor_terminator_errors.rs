@@ -88,6 +88,12 @@ fn terminator_preserves_worker_error_while_another_worker_is_still_shutting_down
     assert!(failure_observed.load(Ordering::SeqCst));
     assert!(run.as_mut().now_or_never().is_none());
     assert!(cleanup_started.load(Ordering::SeqCst));
+    assert!(
+        !context
+            .get_worker("blocked-cleanup")
+            .unwrap()
+            .is_terminated()
+    );
     terminate.send(()).unwrap();
     let result = run
         .now_or_never()
@@ -98,12 +104,6 @@ fn terminator_preserves_worker_error_while_another_worker_is_still_shutting_down
     };
     assert_eq!(error.0.len(), 1);
     assert!(error.to_string().contains("provider unavailable"));
-    assert!(
-        !context
-            .get_worker("blocked-cleanup")
-            .unwrap()
-            .is_terminated()
-    );
 }
 
 #[test]
