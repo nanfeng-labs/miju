@@ -592,8 +592,7 @@ impl Monitor {
         workers: Vec<MonitoredWorker>,
         shutdown: Shutdown,
     ) -> Result<(), MonitorError> {
-        // `FuturesUnordered` only polls a worker whose waker fired, so every shutdown path
-        // must wake the workers explicitly; `MonitorContext::shutdown` does that.
+        // Workers register with the shutdown token before parking in FuturesUnordered.
         let results: Vec<_> = FuturesUnordered::from_iter(workers).collect().await;
 
         shutdown.start_shutdown();
