@@ -427,17 +427,11 @@ impl WorkerContext {
         ctx: &Arc<ExecutionContext>,
     ) -> Result<TaskContext, TaskLifecycleError> {
         let tasks = &self.tasks;
-        let task_id = ctx
-            .task_id()
-            .ok_or(TaskLifecycleError::MissingTaskId)?
-            .to_string();
-
-        if tasks.contains(task_id.as_str()) {
+        ctx.task_id().ok_or(TaskLifecycleError::MissingTaskId)?;
+        let token = TaskContext::new(ctx);
+        if !tasks.insert(token.clone()) {
             return Err(TaskLifecycleError::Duplicate);
         }
-
-        let token = TaskContext::new(ctx);
-        tasks.insert(token.clone());
         Ok(token)
     }
 
