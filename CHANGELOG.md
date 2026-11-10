@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- fix(core): preserve circuit readiness until dispatch ([#111](https://github.com/nanfeng-labs/miju/pull/111))
 - deps(deps): bump sentry-tracing from 0.49.3 to 0.49.5 ([#106](https://github.com/nanfeng-labs/miju/pull/106))
 
 - deps(deps): bump sentry-tower from 0.49.3 to 0.49.5 ([#105](https://github.com/nanfeng-labs/miju/pull/105))
