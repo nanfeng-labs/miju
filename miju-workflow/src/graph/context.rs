@@ -20,14 +20,20 @@ use miju_core::{
 use petgraph::graph::NodeIndex;
 use serde::{Deserialize, Serialize};
 
+use crate::task_id_metadata::{StoredTaskId, is_tagged};
+
 /// Metadata stored in each node's task for workflow processing.
 ///
 /// [`Self::new`] starts at node zero with `is_initial = true`; derived `Default`
 /// instead uses `is_initial = false`. Neither locates an actual entry node.
 ///
 /// Extracting metadata requires the current node and position. Missing or invalid
-/// `is_initial` values become `true`. Node/task mappings use comma-separated
-/// `node=task_id` pairs without escaping; IDs containing commas do not round-trip.
+/// `is_initial` values become `true`. Injection writes ID fields as tagged JSON
+/// with `miju_workflow.graph.task_id_encoding = 1`, preserving ID variants and
+/// delimiters. Without that marker, extraction reads legacy comma-separated
+/// `node=task_id` pairs and displayed root IDs; legacy variants and commas remain
+/// ambiguous. Unknown encodings or unavailable typed ID features return an error.
+/// Older workflow readers cannot read the tagged ID fields.
 /// Node indices must fit in `u32`; the progress position remains `usize`.
 ///
 /// Injection is not atomic. Duplicate keys return an error after earlier fields
@@ -81,6 +87,7 @@ impl GraphFlowContext {
             DAG_FLOW_CURRENT_POSITION_KEY,
             DAG_FLOW_IS_INITIAL_KEY,
             DAG_FLOW_ROOT_TASK_ID_KEY,
+            DAG_FLOW_TASK_ID_ENCODING_KEY,
         ]
         .iter()
         .any(|key| map.contains_key(key))
@@ -135,6 +142,7 @@ const DAG_FLOW_CURRENT_POSITION_KEY: &str = "miju_workflow.graph.current_positio
 const DAG_FLOW_IS_INITIAL_KEY: &str = "miju_workflow.graph.is_initial";
 
 const DAG_FLOW_ROOT_TASK_ID_KEY: &str = "miju_workflow.graph.root_task_id";
+const DAG_FLOW_TASK_ID_ENCODING_KEY: &str = "miju_workflow.graph.task_id_encoding";
 
 /// An error representing an invalid [`GraphFlowContext`]
 #[derive(Debug, thiserror::Error)]
@@ -165,6 +173,8 @@ impl Metadata for GraphFlowContext {
     type Error = GraphFlowContextError;
 
     fn extract(map: &MetadataStore) -> Result<Self, Self::Error> {
+        let tagged = is_tagged(map.get(DAG_FLOW_TASK_ID_ENCODING_KEY))
+            .map_err(GraphFlowContextError::ParseTaskId)?;
         let prev_node = map
             .get(DAG_FLOW_PREV_NODE_KEY)
             .map(|v| v.parse::<u32>())
@@ -190,6 +200,19 @@ impl Metadata for GraphFlowContext {
         let node_task_ids = map
             .get(DAG_FLOW_NODE_TASK_IDS_KEY)
             .map(|v| {
+                if tagged {
+                    return serde_json::from_str::<HashMap<String, StoredTaskId>>(v)
+                        .map_err(|e| GraphFlowContextError::ParseTaskId(e.into()))?
+                        .into_iter()
+                        .map(|(node, id)| {
+                            Ok((
+                                NodeIndex::from(node.parse::<u32>()?),
+                                id.into_task_id()
+                                    .map_err(GraphFlowContextError::ParseTaskId)?,
+                            ))
+                        })
+                        .collect();
+                }
                 v.split(',')
                     .filter(|s| !s.is_empty())
                     .map(|s| {
@@ -227,9 +250,15 @@ impl Metadata for GraphFlowContext {
 
         let root_task_id = map
             .get(DAG_FLOW_ROOT_TASK_ID_KEY)
-            .map(|v| v.parse::<TaskId>())
+            .map(|v| {
+                if tagged {
+                    StoredTaskId::decode(v)
+                } else {
+                    v.parse::<TaskId>().map_err(Into::into)
+                }
+            })
             .transpose()
-            .map_err(|e| GraphFlowContextError::ParseTaskId(e.into()))?;
+            .map_err(GraphFlowContextError::ParseTaskId)?;
 
         Ok(Self {
             prev_node,
@@ -270,11 +299,14 @@ impl Metadata for GraphFlowContext {
         let node_task_ids = self
             .node_task_ids
             .iter()
-            .map(|(k, v)| format!("{}={v}", k.index()))
-            .collect::<Vec<_>>()
-            .join(",");
+            .map(|(k, v)| (k.index(), StoredTaskId::from(v)))
+            .collect::<HashMap<_, _>>();
 
-        map.insert(DAG_FLOW_NODE_TASK_IDS_KEY, node_task_ids)?;
+        map.insert(
+            DAG_FLOW_NODE_TASK_IDS_KEY,
+            serde_json::to_string(&node_task_ids)
+                .map_err(|e| GraphFlowContextError::ParseTaskId(e.into()))?,
+        )?;
 
         map.insert(
             DAG_FLOW_CURRENT_POSITION_KEY,
@@ -284,8 +316,13 @@ impl Metadata for GraphFlowContext {
         map.insert(DAG_FLOW_IS_INITIAL_KEY, self.is_initial.to_string())?;
 
         if let Some(root_task_id) = &self.root_task_id {
-            map.insert(DAG_FLOW_ROOT_TASK_ID_KEY, root_task_id.to_string())?;
+            map.insert(
+                DAG_FLOW_ROOT_TASK_ID_KEY,
+                StoredTaskId::encode(root_task_id)
+                    .map_err(|e| GraphFlowContextError::ParseTaskId(e.into()))?,
+            )?;
         }
+        map.insert(DAG_FLOW_TASK_ID_ENCODING_KEY, "1")?;
         Ok(())
     }
 }

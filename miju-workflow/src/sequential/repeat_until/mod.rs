@@ -11,6 +11,8 @@ use std::num::ParseIntError;
 use std::str::FromStr;
 use std::task::Context;
 
+use crate::task_id_metadata::{StoredTaskId, is_tagged};
+
 use futures_util::future::BoxFuture;
 use futures_util::{FutureExt, Sink, SinkExt};
 use miju_core::backend::codec::Codec;
@@ -240,6 +242,8 @@ where
 /// malformed entries returns an error; the repeat service itself falls back to
 /// the default state on that error. A `Meta<RepeaterState>` handler argument still
 /// reports the malformed metadata as an extraction error.
+/// Previous IDs use tagged JSON with `miju_workflow.repeater.task_id_encoding = 1`;
+/// marker-free legacy IDs continue to use displayed-ID parsing.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct RepeaterState {
     iterations: usize,
@@ -283,11 +287,14 @@ pub enum RepeaterStateError {
 
 const REPEATER_ITERATIONS_KEY: &str = "miju_workflow.repeater.iterations";
 const REPEATER_PREV_TASK_ID_KEY: &str = "miju_workflow.repeater.prev_task_id";
+const REPEATER_ID_ENCODING_KEY: &str = "miju_workflow.repeater.task_id_encoding";
 
 impl Metadata for RepeaterState {
     type Error = RepeaterStateError;
 
     fn extract(map: &MetadataStore) -> Result<Self, Self::Error> {
+        let tagged = is_tagged(map.get(REPEATER_ID_ENCODING_KEY))
+            .map_err(|_| RepeaterStateError::ParseTaskId)?;
         let iterations = map
             .get(REPEATER_ITERATIONS_KEY)
             .map(|s| s.parse::<usize>())
@@ -296,7 +303,14 @@ impl Metadata for RepeaterState {
 
         let prev_task_id = map
             .get(REPEATER_PREV_TASK_ID_KEY)
-            .map(|value| TaskId::from_str(value).map_err(|_| RepeaterStateError::ParseTaskId))
+            .map(|value| {
+                if tagged {
+                    StoredTaskId::decode(value)
+                } else {
+                    TaskId::from_str(value).map_err(Into::into)
+                }
+                .map_err(|_| RepeaterStateError::ParseTaskId)
+            })
             .transpose()?;
 
         Ok(Self {
@@ -309,8 +323,12 @@ impl Metadata for RepeaterState {
         map.insert(REPEATER_ITERATIONS_KEY, self.iterations.to_string())?;
 
         if let Some(task_id) = &self.prev_task_id {
-            map.insert(REPEATER_PREV_TASK_ID_KEY, task_id.to_string())?;
+            map.insert(
+                REPEATER_PREV_TASK_ID_KEY,
+                StoredTaskId::encode(task_id).map_err(|_| RepeaterStateError::ParseTaskId)?,
+            )?;
         }
+        map.insert(REPEATER_ID_ENCODING_KEY, "1")?;
         Ok(())
     }
 }

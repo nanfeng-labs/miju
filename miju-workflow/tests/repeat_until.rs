@@ -256,6 +256,8 @@ fn repeater_metadata_defaults_round_trips_and_reports_invalid_or_duplicate_entri
     for (iterations, previous) in [
         (0, None),
         (3, Some(TaskId::from_int(17))),
+        (3, Some(TaskId::from_string("17"))),
+        (3, Some(TaskId::from_string(""))),
         (usize::MAX, Some(TaskId::from_string("task-one"))),
     ] {
         let state: RepeaterState = serde_json::from_value(json!({
@@ -293,6 +295,53 @@ fn repeater_metadata_defaults_round_trips_and_reports_invalid_or_duplicate_entri
         RepeaterState::extract(&metadata),
         Err(RepeaterStateError::ParseTaskId)
     ));
+}
+
+#[test]
+fn repeater_id_metadata_reads_legacy_and_rejects_invalid_tagged_values() {
+    for text in [
+        "17",
+        "task-one",
+        "550e8400-e29b-41d4-a716-446655440000",
+        "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+    ] {
+        let mut legacy = MetadataStore::new();
+        legacy
+            .insert("miju_workflow.repeater.prev_task_id", text)
+            .unwrap();
+        let state = RepeaterState::extract(&legacy).unwrap();
+        let expected = text.parse::<TaskId>().unwrap();
+        assert_eq!(state.previous_task_id(), Some(&expected));
+        let mut metadata = MetadataStore::new();
+        state.inject(&mut metadata).unwrap();
+        assert_eq!(
+            metadata.get("miju_workflow.repeater.task_id_encoding"),
+            Some("1")
+        );
+        assert_eq!(RepeaterState::extract(&metadata).unwrap(), state);
+    }
+    let mut metadata = MetadataStore::new();
+    RepeaterState::default().inject(&mut metadata).unwrap();
+    for (key, value) in [
+        ("miju_workflow.repeater.task_id_encoding", "2"),
+        ("miju_workflow.repeater.prev_task_id", "17"),
+        ("miju_workflow.repeater.prev_task_id", r#"{"Unknown":"x"}"#),
+        ("miju_workflow.repeater.prev_task_id", r#"{"Typed":"17"}"#),
+        (
+            "miju_workflow.repeater.prev_task_id",
+            r#"{"Typed":"opaque"}"#,
+        ),
+    ] {
+        let mut invalid = metadata.clone();
+        invalid.replace(key, value);
+        assert!(
+            matches!(
+                RepeaterState::extract(&invalid),
+                Err(RepeaterStateError::ParseTaskId)
+            ),
+            "{key}: {value}"
+        );
+    }
 }
 
 #[tokio::test]

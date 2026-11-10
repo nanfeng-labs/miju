@@ -35,6 +35,7 @@ use crate::{
         step::{Layer, Stack, Step},
         workflow::SteppedFlow,
     },
+    task_id_metadata::{StoredTaskId, is_tagged},
 };
 
 /// A layer that filters and maps task inputs to outputs.
@@ -195,12 +196,15 @@ impl Metadata for FilterState {
 /// Metadata listing the element task IDs awaited by a collector.
 ///
 /// The initializer writes this context when it enqueues the collector.
+/// ID lists use tagged JSON with `miju_workflow.filter.task_id_encoding = 1`.
+/// Marker-free legacy lists retain comma splitting and displayed-ID parsing.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct FilterContext {
     task_ids: Vec<TaskId>,
 }
 
 const FILTER_CONTEXT_TASK_IDS_KEY: &str = "miju_workflow.filter.task_ids";
+const FILTER_CONTEXT_ID_ENCODING_KEY: &str = "miju_workflow.filter.task_id_encoding";
 
 /// Error representing an invalid [`FilterContext`] state
 #[derive(Debug, thiserror::Error)]
@@ -223,11 +227,20 @@ impl Metadata for FilterContext {
     type Error = FilterContextError;
 
     fn extract(map: &MetadataStore) -> Result<Self, Self::Error> {
+        let tagged = is_tagged(map.get(FILTER_CONTEXT_ID_ENCODING_KEY))
+            .map_err(|_| FilterContextError::ParseTaskId)?;
         let value = map
             .get(FILTER_CONTEXT_TASK_IDS_KEY)
             .ok_or(FilterContextError::MissingKey)?;
 
-        let task_ids = if value.is_empty() {
+        let task_ids = if tagged {
+            serde_json::from_str::<Vec<StoredTaskId>>(value)
+                .map_err(|_| FilterContextError::ParseTaskId)?
+                .into_iter()
+                .map(StoredTaskId::into_task_id)
+                .collect::<Result<_, _>>()
+                .map_err(|_| FilterContextError::ParseTaskId)?
+        } else if value.is_empty() {
             Vec::new()
         } else {
             value
@@ -246,11 +259,14 @@ impl Metadata for FilterContext {
         let value = self
             .task_ids
             .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .join(",");
+            .map(StoredTaskId::from)
+            .collect::<Vec<_>>();
 
-        map.insert(FILTER_CONTEXT_TASK_IDS_KEY, value)?;
+        map.insert(
+            FILTER_CONTEXT_TASK_IDS_KEY,
+            serde_json::to_string(&value).map_err(|_| FilterContextError::ParseTaskId)?,
+        )?;
+        map.insert(FILTER_CONTEXT_ID_ENCODING_KEY, "1")?;
 
         Ok(())
     }

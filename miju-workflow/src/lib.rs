@@ -8,6 +8,8 @@ type BoxedService<Input, Output> = tower::util::BoxCloneSyncService<Input, Outpu
 type SteppedService<Compact> = BoxedService<Task<Compact>, GoTo<StepResponse>>;
 type NodeService<Compact> = BoxedService<Task<NodeInput<Compact>>, (Compact, serde_json::Value)>;
 
+mod task_id_metadata;
+
 /// Sequential workflow composition and execution.
 pub mod sequential;
 
