@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- fix(core): maintain persistence while buffered tasks drain ([#117](https://github.com/nanfeng-labs/miju/pull/117))
 - deps(deps): bump sentry-tracing from 0.49.3 to 0.49.5 ([#106](https://github.com/nanfeng-labs/miju/pull/106))
 
 - deps(deps): bump sentry-tower from 0.49.3 to 0.49.5 ([#105](https://github.com/nanfeng-labs/miju/pull/105))
