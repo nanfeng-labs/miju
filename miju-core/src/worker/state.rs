@@ -48,6 +48,22 @@ impl WorkerState {
         self.inner.store(state as usize, order);
     }
 
+    pub(crate) fn request_stop(&self) -> Result<bool, WorkerError> {
+        match self
+            .inner
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |state| {
+                (state == InnerWorkerState::Running as usize
+                    || state == InnerWorkerState::Paused as usize)
+                    .then_some(InnerWorkerState::Stopped as usize)
+            }) {
+            Ok(_) => Ok(true),
+            Err(value) => match InnerWorkerState::try_from(value)? {
+                InnerWorkerState::Pending => Err(WorkerStateError::NotStarted.into()),
+                _ => Ok(false),
+            },
+        }
+    }
+
     pub(crate) fn as_str(&self) -> &str {
         match self.load(Relaxed) {
             InnerWorkerState::Pending => "pending",
