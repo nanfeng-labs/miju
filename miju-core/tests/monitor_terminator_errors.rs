@@ -187,6 +187,7 @@ fn terminator_can_force_exit_while_worker_cleanup_is_pending() {
 
         assert!(run.as_mut().now_or_never().is_none());
         assert!(run.as_mut().now_or_never().is_none());
+        assert!(!context.workers()[0].is_terminated());
         terminate.send(()).unwrap();
         let result = run
             .now_or_never()
@@ -197,7 +198,7 @@ fn terminator_can_force_exit_while_worker_cleanup_is_pending() {
         } else {
             assert!(result.is_ok());
         }
-        assert!(!context.workers()[0].is_terminated());
+        assert!(context.workers()[0].is_terminated());
     }
 }
 

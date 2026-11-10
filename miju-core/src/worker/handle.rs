@@ -17,11 +17,29 @@ use crate::{
 /// awaiting worker completion with its own independent waker.
 pub(super) struct WorkerHandle {
     pub(super) inner: WorkerContext,
+    owns_execution: bool,
 }
 
 impl WorkerHandle {
     pub(super) fn new(inner: WorkerContext) -> Self {
-        Self { inner }
+        Self {
+            inner,
+            owns_execution: false,
+        }
+    }
+
+    pub(super) fn start(&mut self) -> Result<(), WorkerError> {
+        self.inner.start()?;
+        self.owns_execution = true;
+        Ok(())
+    }
+}
+
+impl Drop for WorkerHandle {
+    fn drop(&mut self) {
+        if self.owns_execution {
+            self.inner.mark_terminated();
+        }
     }
 }
 
