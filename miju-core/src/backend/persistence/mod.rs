@@ -97,6 +97,8 @@ where
 {
     inner: P,
     state: State<Task<P::Compact>, P::Error>,
+    // Park only Buffered/Fetch while the active state drives maintenance.
+    suspended_state: Option<State<Task<P::Compact>, P::Error>>,
     heartbeat_timer: Option<Delay>,
     receiver: Option<Receiver<TaskEvent<P::Response>>>,
     shared_sender: Option<Sender<TaskEvent<P::Response>>>,
@@ -112,6 +114,7 @@ where
         Self {
             inner: self.inner.clone(),
             state: State::NotBootstrapped,
+            suspended_state: None,
             heartbeat_timer: None,
             receiver: None,
             shared_sender: None,
@@ -171,6 +174,7 @@ where
             receiver: None,
             shared_sender: None,
             state: State::NotBootstrapped,
+            suspended_state: None,
             sink_buffer: Vec::new(),
             sink_future: None,
         }
@@ -184,7 +188,7 @@ where
     /// Gets mutable access to the polling state.
     ///
     /// The caller must preserve the state machine invariants, including an
-    /// initialized heartbeat timer before driving the `Ready` state.
+    /// initialized heartbeat timer before driving `Ready`, `Buffered` or `Fetch`.
     pub fn state_mut(&mut self) -> &mut State<Task<P::Compact>, P::Error> {
         &mut self.state
     }
@@ -261,6 +265,9 @@ where
     /// Drives the provider's internal state machine (bootstrap, heartbeat,
     /// event processing) until it is genuinely ready for [`poll_next`](Self::poll_next)
     /// to be called, or until it must return `Pending`.
+    /// Buffered tasks and an already-started fetch are retained while heartbeat
+    /// and event operations complete. An existing fetch keeps advancing during
+    /// maintenance; no new fetch is started here.
     pub fn poll_ready(
         &mut self,
         cx: &mut Context<'_>,
@@ -268,8 +275,31 @@ where
         heartbeat_interval: Duration,
     ) -> Poll<Result<(), P::Error>> {
         trace!("poll_ready: {:?}", self.state);
+        if self.receiver.is_some() {
+            worker
+                .backend_maintenance
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
         loop {
+            // A fetch may hold the same provider resource needed by maintenance.
+            if let Some(State::Fetch(future)) = &mut self.suspended_state {
+                if let Poll::Ready(result) = future.poll_unpin(cx) {
+                    match result {
+                        Ok(tasks) => {
+                            self.suspended_state = Some(State::Buffered(tasks.into()));
+                        }
+                        Err(error) => {
+                            self.suspended_state = None;
+                            self.state = State::Dead;
+                            return Poll::Ready(Err(error));
+                        }
+                    }
+                }
+            }
             match &mut self.state {
+                State::Buffered(_) | State::Fetch(_) => {
+                    self.suspended_state = Some(std::mem::replace(&mut self.state, State::Ready));
+                }
                 State::NotBootstrapped => {
                     debug!("poll_ready: NotBootstrapped -> registering worker");
                     let mut provider = self.inner.clone();
@@ -352,6 +382,9 @@ where
                     }
 
                     trace!("poll_ready: no heartbeat/events pending -> Ready(Ok)");
+                    if let Some(state) = self.suspended_state.take() {
+                        self.state = state;
+                    }
                     return Poll::Ready(Ok(()));
                 }
 
@@ -366,8 +399,8 @@ where
     /// Pulls the next task from the backend, fetching a fresh batch when the
     /// internal buffer is exhausted.
     ///
-    /// Assumes [`poll_ready`](Self::poll_ready) has already driven the state
-    /// machine into `State::Ready`. An in-progress fetch returns `Pending`;
+    /// Assumes [`poll_ready`](Self::poll_ready) has completed initialization and
+    /// maintenance. An in-progress fetch returns `Pending`;
     /// `Dead` returns `None`. States owned by `poll_ready` or `poll_close`
     /// cause a panic when this method is called out of order.
     #[allow(clippy::type_complexity)]
@@ -448,13 +481,24 @@ where
     /// the `Sink` interface to flush tasks queued by producers.
     /// On a close-path error, normal task polling stops and the error is returned.
     /// Later close polls can finish without retrying the failed operation.
+    /// Tasks retained during maintenance are still re-enqueued on close, including
+    /// a later close poll after that maintenance operation failed.
     pub fn poll_close(
         &mut self,
         cx: &mut Context<'_>,
         worker: &WorkerContext,
     ) -> Poll<Result<(), P::Error>> {
         trace!("poll_close: Start: {:?}", self.state);
+        if matches!(self.suspended_state, Some(State::Fetch(_))) {
+            // Preserve close's existing fetch-cancellation boundary before waiting on maintenance.
+            self.suspended_state = None;
+        }
         loop {
+            if matches!(self.state, State::Ready | State::Dead) {
+                if let Some(state) = self.suspended_state.take() {
+                    self.state = state;
+                }
+            }
             match &mut self.state {
                 // Let any in-flight future finish before we start forcing drains
                 State::RegisterWorker(fut) | State::HeartBeat(fut) => {
@@ -525,7 +569,7 @@ mod tests {
     use super::*;
     use crate::{
         backend::codec::Codec,
-        task::{builder::TaskBuilder, status::Status},
+        task::{builder::TaskBuilder, status::Status, task_id::TaskId},
     };
     use futures_channel::oneshot;
     use futures_util::{SinkExt, future::poll_fn, task::noop_waker_ref};
@@ -542,6 +586,10 @@ mod tests {
         calls: Vec<&'static str>,
         batches: VecDeque<Vec<Task<u32>>>,
         reenqueued: Vec<u32>,
+        reenqueued_ids: Vec<TaskId>,
+        executed_ids: Vec<TaskId>,
+        successes: usize,
+        close_polls: usize,
         pushes: Vec<Vec<u32>>,
         events: Vec<TaskEvent<u32>>,
         failure: Option<&'static str>,
@@ -549,7 +597,10 @@ mod tests {
     }
 
     #[derive(Debug, Clone, Default)]
-    struct Provider(Arc<Mutex<Records>>);
+    struct Provider(
+        Arc<Mutex<Records>>,
+        Option<Arc<futures_util::lock::Mutex<()>>>,
+    );
 
     impl Provider {
         fn gate(&self, name: &'static str) -> oneshot::Sender<()> {
@@ -558,6 +609,10 @@ mod tests {
             tx
         }
         async fn operation(&self, name: &'static str) -> io::Result<()> {
+            let _connection = match &self.1 {
+                Some(connection) => Some(connection.lock().await),
+                None => None,
+            };
             let (gate, fail) = {
                 let mut records = self.0.lock().unwrap();
                 records.calls.push(name);
@@ -602,9 +657,11 @@ mod tests {
         ) -> io::Result<u64> {
             self.operation("reenqueue").await?;
             let count = tasks.len() as u64;
-            self.0
-                .lock()
-                .unwrap()
+            let mut records = self.0.lock().unwrap();
+            records
+                .reenqueued_ids
+                .extend(tasks.iter().map(|task| task.task_id().unwrap().clone()));
+            records
                 .reenqueued
                 .extend(tasks.into_iter().map(|task| task.args));
             Ok(count)
@@ -684,6 +741,105 @@ mod tests {
         })
         .unwrap();
         driver.receiver = Some(rx);
+    }
+
+    #[test]
+    fn pending_fetch_and_maintenance_share_a_connection_without_stalling() {
+        for mode in ["resume", "close_pending", "close_buffered", "fetch_error"] {
+            let connection = Arc::new(futures_util::lock::Mutex::new(()));
+            let provider = Provider(Default::default(), Some(connection.clone()));
+            let mut driver = Persisted::new(provider.clone());
+            let worker = WorkerContext::new("shared-connection");
+            ready(&mut driver, &worker);
+            provider.0.lock().unwrap().batches.push_back(vec![task(9)]);
+            if mode == "fetch_error" {
+                provider.0.lock().unwrap().failure = Some("fetch");
+            }
+            let gate = provider.gate("fetch");
+            let mut cx = Context::from_waker(noop_waker_ref());
+            assert!(driver.poll_next(&mut cx, &worker).is_pending());
+            assert!(connection.try_lock().is_none());
+            queue_event(&mut driver);
+            assert!(driver.poll_ready(&mut cx, &worker, HEARTBEAT).is_pending());
+            assert!(matches!(driver.state(), State::ProcessEvents(_)));
+            assert_eq!(provider.0.lock().unwrap().calls, ["register", "fetch"]);
+
+            if mode == "close_pending" {
+                assert!(matches!(
+                    driver.poll_close(&mut cx, &worker),
+                    Poll::Ready(Ok(()))
+                ));
+                assert!(gate.send(()).is_err());
+            } else {
+                gate.send(()).unwrap();
+                let result = driver.poll_ready(&mut cx, &worker, HEARTBEAT);
+                if mode == "fetch_error" {
+                    let Poll::Ready(Err(error)) = result else {
+                        panic!("a completed fetch error must reach the caller");
+                    };
+                    assert_eq!(error.to_string(), "fetch");
+                    assert!(matches!(driver.state(), State::Dead));
+                } else {
+                    assert!(
+                        matches!(result, Poll::Ready(Ok(()))),
+                        "fetch was left parked behind maintenance"
+                    );
+                    if mode == "resume" {
+                        assert!(
+                            matches!(driver.poll_next(&mut cx, &worker), Poll::Ready(Some(Ok(next))) if next.task_id() == Some(&TaskId::from_int(9)))
+                        );
+                    }
+                }
+                assert!(matches!(
+                    driver.poll_close(&mut cx, &worker),
+                    Poll::Ready(Ok(()))
+                ));
+            }
+
+            assert!(connection.try_lock().is_some());
+            let records = provider.0.lock().unwrap();
+            assert_eq!(
+                records
+                    .calls
+                    .iter()
+                    .filter(|name| **name == "fetch")
+                    .count(),
+                1
+            );
+            assert_eq!(records.events.len(), usize::from(mode != "fetch_error"));
+            let expected = if mode == "close_buffered" {
+                vec![TaskId::from_int(9)]
+            } else {
+                vec![]
+            };
+            assert_eq!(records.reenqueued_ids, expected);
+        }
+    }
+
+    async fn start_maintenance(
+        driver: &mut Persisted<Provider>,
+        provider: &Provider,
+        worker: &WorkerContext,
+        operation: &'static str,
+    ) {
+        if operation == "events" {
+            queue_event(driver);
+        } else {
+            driver.heartbeat_timer = Some(Delay::new(Duration::ZERO));
+        }
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            poll_fn(|cx| {
+                let _ = driver.poll_ready(cx, worker, HEARTBEAT);
+                if provider.0.lock().unwrap().calls.contains(&operation) {
+                    Poll::Ready(())
+                } else {
+                    Poll::Pending
+                }
+            }),
+        )
+        .await
+        .unwrap();
     }
 
     #[test]
@@ -818,6 +974,115 @@ mod tests {
                     .count(),
                 1
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn buffered_tasks_survive_pending_maintenance_and_resume_in_order() {
+        for operation in ["events", "heartbeat"] {
+            let (provider, mut driver, worker) = fixture();
+            ready(&mut driver, &worker);
+            provider
+                .0
+                .lock()
+                .unwrap()
+                .batches
+                .push_back(vec![task(1), task(2), task(3)]);
+            let mut cx = Context::from_waker(noop_waker_ref());
+            assert!(
+                matches!(driver.poll_next(&mut cx, &worker), Poll::Ready(Some(Ok(first))) if first.task_id() == Some(&TaskId::from_int(1)))
+            );
+            let gate = provider.gate(operation);
+            start_maintenance(&mut driver, &provider, &worker, operation).await;
+            for _ in 0..3 {
+                assert!(driver.poll_ready(&mut cx, &worker, HEARTBEAT).is_pending());
+            }
+            let mut clone = driver.clone();
+            assert!(matches!(clone.state(), State::NotBootstrapped));
+            assert!(matches!(
+                clone.poll_close(&mut cx, &worker),
+                Poll::Ready(Ok(()))
+            ));
+            gate.send(()).unwrap();
+            ready(&mut driver, &worker);
+            for id in [2, 3] {
+                assert!(
+                    matches!(driver.poll_next(&mut cx, &worker), Poll::Ready(Some(Ok(next))) if next.task_id() == Some(&TaskId::from_int(id)))
+                );
+            }
+            let records = provider.0.lock().unwrap();
+            assert_eq!(
+                records
+                    .calls
+                    .iter()
+                    .filter(|name| **name == operation)
+                    .count(),
+                1
+            );
+            assert_eq!(
+                records
+                    .calls
+                    .iter()
+                    .filter(|name| **name == "fetch")
+                    .count(),
+                1
+            );
+            assert!(records.reenqueued.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn closing_during_buffered_maintenance_keeps_rpc_and_task_ids() {
+        for operation in ["events", "heartbeat"] {
+            for fails in [false, true] {
+                let (provider, mut driver, worker) = fixture();
+                ready(&mut driver, &worker);
+                provider
+                    .0
+                    .lock()
+                    .unwrap()
+                    .batches
+                    .push_back(vec![task(1), task(2), task(3)]);
+                let mut cx = Context::from_waker(noop_waker_ref());
+                assert!(matches!(
+                    driver.poll_next(&mut cx, &worker),
+                    Poll::Ready(Some(Ok(_)))
+                ));
+                let maintenance = provider.gate(operation);
+                if fails {
+                    provider.0.lock().unwrap().failure = Some(operation);
+                }
+                start_maintenance(&mut driver, &provider, &worker, operation).await;
+                for _ in 0..3 {
+                    assert!(driver.poll_close(&mut cx, &worker).is_pending());
+                }
+                let reenqueue = provider.gate("reenqueue");
+                maintenance.send(()).unwrap();
+                if fails {
+                    let Poll::Ready(Err(error)) = driver.poll_close(&mut cx, &worker) else {
+                        panic!("expected maintenance error");
+                    };
+                    assert_eq!(error.to_string(), operation);
+                }
+                for _ in 0..3 {
+                    assert!(driver.poll_close(&mut cx, &worker).is_pending());
+                }
+                reenqueue.send(()).unwrap();
+                assert!(matches!(
+                    driver.poll_close(&mut cx, &worker),
+                    Poll::Ready(Ok(()))
+                ));
+                assert!(matches!(
+                    driver.poll_close(&mut cx, &worker),
+                    Poll::Ready(Ok(()))
+                ));
+                let records = provider.0.lock().unwrap();
+                assert_eq!(
+                    records.reenqueued_ids,
+                    [TaskId::from_int(2), TaskId::from_int(3)]
+                );
+                assert_eq!(records.calls, ["register", "fetch", operation, "reenqueue"]);
+            }
         }
     }
 
@@ -1393,68 +1658,270 @@ mod tests {
             assert_eq!(serde_json::to_value(decoded).unwrap(), expected);
         }
     }
+    use crate::backend::{Backend, BackendConfig, WireFormatBackend, finalize::Durable};
+    use crate::worker::builder::WorkerBuilder;
+    struct Adapter {
+        driver: Persisted<Provider>,
+        codec: NumberCodec,
+        batch_size: usize,
+    }
+    impl Backend for Adapter {
+        type Task = Task<u32>;
+        type Error = io::Error;
+        fn poll_ready(
+            &mut self,
+            cx: &mut Context<'_>,
+            worker: &WorkerContext,
+        ) -> Poll<io::Result<()>> {
+            self.driver.poll_ready(cx, worker, HEARTBEAT)
+        }
+        fn poll_next(
+            &mut self,
+            cx: &mut Context<'_>,
+            worker: &WorkerContext,
+        ) -> Poll<Option<io::Result<Self::Task>>> {
+            self.driver.poll_next(cx, worker)
+        }
+        fn poll_close(
+            &mut self,
+            cx: &mut Context<'_>,
+            worker: &WorkerContext,
+        ) -> Poll<io::Result<()>> {
+            self.driver.inner.0.lock().unwrap().close_polls += 1;
+            self.driver.poll_close(cx, worker)
+        }
+    }
+    impl WireFormatBackend for Adapter {
+        type Codec = NumberCodec;
+        type Compact = u32;
+        fn codec(&self) -> &NumberCodec {
+            &self.codec
+        }
+    }
+    impl BackendConfig for Adapter {
+        type Args = u32;
+        type Id = String;
+        type Kind = Durable;
+        type Config = ();
+        type Layer = TaskPersistLayer<NumberCodec, u32>;
+        fn config(&self) -> &() {
+            &()
+        }
+        fn middleware(&mut self, _: &mut WorkerContext) -> Self::Layer {
+            self.driver
+                .shared_layer(self.codec.clone(), self.batch_size)
+                .lock_tasks(true)
+                .persist_results(true)
+        }
+    }
+
+    fn buffered_worker(
+        provider: Provider,
+        driver: Persisted<Provider>,
+        worker: WorkerContext,
+        batch_size: usize,
+        stop_after: usize,
+    ) -> impl Future<Output = Result<(), crate::error::WorkerError>> {
+        use crate::worker::{event::Event, ext::event_listener::EventListenerExt};
+        let observed = provider.clone();
+        WorkerBuilder::new(worker)
+            .backend(Adapter {
+                driver,
+                codec: NumberCodec { fail: false },
+                batch_size,
+            })
+            .layer(tower::limit::ConcurrencyLimitLayer::new(2))
+            .on_event(move |worker, event| {
+                if matches!(event, Event::Success(_)) {
+                    let stop = {
+                        let mut records = observed.0.lock().unwrap();
+                        records.successes += 1;
+                        records.successes >= stop_after
+                    };
+                    if stop && worker.is_running() {
+                        worker.stop().unwrap();
+                    }
+                }
+            })
+            .build(move |value: u32, id: TaskId| {
+                let provider = provider.clone();
+                async move {
+                    let gate = provider.0.lock().unwrap().gates.remove("execute");
+                    if let Some(gate) = gate {
+                        gate.await.unwrap();
+                    }
+                    provider.0.lock().unwrap().executed_ids.push(id);
+                    Ok::<_, io::Error>(value + 1)
+                }
+            })
+            .run()
+    }
+
+    #[test]
+    fn buffered_worker_drains_lock_and_completion_events_before_stopping() {
+        let (provider, driver, worker) = fixture();
+        provider
+            .0
+            .lock()
+            .unwrap()
+            .batches
+            .push_back((0..11).map(task).collect());
+        let mut run = Box::pin(buffered_worker(
+            provider.clone(),
+            driver,
+            worker.clone(),
+            2,
+            11,
+        ));
+        let result = (0..128).find_map(|_| run.as_mut().now_or_never());
+        assert!(
+            matches!(result, Some(Ok(()))),
+            "eleven immediate tasks must finish; provider records: {:?}",
+            provider.0.lock().unwrap()
+        );
+        let records = provider.0.lock().unwrap();
+        assert_eq!(records.successes, 11);
+        assert_eq!(records.executed_ids.len(), 11);
+        assert_eq!(records.events.len(), 22);
+        assert!(records.reenqueued.is_empty());
+        assert_eq!(records.close_polls, 1);
+        assert!(worker.is_terminated());
+    }
+
+    #[test]
+    fn stopping_worker_drives_dispatched_persistence_and_propagates_errors() {
+        for fails in [false, true] {
+            let (provider, driver, worker) = fixture();
+            provider
+                .0
+                .lock()
+                .unwrap()
+                .batches
+                .push_back((0..11).map(task).collect());
+            if fails {
+                provider.0.lock().unwrap().failure = Some("events");
+            }
+            let gate = provider.gate("events");
+            let mut run = Box::pin(buffered_worker(
+                provider.clone(),
+                driver,
+                worker.clone(),
+                0,
+                usize::MAX,
+            ));
+            assert!(run.as_mut().now_or_never().is_none());
+            assert_eq!(
+                provider
+                    .0
+                    .lock()
+                    .unwrap()
+                    .calls
+                    .iter()
+                    .filter(|op| **op == "events")
+                    .count(),
+                1
+            );
+            worker.stop().unwrap();
+            gate.send(()).unwrap();
+            let result = (0..128).find_map(|_| run.as_mut().now_or_never());
+            if fails {
+                let Some(Err(error)) = result else {
+                    panic!("shutdown maintenance error must propagate: {result:?}")
+                };
+                assert!(error.to_string().contains("events"));
+            } else {
+                assert!(
+                    matches!(result, Some(Ok(()))),
+                    "stop must drain dispatched sends: {:?}",
+                    provider.0.lock().unwrap()
+                );
+                let records = provider.0.lock().unwrap();
+                assert_eq!(records.executed_ids, [TaskId::from_int(0)]);
+                assert_eq!(
+                    records.reenqueued_ids,
+                    (1..11).map(TaskId::from_int).collect::<Vec<_>>()
+                );
+                assert_eq!(records.events.len(), 2);
+                assert_eq!(records.close_polls, 1);
+                assert!(worker.is_terminated());
+            }
+            assert_eq!(
+                provider
+                    .0
+                    .lock()
+                    .unwrap()
+                    .calls
+                    .iter()
+                    .filter(|op| **op == "fetch")
+                    .count(),
+                1,
+                "stop must not fetch again"
+            );
+        }
+    }
+
+    #[test]
+    fn stopping_worker_maintains_events_without_restarting_a_pending_fetch() {
+        let (provider, driver, worker) = fixture();
+        provider.0.lock().unwrap().batches.push_back(vec![task(0)]);
+        let execute = provider.gate("execute");
+        let mut run = Box::pin(buffered_worker(
+            provider.clone(),
+            driver,
+            worker.clone(),
+            0,
+            usize::MAX,
+        ));
+        assert!(run.as_mut().now_or_never().is_none());
+        let fetch = provider.gate("fetch");
+        provider.0.lock().unwrap().batches.push_back(vec![task(99)]);
+        assert!(run.as_mut().now_or_never().is_none());
+        let fetched = provider
+            .0
+            .lock()
+            .unwrap()
+            .calls
+            .iter()
+            .filter(|op| **op == "fetch")
+            .count();
+        worker.stop().unwrap();
+        assert!(run.as_mut().now_or_never().is_none());
+        assert!(
+            !fetch.is_canceled(),
+            "stop must keep the existing fetch while dispatched work is pending"
+        );
+        execute.send(()).unwrap();
+        let result = (0..128).find_map(|_| run.as_mut().now_or_never());
+        assert!(
+            matches!(result, Some(Ok(()))),
+            "dispatched completion must drain while fetch remains pending: {:?}",
+            provider.0.lock().unwrap()
+        );
+        let records = provider.0.lock().unwrap();
+        assert_eq!(
+            records.calls.iter().filter(|op| **op == "fetch").count(),
+            fetched
+        );
+        assert_eq!(records.executed_ids, [TaskId::from_int(0)]);
+        assert_eq!(records.events.len(), 2);
+        assert!(records.reenqueued.is_empty());
+        assert_eq!(records.close_polls, 1);
+        assert!(worker.is_terminated());
+        assert!(
+            fetch.send(()).is_err(),
+            "the existing close contract drops the pending fetch only after dispatch drains"
+        );
+    }
+
     #[tokio::test]
     async fn worker_adapter_persists_lifecycle_status_and_result_before_shutdown() {
-        use crate::backend::{Backend, BackendConfig, WireFormatBackend, finalize::Durable};
-        use crate::worker::builder::WorkerBuilder;
-        struct Adapter {
-            driver: Persisted<Provider>,
-            codec: NumberCodec,
-        }
-        impl Backend for Adapter {
-            type Task = Task<u32>;
-            type Error = io::Error;
-            fn poll_ready(
-                &mut self,
-                cx: &mut Context<'_>,
-                worker: &WorkerContext,
-            ) -> Poll<io::Result<()>> {
-                self.driver.poll_ready(cx, worker, HEARTBEAT)
-            }
-            fn poll_next(
-                &mut self,
-                cx: &mut Context<'_>,
-                worker: &WorkerContext,
-            ) -> Poll<Option<io::Result<Self::Task>>> {
-                self.driver.poll_next(cx, worker)
-            }
-            fn poll_close(
-                &mut self,
-                cx: &mut Context<'_>,
-                worker: &WorkerContext,
-            ) -> Poll<io::Result<()>> {
-                self.driver.poll_close(cx, worker)
-            }
-        }
-        impl WireFormatBackend for Adapter {
-            type Codec = NumberCodec;
-            type Compact = u32;
-            fn codec(&self) -> &NumberCodec {
-                &self.codec
-            }
-        }
-        impl BackendConfig for Adapter {
-            type Args = u32;
-            type Id = String;
-            type Kind = Durable;
-            type Config = ();
-            type Layer = TaskPersistLayer<NumberCodec, u32>;
-            fn config(&self) -> &() {
-                &()
-            }
-            fn middleware(&mut self, _: &mut WorkerContext) -> Self::Layer {
-                self.driver
-                    .shared_layer(self.codec.clone(), 1)
-                    .lock_tasks(true)
-                    .persist_results(true)
-            }
-        }
         let (provider, driver, _) = fixture();
         provider.0.lock().unwrap().batches.push_back(vec![task(5)]);
         let worker = WorkerBuilder::new("persisted-worker")
             .backend(Adapter {
                 driver,
                 codec: NumberCodec { fail: false },
+                batch_size: 1,
             })
             .build(|value: u32, worker: WorkerContext| async move {
                 worker.stop().unwrap();
