@@ -85,6 +85,8 @@ pub struct WorkerContext {
     pub(crate) shutdown: Option<Shutdown>,
     event_handler: EventListener,
     pub(super) is_ready: Arc<AtomicBool>,
+    // Persisted's event receiver must run while already-dispatched sends drain.
+    pub(crate) backend_maintenance: Arc<AtomicBool>,
     service: Arc<String>,
     #[cfg(feature = "task-context")]
     tasks: Arc<dashmap::DashSet<TaskContext>>,
@@ -126,6 +128,7 @@ impl WorkerContext {
                 // noop
             })),
             is_ready: Default::default(),
+            backend_maintenance: Default::default(),
             tasks: Default::default(),
             instant: Instant::now(),
             restarts: Default::default(),

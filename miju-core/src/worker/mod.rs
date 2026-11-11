@@ -375,6 +375,8 @@ where
         mut self,
     ) -> impl Stream<Item = Result<Event, WorkerError>> + use<Args, S, M, FB> {
         let ctx = &mut self.context;
+        // Each run opts in independently, even when a monitor reuses its context.
+        ctx.backend_maintenance = Default::default();
         ctx.bind_service::<M::Service>();
         let mut backend = self.backend;
         let event_handler = self.event_handler;
@@ -727,6 +729,44 @@ mod tests {
         assert_eq!(stops.load(Ordering::SeqCst), 1);
         assert!(ctx.is_terminated());
         assert!(events.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn stopping_closed_memory_storage_drains_a_handler_before_eof() {
+        use crate::backend::memory::MemorySink;
+        use futures_util::SinkExt;
+        let gate = Arc::new(Notify::new());
+        let (sender, receiver) = futures_channel::mpsc::unbounded::<Task<u32>>();
+        let mut producer = MemorySink::new(Arc::new(futures_util::lock::Mutex::new(Box::new(
+            sender.sink_map_err(Into::into),
+        ))));
+        let mut backend = MemoryStorage::new_with(producer.clone(), receiver.boxed());
+        backend.push(7u32).await.unwrap();
+        let ctx = WorkerContext::new("stop-closed-memory");
+        ctx.backend_maintenance.store(true, Ordering::SeqCst);
+        let worker = WorkerBuilder::new(&ctx).backend(backend).build({
+            let gate = gate.clone();
+            move |_: u32| {
+                let gate = gate.clone();
+                async move { gate.notified().await }
+            }
+        });
+        let mut events = Box::pin(worker.stream());
+        assert!(matches!(events.next().await, Some(Ok(Event::Start))));
+        assert!(events.next().now_or_never().is_none());
+        assert_eq!(ctx.task_count(), 1);
+        producer.close().await.unwrap();
+        ctx.stop().unwrap();
+        let waiting = events.next().now_or_never();
+        assert!(
+            waiting.is_none(),
+            "stopping must not recheck a closed producer: {waiting:?}"
+        );
+        assert_eq!(ctx.task_count(), 1);
+        gate.notify_one();
+        assert!(matches!(events.next().await, Some(Ok(Event::Success(_)))));
+        assert!(matches!(events.next().await, Some(Ok(Event::Exit))));
+        assert!(ctx.is_terminated());
     }
 
     #[tokio::test]

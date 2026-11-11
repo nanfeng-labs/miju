@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- fix(core): maintain persistence while buffered tasks drain ([#117](https://github.com/nanfeng-labs/miju/pull/117))
 - fix(core): finalize worker state after execution teardown ([#116](https://github.com/nanfeng-labs/miju/pull/116))
 - fix(core): notify every shutdown waiter and worker ([#115](https://github.com/nanfeng-labs/miju/pull/115))
 - fix(core): make worker stop and kill repeatable ([#114](https://github.com/nanfeng-labs/miju/pull/114))
