@@ -3,7 +3,12 @@ use futures_sink::Sink;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{fmt::Debug, sync::Arc};
+use std::{
+    fmt::Debug,
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll},
+};
 
 use miju_core::{
     backend::{
@@ -14,7 +19,7 @@ use miju_core::{
     task::{Task, builder::TaskBuilder},
 };
 
-use crate::JsonStorage;
+use crate::{FileStorageError, JsonAdapter, JsonStorage};
 /// Sharable JSON based backend.
 ///
 /// The [`SharedJsonStore`] allows multiple task types to be stored
@@ -102,6 +107,40 @@ impl<Args: Send + Serialize + for<'de> Deserialize<'de> + Unpin + 'static + Clon
     }
 }
 
+/// Converts every storage error. `SinkMapErr` consumes its mapper on the first
+/// error and panics on the next, which concurrent writers reach through
+/// `WouldBlockLock`.
+struct StorageSink(JsonStorage<Value>);
+
+impl StorageSink {
+    fn convert(error: FileStorageError<JsonAdapter>) -> MemoryStorageError {
+        MemoryStorageError::Other(error.into())
+    }
+}
+
+impl Sink<Task<Value>> for StorageSink {
+    type Error = MemoryStorageError;
+
+    fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.get_mut().0.poll_ready_unpin(cx).map_err(Self::convert)
+    }
+
+    fn start_send(self: Pin<&mut Self>, item: Task<Value>) -> Result<(), Self::Error> {
+        self.get_mut()
+            .0
+            .start_send_unpin(item)
+            .map_err(Self::convert)
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.get_mut().0.poll_flush_unpin(cx).map_err(Self::convert)
+    }
+
+    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.get_mut().0.poll_close_unpin(cx).map_err(Self::convert)
+    }
+}
+
 type BoxSink<Args> =
     Box<dyn Sink<Task<Args>, Error = MemoryStorageError> + Send + Sync + Unpin + 'static>;
 
@@ -118,16 +157,14 @@ impl SharedJsonStore {
         let wrapped_sender = {
             let sender = sender.clone();
 
-            sender
-                .sink_map_err(|e| MemoryStorageError::Other(e.into()))
-                .with_flat_map(move |mut task: Task<Args>| {
-                    task.inject_metadata(&Queue::from(queue_config)).unwrap();
-                    let res = task.try_map_args(|s| {
-                        serde_json::to_value(s).map_err(|e| MemoryStorageError::Other(e.into()))
-                    });
+            StorageSink(sender).with_flat_map(move |mut task: Task<Args>| {
+                task.inject_metadata(&Queue::from(queue_config)).unwrap();
+                let res = task.try_map_args(|s| {
+                    serde_json::to_value(s).map_err(|e| MemoryStorageError::Other(e.into()))
+                });
 
-                    futures_util::stream::iter(vec![res])
-                })
+                futures_util::stream::iter(vec![res])
+            })
         };
 
         // Create a stream that filters by type T
@@ -250,6 +287,28 @@ mod tests {
         assert!(cloned.load(Ordering::SeqCst) > 0);
         assert!(dropped.load(Ordering::SeqCst) > 0);
         assert_eq!(locked.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn sends_keep_returning_errors_while_the_entry_lock_is_held() {
+        use futures_util::FutureExt;
+        use miju_core::backend::TaskSinkError;
+
+        let mut factory = SharedJsonStore::new();
+        let mut producer: MemoryStorage<u32> = factory.create().unwrap();
+        let entries = Arc::clone(&factory.inner.entries);
+        // A concurrent flush or receiver holds this lock; every send must fail
+        // with an error. The previous error mapper panicked on the second one.
+        let reader = entries.read().unwrap();
+        for value in 0..3 {
+            assert!(matches!(
+                producer.push(value).now_or_never(),
+                Some(Err(TaskSinkError::PushError(MemoryStorageError::Other(_))))
+            ));
+        }
+        drop(reader);
+        producer.push(3).now_or_never().unwrap().unwrap();
+        assert_eq!(entries.read().unwrap().len(), 1);
     }
 
     const ITEMS: u32 = 10;
