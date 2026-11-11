@@ -68,7 +68,8 @@ impl<S> Layer<S> for LifecycleLayer {
 /// `LifecycleService` registers tasks with the worker before processing and
 /// wraps the underlying service future in a [`LifecycleFuture`] to track task
 /// state and completion. Registration errors are returned without calling the
-/// underlying service.
+/// underlying service. A rejected duplicate is not acknowledged or persisted,
+/// so the running execution's result is the only one recorded for its ID.
 #[derive(Debug)]
 pub struct LifecycleService<S> {
     worker: WorkerContext,
@@ -275,6 +276,16 @@ pub enum TaskLifecycleError {
     /// state transition.
     #[error("task state is invalid: {0}")]
     StateError(#[from] TaskStateError),
+}
+
+impl TaskLifecycleError {
+    /// Whether `error` rejected a second registration of a running task's ID.
+    ///
+    /// The rejected copy never ran, so result-recording layers skip it and leave
+    /// the running execution's result as the only one recorded for that ID.
+    pub(crate) fn is_duplicate(error: &BoxDynError) -> bool {
+        matches!(error.downcast_ref::<Self>(), Some(Self::Duplicate))
+    }
 }
 
 impl<Fut, T, E> Future for LifecycleFuture<Fut>
@@ -1064,5 +1075,38 @@ mod tests {
         ));
         let future = service.call(task());
         assert_unpin(&future);
+    }
+
+    #[cfg(feature = "task-context")]
+    #[tokio::test]
+    async fn registration_errors_other_than_duplicates_are_acknowledged() {
+        use crate::{task::ExecutionContext, worker::ext::ack::AcknowledgeLayer};
+
+        let acks = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let record = acks.clone();
+        let mut service = AcknowledgeLayer::new(
+            move |res: &Result<u32, BoxDynError>, _: &ExecutionContext| {
+                record
+                    .lock()
+                    .unwrap()
+                    .push(res.as_ref().map_err(ToString::to_string).copied());
+                ready(Ok::<(), std::io::Error>(()))
+            },
+        )
+        .layer(
+            LifecycleLayer::new(WorkerContext::new("ack-missing-id"))
+                .layer(task_fn(|value: u32| ready(Ok::<_, BoxDynError>(value)))),
+        );
+        // A task without an ID can never register, so it is recorded as failed
+        // instead of being left unacknowledged for redelivery.
+        let error = service.call(Task::new(7_u32)).await.unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<TaskLifecycleError>(),
+            Some(TaskLifecycleError::MissingTaskId)
+        ));
+        assert_eq!(
+            *acks.lock().unwrap(),
+            [Err("task doesn't have an id".to_owned())]
+        );
     }
 }

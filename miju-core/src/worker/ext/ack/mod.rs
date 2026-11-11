@@ -3,6 +3,8 @@
 //! The [`Acknowledge`] trait and related types are responsible for adding custom
 //! acknowledgment logic to workers. You can use [`AcknowledgeLayer`] to wrap
 //! a worker service and invoke your acknowledgment handler after each task execution.
+//! A task rejected because its ID is already running was not executed, so it is
+//! not acknowledged.
 //!
 //! # Example
 //!
@@ -67,7 +69,7 @@ use crate::{
     backend::Backend,
     error::BoxDynError,
     task::{ExecutionContext, Task},
-    worker::builder::WorkerBuilder,
+    worker::{builder::WorkerBuilder, lifecycle::TaskLifecycleError},
 };
 
 /// Extension trait for adding acknowledgment handling to workers
@@ -173,7 +175,9 @@ where
         let mut acknowledger = self.acknowledger.clone();
         Box::pin(async move {
             let res = future.await.map_err(|e| e.into());
-            acknowledger.ack(&res, &ctx).await?;
+            if !matches!(&res, Err(e) if TaskLifecycleError::is_duplicate(e)) {
+                acknowledger.ack(&res, &ctx).await?;
+            }
             res
         })
     }
