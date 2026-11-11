@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- fix(core): track running tasks by ID instead of ID text ([#130](https://github.com/nanfeng-labs/miju/pull/130))
 - fix(core): run calls admitted before the circuit opened ([#129](https://github.com/nanfeng-labs/miju/pull/129))
 - fix(core)!: return atomic task registration errors ([#113](https://github.com/nanfeng-labs/miju/pull/113))
 - fix(workflow)!: preserve task ID identity in metadata ([#110](https://github.com/nanfeng-labs/miju/pull/110))
