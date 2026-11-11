@@ -51,7 +51,7 @@ use crate::{
     },
     worker::context::WorkerContext,
 };
-use futures_channel::mpsc::{SendError, unbounded};
+use futures_channel::mpsc::{SendError, UnboundedSender, unbounded};
 use futures_core::ready;
 use futures_sink::Sink;
 use futures_timer::Delay;
@@ -138,7 +138,7 @@ impl<Args: Send + 'static> MemoryStorage<Args> {
     #[must_use]
     pub fn new() -> Self {
         let (sender, receiver) = unbounded();
-        let sender = Box::new(sender.sink_map_err(|e| e.into()))
+        let sender = Box::new(ChannelSink(sender))
             as Box<dyn Sink<Task<Args>, Error = MemoryStorageError> + Send + Sync + Unpin>;
         Self {
             sender: MemorySink {
@@ -176,6 +176,30 @@ impl<Args> Sink<Task<Args>> for MemoryStorage<Args> {
 
     fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         self.as_mut().sender.poll_close_unpin(cx)
+    }
+}
+
+/// Converts every channel error. `SinkMapErr` consumes its mapper on the first
+/// error and panics on the next, e.g. on a second send after the channel closes.
+struct ChannelSink<Args>(UnboundedSender<Task<Args>>);
+
+impl<Args> Sink<Task<Args>> for ChannelSink<Args> {
+    type Error = MemoryStorageError;
+
+    fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.get_mut().0.poll_ready_unpin(cx).map_err(Into::into)
+    }
+
+    fn start_send(self: Pin<&mut Self>, item: Task<Args>) -> Result<(), Self::Error> {
+        self.get_mut().0.start_send_unpin(item).map_err(Into::into)
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.get_mut().0.poll_flush_unpin(cx).map_err(Into::into)
+    }
+
+    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.get_mut().0.poll_close_unpin(cx).map_err(Into::into)
     }
 }
 
