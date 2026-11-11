@@ -312,17 +312,22 @@ impl<A: Adapter, Args> FileStorage<Args, A> {
 
     /// Persist all pending changes under an exclusive file lock.
     ///
-    /// On failure, pending changes remain available for another call. A partial
-    /// append is overwritten at its original offset when retried. This does not
-    /// sync the file or containing directory to durable media.
+    /// Waits while writers and flushes of this storage or its clones hold its
+    /// entry and pending-change locks, rather than failing. On failure, pending
+    /// changes remain available for another call. A partial append is
+    /// overwritten at its original offset when retried. This does not sync the
+    /// file or containing directory to durable media.
     pub fn flush(&mut self) -> Result<(), FileStorageError<A>> {
+        // A push stages its task before flushing. Failing here on a clone's
+        // short-lived lock would report an error for a staged task, and a retry
+        // of that push would store it twice.
         let raw_tasks = self
             .entries
-            .try_read()
+            .read()
             .map_err(|_| FileStorageError::WouldBlockLock)?;
         let mut pending = self
             .pending
-            .try_write()
+            .write()
             .map_err(|_| FileStorageError::WouldBlockLock)?;
         if pending.is_empty() {
             return Ok(());
@@ -1043,6 +1048,42 @@ mod tests {
         assert_eq!(line_id, 0);
         assert_eq!(entry.task_id, id);
         assert_eq!(entry.args, 42);
+    }
+
+    #[test]
+    fn flush_waits_for_a_clone_holding_the_entry_or_pending_lock() {
+        use futures_util::SinkExt;
+        use std::sync::mpsc;
+
+        for hold_pending in [false, true] {
+            let mut store = JsonStorage::<u32>::new_temp().unwrap();
+            store
+                .start_send_unpin(TaskBuilder::new(Value::from(1)).build())
+                .unwrap();
+            let (entries, pending) = (Arc::clone(&store.entries), Arc::clone(&store.pending));
+            let (held, release) = (mpsc::channel(), mpsc::channel::<()>());
+            let holder = std::thread::spawn(move || {
+                // Stand in for a clone that is staging or flushing its own task.
+                let _entries = (!hold_pending).then(|| entries.write().unwrap());
+                let _pending = hold_pending.then(|| pending.write().unwrap());
+                held.0.send(()).unwrap();
+                release.1.recv().unwrap();
+            });
+            held.1.recv().unwrap();
+            let releaser = std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(100));
+                release.0.send(()).unwrap();
+            });
+
+            // A failure here would report an error for the already staged task.
+            store.flush().unwrap();
+            holder.join().unwrap();
+            releaser.join().unwrap();
+            assert!(store.pending.read().unwrap().is_empty());
+            assert_eq!(store.entries.read().unwrap().len(), 1);
+            let lines = std::fs::read_to_string(&store.path).unwrap();
+            assert_eq!(lines.lines().count(), 1);
+        }
     }
 
     #[test]
