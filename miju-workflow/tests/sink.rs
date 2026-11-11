@@ -166,13 +166,13 @@ async fn closed_sink_errors_are_distinct_from_encoding_errors() {
         backend.push_start(7_u32).await,
         Err(TaskSinkError::PushError(_))
     ));
-    // The channel's error mapper is consumed by the first failed send.
-    assert!(
+    // Later failed sends keep returning errors.
+    assert!(matches!(
         AssertUnwindSafe(backend.push_start(7_u32))
             .catch_unwind()
-            .await
-            .is_err()
-    );
+            .await,
+        Ok(Err(TaskSinkError::PushError(_)))
+    ));
 }
 
 #[tokio::test]

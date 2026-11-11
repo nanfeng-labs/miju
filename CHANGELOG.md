@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- fix(core): return errors for repeated failed memory sends ([#119](https://github.com/nanfeng-labs/miju/pull/119))
 - fix(core): keep memory queues open after worker shutdown ([#118](https://github.com/nanfeng-labs/miju/pull/118))
 - deps(deps): bump sentry-tracing from 0.49.3 to 0.49.5 ([#106](https://github.com/nanfeng-labs/miju/pull/106))
 
