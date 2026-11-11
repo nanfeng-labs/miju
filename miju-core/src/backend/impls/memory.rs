@@ -342,7 +342,9 @@ impl<Args> Backend for MemoryStorage<Args> {
         cx: &mut Context<'_>,
         _: &WorkerContext,
     ) -> Poll<Result<(), Self::Error>> {
-        self.sender.poll_close_unpin(cx)
+        // Every `MemorySink` clone shares this sender, so closing it would end the
+        // queue for producers and for workers that share this storage. Flush only.
+        self.sender.poll_flush_unpin(cx)
     }
 }
 
