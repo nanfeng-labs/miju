@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- fix(core): release idempotency keys of failed memory sends ([#122](https://github.com/nanfeng-labs/miju/pull/122))
 - fix(file-storage): return errors for repeated shared store send failures ([#121](https://github.com/nanfeng-labs/miju/pull/121))
 - fix(core): keep shared backends open when one handle closes ([#120](https://github.com/nanfeng-labs/miju/pull/120))
 - fix(core): return errors for repeated failed memory sends ([#119](https://github.com/nanfeng-labs/miju/pull/119))
