@@ -50,8 +50,10 @@ impl<B> Drop for NotifyOnUnlock<'_, B> {
 /// underlying backend. Because other handles still use that backend, `poll_close`
 /// flushes it instead of closing it, and may wait for backpressure like `poll_flush`.
 ///
-/// Calling [`BackendConfig::config`] panics. Middleware construction also
-/// panics if another handle currently holds the backend lock.
+/// Calling [`BackendConfig::config`] panics. Middleware construction waits for
+/// the backend lock. On a single-threaded runtime, that wait cannot finish while
+/// another task is suspended in one of this type's asynchronous operations, such
+/// as [`Update::update`], which hold the lock across awaits.
 #[derive(Debug)]
 pub struct Shared<B: WireFormatBackend> {
     inner: Arc<Inner<B>>,
@@ -97,6 +99,29 @@ where
             codec,
             sink: VecDeque::new(),
         }
+    }
+}
+
+// Workers build middleware synchronously when they start, while another handle
+// may hold the backend lock inside a poll. Park until it is released.
+fn lock_blocking<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    if let Some(guard) = mutex.try_lock() {
+        return guard;
+    }
+    struct Unpark(std::thread::Thread);
+    impl std::task::Wake for Unpark {
+        fn wake(self: Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+    let waker = Waker::from(Arc::new(Unpark(std::thread::current())));
+    let mut cx = Context::from_waker(&waker);
+    let mut lock = mutex.lock();
+    loop {
+        if let Poll::Ready(guard) = Pin::new(&mut lock).poll(&mut cx) {
+            return guard;
+        }
+        std::thread::park();
     }
 }
 
@@ -252,7 +277,7 @@ where
     }
     fn middleware(&mut self, worker: &mut WorkerContext) -> Self::Layer {
         let _notify;
-        let mut backend = self.inner.backend.try_lock().unwrap();
+        let mut backend = lock_blocking(&self.inner.backend);
         _notify = NotifyOnUnlock(&self.inner);
         self.inner.wakers.remove(&self.waker_key);
         backend.middleware(worker)
@@ -645,6 +670,32 @@ mod tests {
     }
 
     #[test]
+    fn middleware_waits_for_a_handle_holding_the_backend_lock() {
+        let mut shared = VecDequeBackend::<u32>::new()
+            .with_codec(IdentityCodec)
+            .shared();
+        let inner = shared.inner.clone();
+        let (held, release) = (std::sync::mpsc::channel(), std::sync::mpsc::channel::<()>());
+        // Stand in for another worker polling the backend while this one starts.
+        let holder = std::thread::spawn(move || {
+            let _guard = inner.backend.try_lock().unwrap();
+            held.0.send(()).unwrap();
+            release.1.recv().unwrap();
+        });
+        held.1.recv().unwrap();
+        let releaser = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            release.0.send(()).unwrap();
+        });
+
+        let started = std::time::Instant::now();
+        let _layer = shared.middleware(&mut WorkerContext::new("starting"));
+        assert!(started.elapsed() >= std::time::Duration::from_millis(50));
+        holder.join().unwrap();
+        releaser.join().unwrap();
+    }
+
+    #[test]
     fn empty_completion_does_not_require_send_readiness() {
         for close in [false, true] {
             let (mut shared, receiver) = channel_backend();
@@ -673,19 +724,11 @@ mod tests {
     }
 
     #[test]
-    fn configuration_and_contended_middleware_panic() {
-        let mut shared = VecDequeBackend::<u32>::new()
+    fn configuration_panics() {
+        let shared = VecDequeBackend::<u32>::new()
             .with_codec(IdentityCodec)
             .shared();
         assert!(catch_unwind(AssertUnwindSafe(|| shared.config())).is_err());
-        let inner = shared.inner.clone();
-        let _guard = inner.backend.try_lock().unwrap();
-        assert!(
-            catch_unwind(AssertUnwindSafe(
-                || shared.middleware(&mut WorkerContext::new("shared-config"))
-            ))
-            .is_err()
-        );
     }
 
     // The queue is real. The one-shot stands in for a database lookup awaiting I/O.
