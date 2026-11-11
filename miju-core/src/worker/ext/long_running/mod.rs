@@ -164,7 +164,7 @@ impl<Args: Sync, Res> FromRequest<Task<Args>> for TaskRunner<Res> {
             .data()
             .get_checked::<LongRunningConfig>()
             .cloned()
-            .expect("LongRunningConfig should be present in ExecutionContext");
+            .map_err(|e| LongRunningError::Execution(e.into()))?;
         #[cfg(feature = "task-context")]
         let task: TaskContext = TaskContext::from_request(task)
             .await
