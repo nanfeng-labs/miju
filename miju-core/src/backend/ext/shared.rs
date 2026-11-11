@@ -80,6 +80,15 @@ impl<'a, B> NotifyOnUnlock<'a, B> {
         inner.relay.active.fetch_add(1, Ordering::AcqRel);
         Self(inner)
     }
+
+    // Management operations poll the backend with their caller's waker, which a
+    // backend that keeps one waker stores in place of the relay's. Registered
+    // handles poll again once the operation ends, restoring the relay.
+    fn management(inner: &'a Inner<B>) -> Self {
+        let notify = Self::new(inner);
+        inner.relay.notified.store(true, Ordering::Release);
+        notify
+    }
 }
 
 impl<B> Drop for NotifyOnUnlock<'_, B> {
@@ -98,6 +107,9 @@ impl<B> Drop for NotifyOnUnlock<'_, B> {
 /// flushes it instead of closing it, and may wait for backpressure like `poll_flush`.
 /// Backend notifications wake registered handles through one shared relay;
 /// releasing the mutex only wakes handles waiting to acquire that mutex.
+/// Asynchronous operations such as [`FetchById::fetch_by_id`] also wake the
+/// registered handles when they end, because the backend may have kept the
+/// caller's waker instead of the relay's.
 ///
 /// Calling [`BackendConfig::config`] panics. Middleware construction waits for
 /// the backend lock. On a single-threaded runtime, that wait cannot finish while
@@ -357,7 +369,7 @@ where
     ) -> Result<Option<B::Task>, Self::Error> {
         let _notify;
         let mut backend = self.inner.backend.lock().await;
-        _notify = NotifyOnUnlock::new(&self.inner);
+        _notify = NotifyOnUnlock::management(&self.inner);
         self.inner.wakers.remove(&self.waker_key);
         backend.fetch_by_id(task_id).await
     }
@@ -373,7 +385,7 @@ where
     async fn update(&mut self, task: Self::Task) -> Result<(), Self::Error> {
         let _notify;
         let mut backend = self.inner.backend.lock().await;
-        _notify = NotifyOnUnlock::new(&self.inner);
+        _notify = NotifyOnUnlock::management(&self.inner);
         self.inner.wakers.remove(&self.waker_key);
         backend.update(task).await
     }
@@ -393,7 +405,7 @@ where
     ) -> Result<(), Self::Error> {
         let _notify;
         let mut backend = self.inner.backend.lock().await;
-        _notify = NotifyOnUnlock::new(&self.inner);
+        _notify = NotifyOnUnlock::management(&self.inner);
         self.inner.wakers.remove(&self.waker_key);
         backend.reschedule(task, wait).await
     }
@@ -408,14 +420,14 @@ where
     async fn vacuum(&mut self) -> Result<usize, Self::Error> {
         let _notify;
         let mut backend = self.inner.backend.lock().await;
-        _notify = NotifyOnUnlock::new(&self.inner);
+        _notify = NotifyOnUnlock::management(&self.inner);
         self.inner.wakers.remove(&self.waker_key);
         backend.vacuum().await
     }
     async fn vacuum_before(&mut self, duration: Duration) -> Result<usize, Self::Error> {
         let _notify;
         let mut backend = self.inner.backend.lock().await;
-        _notify = NotifyOnUnlock::new(&self.inner);
+        _notify = NotifyOnUnlock::management(&self.inner);
         self.inner.wakers.remove(&self.waker_key);
         backend.vacuum_before(duration).await
     }
@@ -430,7 +442,7 @@ where
     async fn resume_by_id(&mut self, id: TaskId) -> Result<bool, Self::Error> {
         let _notify;
         let mut backend = self.inner.backend.lock().await;
-        _notify = NotifyOnUnlock::new(&self.inner);
+        _notify = NotifyOnUnlock::management(&self.inner);
         self.inner.wakers.remove(&self.waker_key);
         backend.resume_by_id(id).await
     }
@@ -445,7 +457,7 @@ where
     async fn resume_abandoned(&mut self) -> Result<usize, Self::Error> {
         let _notify;
         let mut backend = self.inner.backend.lock().await;
-        _notify = NotifyOnUnlock::new(&self.inner);
+        _notify = NotifyOnUnlock::management(&self.inner);
         self.inner.wakers.remove(&self.waker_key);
         backend.resume_abandoned().await
     }
@@ -460,7 +472,7 @@ where
     async fn register_worker(&mut self, worker_id: String) -> Result<(), Self::Error> {
         let _notify;
         let mut backend = self.inner.backend.lock().await;
-        _notify = NotifyOnUnlock::new(&self.inner);
+        _notify = NotifyOnUnlock::management(&self.inner);
         self.inner.wakers.remove(&self.waker_key);
         backend.register_worker(worker_id).await
     }
@@ -494,7 +506,7 @@ where
     ) -> Result<Vec<TaskResult<Output>>, Self::Error> {
         let _notify;
         let mut backend = self.inner.backend.lock().await;
-        _notify = NotifyOnUnlock::new(&self.inner);
+        _notify = NotifyOnUnlock::management(&self.inner);
         self.inner.wakers.remove(&self.waker_key);
         backend.check_status(task_ids).await
     }
@@ -933,6 +945,8 @@ mod tests {
         queue: VecDequeBackend<u32>,
         lookup_complete: Option<oneshot::Receiver<()>>,
         on_wait_for: Option<Box<dyn FnMut() + Send + Sync>>,
+        // Lookups wait on the queue's only waker, like a backend with one connection.
+        lookup_takes_queue_waker: bool,
     }
     impl WireFormatBackend for LookupBackend {
         type Codec = IdentityCodec;
@@ -994,6 +1008,14 @@ mod tests {
 
     impl LookupBackend {
         async fn gate(&mut self) -> Result<(), VecDequeError> {
+            if self.lookup_takes_queue_waker {
+                let worker = WorkerContext::new("lookup");
+                std::future::poll_fn(|cx| {
+                    let _ = Backend::poll_ready(&mut self.queue, cx, &worker);
+                    Poll::Ready(())
+                })
+                .await;
+            }
             self.lookup_complete
                 .take()
                 .unwrap()
@@ -1099,6 +1121,7 @@ mod tests {
                 queue: VecDequeBackend::new(),
                 lookup_complete: Some(rx),
                 on_wait_for: None,
+                lookup_takes_queue_waker: false,
             }),
             tx,
         )
@@ -1304,6 +1327,63 @@ mod tests {
         assert!(lookup.as_mut().poll(&mut quiet).is_ready());
         drop(lookup);
         assert!(count.0.load(Ordering::SeqCst) > 0);
+    }
+
+    #[test]
+    fn management_that_takes_the_backend_waker_does_not_strand_idle_handles() {
+        let mut stranded = Vec::new();
+        for method in [
+            "fetch_by_id",
+            "update",
+            "reschedule",
+            "vacuum",
+            "vacuum_before",
+            "resume_by_id",
+            "resume_abandoned",
+            "register_worker",
+            "check_status",
+        ] {
+            for outcome in ["success", "cancel"] {
+                let (mut consumer, tx) = setup();
+                consumer
+                    .inner
+                    .backend
+                    .try_lock()
+                    .unwrap()
+                    .lookup_takes_queue_waker = true;
+                let mut manager = consumer.clone();
+                let mut producer = consumer.clone();
+                let worker = WorkerContext::new("idle");
+                let (count, waker) = counter();
+                let mut cx = Context::from_waker(&waker);
+                assert!(consumer.poll_next(&mut cx, &worker).is_pending());
+
+                let id = TaskId::from(1_u64);
+                let mut quiet = Context::from_waker(noop_waker_ref());
+                let mut operation = management(&mut manager, &id, method);
+                assert!(operation.as_mut().poll(&mut quiet).is_pending());
+                if outcome == "success" {
+                    tx.send(()).unwrap();
+                    assert!(operation.as_mut().poll(&mut quiet).is_ready());
+                }
+                drop(operation);
+                // A woken worker polls again, which registers it with the backend again.
+                if count.0.swap(0, Ordering::SeqCst) > 0 {
+                    assert!(consumer.poll_next(&mut cx, &worker).is_pending());
+                }
+
+                assert!(producer.poll_ready_unpin(&mut quiet).is_ready());
+                producer.start_send_unpin(Task::new(7)).unwrap();
+                assert!(producer.poll_flush_unpin(&mut quiet).is_ready());
+                if count.0.load(Ordering::SeqCst) == 0 {
+                    stranded.push(format!("{method}/{outcome}"));
+                }
+            }
+        }
+        assert!(
+            stranded.is_empty(),
+            "idle handles missed a new task after: {stranded:?}"
+        );
     }
 
     #[test]
