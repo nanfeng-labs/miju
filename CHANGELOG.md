@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- fix(core): relay backend notifications to shared handles ([#112](https://github.com/nanfeng-labs/miju/pull/112))
 - fix(core): preserve circuit readiness until dispatch ([#111](https://github.com/nanfeng-labs/miju/pull/111))
 - fix(core): remember exhausted adapter inputs ([#109](https://github.com/nanfeng-labs/miju/pull/109))
 - fix(core): return errors for missing task extraction data ([#108](https://github.com/nanfeng-labs/miju/pull/108))
