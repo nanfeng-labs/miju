@@ -9,6 +9,7 @@ use crate::{
     backend::{TaskResult, codec::Codec, persistence::event::TaskEvent},
     error::BoxDynError,
     task::Task,
+    worker::lifecycle::TaskLifecycleError,
 };
 
 /// A middleware layer that persists task lifecycle events.
@@ -22,6 +23,7 @@ use crate::{
 /// service's `call` runs before the lock event is sent. A response encoding
 /// failure is recorded in the completion event without changing a successful
 /// service result; a channel send failure is returned as a service error.
+/// A task rejected because its ID is already running gets no completion event.
 ///
 /// # Type Parameters
 ///
@@ -144,7 +146,7 @@ where
             }
 
             let res = fut.await.map_err(|e| e.into());
-            if should_ack {
+            if should_ack && !matches!(&res, Err(e) if TaskLifecycleError::is_duplicate(e)) {
                 let status = ctx.status();
                 let result = res
                     .as_ref()

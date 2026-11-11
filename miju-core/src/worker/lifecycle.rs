@@ -8,12 +8,17 @@
 //! The lifecycle service also handles task cancellation and maps task results
 //! to their corresponding [`Status`] values.
 use std::{
+    future::{Ready, ready},
     pin::Pin,
     sync::{Arc, atomic::Ordering},
     task::{Context, Poll},
 };
 
-use futures_util::{FutureExt, task::AtomicWaker};
+use futures_util::{
+    FutureExt,
+    future::{Either, Map},
+    task::AtomicWaker,
+};
 use tower_layer::Layer;
 use tower_service::Service;
 
@@ -62,7 +67,9 @@ impl<S> Layer<S> for LifecycleLayer {
 ///
 /// `LifecycleService` registers tasks with the worker before processing and
 /// wraps the underlying service future in a [`LifecycleFuture`] to track task
-/// state and completion.
+/// state and completion. Registration errors are returned without calling the
+/// underlying service. A rejected duplicate is not acknowledged or persisted,
+/// so the running execution's result is the only one recorded for its ID.
 #[derive(Debug)]
 pub struct LifecycleService<S> {
     worker: WorkerContext,
@@ -99,7 +106,10 @@ where
 {
     type Response = S::Response;
     type Error = BoxDynError;
-    type Future = LifecycleFuture<S::Future>;
+    type Future = Either<
+        Map<Ready<BoxDynError>, fn(BoxDynError) -> Result<S::Response, BoxDynError>>,
+        LifecycleFuture<S::Future>,
+    >;
 
     fn poll_ready(&mut self, cx: &mut std::task::Context<'_>) -> Poll<Result<(), Self::Error>> {
         if let Some(waker) = &self.readiness_waker {
@@ -150,10 +160,15 @@ where
         let attempt = task.raw_attempt().clone();
         let status = task.raw_status().clone();
         #[allow(unused, clippy::let_unit_value)]
-        let task_ctx = self
-            .worker
-            .register_task(task.ctx())
-            .expect("Could not register task");
+        let task_ctx = match self.worker.register_task(task.ctx()) {
+            Ok(task_ctx) => task_ctx,
+            Err(error) => {
+                return Either::Left(
+                    ready(error.into())
+                        .map(Err as fn(BoxDynError) -> Result<S::Response, BoxDynError>),
+                );
+            }
+        };
 
         // Cover unwinding before the future takes over registration cleanup.
         let mut registration = TaskRegistrationGuard {
@@ -165,7 +180,7 @@ where
         registration.worker = None;
         drop(registration);
 
-        LifecycleFuture {
+        Either::Right(LifecycleFuture {
             fut,
             worker,
             #[cfg(feature = "task-context")]
@@ -177,7 +192,7 @@ where
             record_attempt: Some(attempt),
             task_status: status,
             finished: false,
-        }
+        })
     }
 }
 
@@ -261,6 +276,16 @@ pub enum TaskLifecycleError {
     /// state transition.
     #[error("task state is invalid: {0}")]
     StateError(#[from] TaskStateError),
+}
+
+impl TaskLifecycleError {
+    /// Whether `error` rejected a second registration of a running task's ID.
+    ///
+    /// The rejected copy never ran, so result-recording layers skip it and leave
+    /// the running execution's result as the only one recorded for that ID.
+    pub(crate) fn is_duplicate(error: &BoxDynError) -> bool {
+        matches!(error.downcast_ref::<Self>(), Some(Self::Duplicate))
+    }
 }
 
 impl<Fut, T, E> Future for LifecycleFuture<Fut>
@@ -883,6 +908,205 @@ mod tests {
         assert_eq!(
             worker.cancel_task(&local),
             Err(TaskStateError::TaskNotFound)
+        );
+    }
+
+    #[cfg(feature = "task-context")]
+    #[tokio::test]
+    async fn registration_errors_preserve_the_original_worker_execution() {
+        use crate::{backend::TaskSink, task::task_id::TaskId};
+        use std::sync::Mutex;
+
+        for (first_id, duplicate_id) in [
+            (TaskId::from_int(42), TaskId::from_int(42)),
+            (TaskId::from_int(42), TaskId::from_string("42")),
+            (TaskId::from_string("42"), TaskId::from_int(42)),
+        ] {
+            let worker = WorkerContext::new("duplicate-registration");
+            let first = TaskBuilder::new(1_u32).task_id(first_id).build();
+            let duplicate = TaskBuilder::new(2_u32).task_id(duplicate_id).build();
+            let mut backend = MemoryStorage::new();
+            backend.push_task(first.clone()).await.unwrap();
+            backend.push_task(duplicate.clone()).await.unwrap();
+            let calls = Arc::new(AtomicUsize::new(0));
+            let handler_calls = calls.clone();
+            let first_context = Arc::new(Mutex::new(None));
+            let handler_context = first_context.clone();
+            let handler_worker = worker.clone();
+            let mut events = WorkerBuilder::new(&worker)
+                .backend(backend)
+                .build(move |_: u32| {
+                    handler_calls.fetch_add(1, Ordering::SeqCst);
+                    *handler_context.lock().unwrap() = Some(handler_worker.get_task("42").unwrap());
+                    pending::<()>()
+                })
+                .stream();
+
+            assert!(matches!(events.next().await, Some(Ok(Event::Start))));
+            let Some(Ok(Event::Error(error))) = events.next().await else {
+                panic!("duplicate registration must be reported as a worker error event");
+            };
+            assert!(matches!(
+                error.downcast_ref::<TaskLifecycleError>(),
+                Some(TaskLifecycleError::Duplicate)
+            ));
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            assert_eq!(worker.task_count(), 1);
+            assert_eq!(first.status(), Status::Running);
+            assert_eq!(first.attempt(), 1);
+            assert_eq!(duplicate.status(), Status::Pending);
+            assert_eq!(duplicate.attempt(), 0);
+            let original = worker.get_task("42").unwrap();
+            assert!(original.same_execution(first_context.lock().unwrap().as_ref().unwrap()));
+            worker.cancel_task(&original).unwrap();
+            assert!(original.is_cancelled());
+            worker.stop().unwrap();
+            while let Some(event) = events.next().await {
+                event.unwrap();
+            }
+            assert_eq!(worker.task_count(), 0);
+            assert!(worker.is_terminated());
+        }
+    }
+
+    #[cfg(feature = "task-context")]
+    #[test]
+    fn registration_without_task_id_returns_typed_error() {
+        let worker = WorkerContext::new("missing-task-id");
+        let calls = Arc::new(AtomicUsize::new(0));
+        let handler_calls = calls.clone();
+        let mut service = LifecycleLayer::new(worker.clone()).layer(task_fn(move |_: u32| {
+            handler_calls.fetch_add(1, Ordering::SeqCst);
+            ready(Ok::<_, BoxDynError>(()))
+        }));
+        let task = Task::new(7_u32);
+        assert!(matches!(
+            service.poll_ready(&mut Context::from_waker(Waker::noop())),
+            Poll::Ready(Ok(()))
+        ));
+        let future = service.call(task.clone());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        let error = future.now_or_never().unwrap().unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<TaskLifecycleError>(),
+            Some(TaskLifecycleError::MissingTaskId)
+        ));
+        assert_eq!(worker.task_count(), 0);
+        assert_eq!(task.attempt(), 0);
+        assert_eq!(task.status(), Status::Pending);
+    }
+
+    #[cfg(feature = "task-context")]
+    #[test]
+    fn concurrent_registration_admits_only_one_owner() {
+        use std::sync::Barrier;
+
+        for _ in 0..16 {
+            let worker = WorkerContext::new("concurrent-registration");
+            let barrier = Arc::new(Barrier::new(2));
+            let outcomes = std::thread::scope(|scope| {
+                let handles = [task(), task()].map(|task| {
+                    let worker = worker.clone();
+                    let barrier = barrier.clone();
+                    scope.spawn(move || {
+                        barrier.wait();
+                        let result = worker.register_task(task.ctx());
+                        (task, result)
+                    })
+                });
+                handles.map(|handle| handle.join().unwrap())
+            });
+            assert_eq!(
+                outcomes.iter().filter(|(_, result)| result.is_ok()).count(),
+                1
+            );
+            assert_eq!(
+                outcomes
+                    .iter()
+                    .filter(|(_, result)| matches!(result, Err(TaskLifecycleError::Duplicate)))
+                    .count(),
+                1
+            );
+            let (task, token) = outcomes
+                .iter()
+                .find_map(|(task, result)| result.as_ref().ok().map(|token| (task, token)))
+                .unwrap();
+            let registered = worker.get_task("tracked").unwrap();
+            assert!(registered.same_execution(token));
+            assert!(Arc::ptr_eq(
+                &registered.execution_context().unwrap(),
+                task.ctx()
+            ));
+            assert_eq!(worker.task_count(), 1);
+            worker.cancel_task(&registered).unwrap();
+            assert!(token.is_cancelled());
+            worker.remove_task(&registered).unwrap();
+            assert_eq!(worker.task_count(), 0);
+        }
+    }
+
+    #[test]
+    fn registration_admission_preserves_send_future_with_non_send_output() {
+        fn assert_send<T: Send>(_: &T) {}
+        let mut worker = WorkerContext::new("non-send-output");
+        worker.start().unwrap();
+        let mut service = LifecycleLayer::new(worker).layer(tower::service_fn(|_: Task<u32>| {
+            futures_util::future::lazy(|_| Ok::<_, BoxDynError>(std::rc::Rc::new(())))
+        }));
+        assert!(matches!(
+            service.poll_ready(&mut Context::from_waker(Waker::noop())),
+            Poll::Ready(Ok(()))
+        ));
+        let future = service.call(task());
+        assert_send(&future);
+    }
+
+    #[test]
+    fn registration_admission_preserves_unpin_future_with_pinned_output() {
+        fn assert_unpin<T: Unpin>(_: &T) {}
+        let mut worker = WorkerContext::new("pinned-output");
+        worker.start().unwrap();
+        let mut service = LifecycleLayer::new(worker).layer(tower::service_fn(|_: Task<u32>| {
+            futures_util::future::lazy(|_| Ok::<_, BoxDynError>(std::marker::PhantomPinned))
+        }));
+        assert!(matches!(
+            service.poll_ready(&mut Context::from_waker(Waker::noop())),
+            Poll::Ready(Ok(()))
+        ));
+        let future = service.call(task());
+        assert_unpin(&future);
+    }
+
+    #[cfg(feature = "task-context")]
+    #[tokio::test]
+    async fn registration_errors_other_than_duplicates_are_acknowledged() {
+        use crate::{task::ExecutionContext, worker::ext::ack::AcknowledgeLayer};
+
+        let acks = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let record = acks.clone();
+        let mut service = AcknowledgeLayer::new(
+            move |res: &Result<u32, BoxDynError>, _: &ExecutionContext| {
+                record
+                    .lock()
+                    .unwrap()
+                    .push(res.as_ref().map_err(ToString::to_string).copied());
+                ready(Ok::<(), std::io::Error>(()))
+            },
+        )
+        .layer(
+            LifecycleLayer::new(WorkerContext::new("ack-missing-id"))
+                .layer(task_fn(|value: u32| ready(Ok::<_, BoxDynError>(value)))),
+        );
+        // A task without an ID can never register, so it is recorded as failed
+        // instead of being left unacknowledged for redelivery.
+        let error = service.call(Task::new(7_u32)).await.unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<TaskLifecycleError>(),
+            Some(TaskLifecycleError::MissingTaskId)
+        ));
+        assert_eq!(
+            *acks.lock().unwrap(),
+            [Err("task doesn't have an id".to_owned())]
         );
     }
 }
