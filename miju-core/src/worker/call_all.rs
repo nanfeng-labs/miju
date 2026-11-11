@@ -162,6 +162,23 @@ where
             if shutting_down {
                 trace!("worker shutting down, draining queue");
                 if !this.queue.is_empty() {
+                    if !*this.eof
+                        && this
+                            .worker
+                            .backend_maintenance
+                            .load(std::sync::atomic::Ordering::SeqCst)
+                    {
+                        if let Poll::Ready(Err(error)) =
+                            this.backend.as_mut().get_mut().poll_ready(cx, this.worker)
+                        {
+                            return Poll::Ready(Some(Err(CallAllError::PollError(error))));
+                        }
+                        if let Poll::Ready(Some(result)) = this.queue.poll(cx) {
+                            return Poll::Ready(Some(
+                                result.map_err(CallAllError::ServiceError).map(Some),
+                            ));
+                        }
+                    }
                     return Poll::Pending;
                 }
                 return match this.backend.as_mut().get_mut().poll_close(cx, this.worker) {

@@ -48,6 +48,26 @@ impl WorkerState {
         self.inner.store(state as usize, order);
     }
 
+    pub(crate) fn request_stop(&self) -> Result<bool, WorkerError> {
+        let mut current = self.inner.load(Ordering::SeqCst);
+        loop {
+            match InnerWorkerState::try_from(current)? {
+                InnerWorkerState::Pending => return Err(WorkerStateError::NotStarted.into()),
+                InnerWorkerState::Stopped | InnerWorkerState::Terminated => return Ok(false),
+                InnerWorkerState::Running | InnerWorkerState::Paused => {}
+            }
+            match self.inner.compare_exchange(
+                current,
+                InnerWorkerState::Stopped as usize,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => return Ok(true),
+                Err(observed) => current = observed,
+            }
+        }
+    }
+
     pub(crate) fn as_str(&self) -> &str {
         match self.load(Relaxed) {
             InnerWorkerState::Pending => "pending",

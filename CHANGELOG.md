@@ -3,6 +3,12 @@
 ## [Unreleased]
 
 - fix(workflow)!: preserve task ID identity in metadata ([#110](https://github.com/nanfeng-labs/miju/pull/110))
+- fix(core): maintain persistence while buffered tasks drain ([#117](https://github.com/nanfeng-labs/miju/pull/117))
+- fix(core): finalize worker state after execution teardown ([#116](https://github.com/nanfeng-labs/miju/pull/116))
+- fix(core): notify every shutdown waiter and worker ([#115](https://github.com/nanfeng-labs/miju/pull/115))
+- fix(core): make worker stop and kill repeatable ([#114](https://github.com/nanfeng-labs/miju/pull/114))
+- fix(core): relay backend notifications to shared handles ([#112](https://github.com/nanfeng-labs/miju/pull/112))
+- fix(core): preserve circuit readiness until dispatch ([#111](https://github.com/nanfeng-labs/miju/pull/111))
 - fix(core): remember exhausted adapter inputs ([#109](https://github.com/nanfeng-labs/miju/pull/109))
 - fix(core): return errors for missing task extraction data ([#108](https://github.com/nanfeng-labs/miju/pull/108))
 - fix(core): retain worker errors during forced shutdown ([#107](https://github.com/nanfeng-labs/miju/pull/107))

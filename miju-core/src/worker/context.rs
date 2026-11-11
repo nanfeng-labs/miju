@@ -85,6 +85,8 @@ pub struct WorkerContext {
     pub(crate) shutdown: Option<Shutdown>,
     event_handler: EventListener,
     pub(super) is_ready: Arc<AtomicBool>,
+    // Persisted's event receiver must run while already-dispatched sends drain.
+    pub(crate) backend_maintenance: Arc<AtomicBool>,
     service: Arc<String>,
     #[cfg(feature = "task-context")]
     tasks: Arc<dashmap::DashSet<TaskContext>>,
@@ -126,6 +128,7 @@ impl WorkerContext {
                 // noop
             })),
             is_ready: Default::default(),
+            backend_maintenance: Default::default(),
             tasks: Default::default(),
             instant: Instant::now(),
             restarts: Default::default(),
@@ -196,13 +199,12 @@ impl WorkerContext {
     }
 
     /// Calling this function triggers shutting down the worker while waiting for any tasks to complete
+    ///
+    /// Repeated calls preserve stopped/terminated state and emit no additional Stop event.
     pub fn stop(&self) -> Result<(), WorkerError> {
-        let current_state = self.state.load(Ordering::SeqCst);
-        if current_state == InnerWorkerState::Pending {
-            return Err(WorkerError::StateError(WorkerStateError::NotStarted));
+        if !self.state.request_stop()? {
+            return Ok(());
         }
-        self.state
-            .store(InnerWorkerState::Stopped, Ordering::SeqCst);
         self.wake();
         self.emit_ref(&Event::Stop);
         info!("Worker {} stopped", self.name());
@@ -322,9 +324,20 @@ impl WorkerContext {
 
     /// Checks whether the worker is terminated
     ///
+    /// Termination includes fail-fast teardown and does not imply successful
+    /// task completion or backend cleanup.
     #[must_use]
     pub fn is_terminated(&self) -> bool {
         self.state.load(Ordering::SeqCst) == InnerWorkerState::Terminated
+    }
+
+    pub(super) fn mark_terminated(&self) {
+        if !self.is_terminated() {
+            self.state
+                .store(InnerWorkerState::Terminated, Ordering::SeqCst);
+            self.is_ready.store(false, Ordering::SeqCst);
+            self.wake();
+        }
     }
 
     /// Checks the current futures in the worker domain
@@ -395,6 +408,9 @@ impl WorkerContext {
     ///
     /// This is used to wake the worker when tasks complete or shutdown is triggered.
     pub(crate) fn register_waker(&self, cx: &Context<'_>) {
+        if let Some(shutdown) = &self.shutdown {
+            let _ = shutdown.poll_shutdown(cx);
+        }
         if let Ok(mut guard) = self.waker.lock() {
             if guard
                 .as_ref()
@@ -406,10 +422,9 @@ impl WorkerContext {
     }
 
     pub(crate) fn wake(&self) {
-        if let Ok(waker) = self.waker.lock() {
-            if let Some(waker) = &*waker {
-                waker.wake_by_ref();
-            }
+        let waker = self.waker.lock().ok().and_then(|waker| waker.clone());
+        if let Some(waker) = waker {
+            waker.wake();
         }
         // A queued retry has its own waker; waking only the worker cannot re-poll it.
         let waiters = self.readiness_waiters.lock().unwrap().clone();
@@ -537,6 +552,7 @@ impl WorkerContext {
     }
 
     /// This forces a shutting down worker to exit.
+    /// Tasks that are already cancelled or complete do not prevent cancelling the remaining tasks.
     pub fn kill(&mut self) -> Result<(), WorkerError> {
         if !self.is_shutting_down() {
             return Err(WorkerError::StateError(WorkerStateError::InvalidState(
@@ -545,16 +561,18 @@ impl WorkerContext {
         }
         #[cfg(feature = "task-context")]
         if self.task_count() != 0 {
-            self.tasks()
-                .map_err(|e| {
-                    WorkerError::StateError(WorkerStateError::InvalidState(e.to_string()))
-                })?
-                .into_iter()
-                .map(|a| a.cancel())
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|e| {
-                    WorkerError::StateError(WorkerStateError::InvalidState(e.to_string()))
-                })?;
+            for task in self.tasks().map_err(|e| {
+                WorkerError::StateError(WorkerStateError::InvalidState(e.to_string()))
+            })? {
+                match task.cancel() {
+                    Ok(()) | Err(TaskStateError::AlreadyExecuted(_)) => {}
+                    Err(error) => {
+                        return Err(WorkerError::StateError(WorkerStateError::InvalidState(
+                            error.to_string(),
+                        )));
+                    }
+                }
+            }
         }
         self.state
             .store(InnerWorkerState::Terminated, Ordering::SeqCst);
@@ -615,6 +633,53 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+
+    #[cfg(feature = "task-context")]
+    #[test]
+    fn kill_waker_can_reenter_worker_controls_after_termination() {
+        use std::{sync::atomic::AtomicBool, task::Wake};
+
+        struct Reenter {
+            worker: WorkerContext,
+            fired: AtomicBool,
+        }
+
+        impl Wake for Reenter {
+            fn wake(self: Arc<Self>) {
+                self.wake_by_ref();
+            }
+
+            fn wake_by_ref(self: &Arc<Self>) {
+                if self.worker.is_terminated() && !self.fired.swap(true, Ordering::SeqCst) {
+                    assert!(
+                        self.worker.waker.try_lock().is_ok(),
+                        "worker callback retained the waker mutex"
+                    );
+                    self.worker.clone().kill().unwrap();
+                }
+            }
+        }
+
+        let mut worker = WorkerContext::new("reentrant-kill");
+        worker.start().unwrap();
+        let task = crate::task::builder::TaskBuilder::new(7_u32)
+            .task_id(crate::task::task_id::TaskId::from_string("tracked"))
+            .build();
+        let token = worker.register_task(task.ctx()).unwrap();
+        let wake = Arc::new(Reenter {
+            worker: worker.clone(),
+            fired: AtomicBool::new(false),
+        });
+        let waker = Waker::from(wake.clone());
+        worker.register_waker(&Context::from_waker(&waker));
+        worker.stop().unwrap();
+        worker.kill().unwrap();
+        assert!(wake.fired.load(Ordering::SeqCst));
+        assert!(token.is_cancelled());
+        assert!(worker.is_terminated());
+        worker.remove_task(&token).unwrap();
+        worker.waker.lock().unwrap().take();
+    }
 
     #[tokio::test]
     async fn test_worker_state_transitions() {
