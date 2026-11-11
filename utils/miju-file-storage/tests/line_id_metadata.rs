@@ -7,12 +7,26 @@ use miju_core::{
     task::{Task, builder::TaskBuilder, metadata::MetadataStore, status::Status, task_id::TaskId},
     worker::{context::WorkerContext, ext::ack::Acknowledge},
 };
-use miju_file_storage::{CsvStorage, JsonStorage};
+use miju_file_storage::{CsvStorage, JsonStorage, RawTask};
 use serde_json::{Value, json};
 use std::{
     panic::{AssertUnwindSafe, catch_unwind},
     task::{Context, Poll},
 };
+
+/// Stored records from the cursor onward, including finished rows that workers skip.
+fn records<S, E>(store: &mut S) -> Vec<Value>
+where
+    S: futures_util::Stream<Item = Result<(usize, RawTask), E>> + Unpin,
+    E: std::fmt::Debug,
+{
+    let mut records = Vec::new();
+    let mut cx = Context::from_waker(noop_waker_ref());
+    while let Poll::Ready(Some(record)) = futures_util::StreamExt::poll_next_unpin(store, &mut cx) {
+        records.push(serde_json::to_value(record.unwrap().1).unwrap());
+    }
+    records
+}
 
 fn metadata(value: &str) -> MetadataStore {
     let mut values = MetadataStore::new();
@@ -98,10 +112,11 @@ async fn json_collision_dispatch_and_ack_preserve_user_metadata_and_correct_row(
     assert_eq!(second_result.status, Status::Done);
     assert_eq!(second_result.result, Ok(70));
     let mut reopened = JsonStorage::<u32>::new(&path).unwrap();
-    let _ = take(&mut reopened);
-    let task = take(&mut reopened);
-    assert_eq!(task.metadata().get("line_id"), Some("0"));
-    assert_eq!(task.args, json!(7));
+    assert_eq!(take(&mut reopened).task_id(), Some(&first));
+    // The acknowledged row is finished, so workers skip it; check its stored record.
+    let stored = records(&mut JsonStorage::<u32>::new(&path).unwrap());
+    assert_eq!(stored[1]["ctx"]["line_id"], "0");
+    assert_eq!(stored[1]["args"], 7);
 }
 
 #[tokio::test]
@@ -227,6 +242,7 @@ async fn csv_metadata_keys_survive_reopens_and_result_rewrites() {
     metadata.insert("", "empty-key").unwrap();
     metadata.insert("ctx.", "literal-empty-prefix").unwrap();
     metadata.insert("标签", "001").unwrap();
+    let stored_metadata = metadata.clone();
     let mut expected = metadata.clone();
     expected.insert("line_id", "0").unwrap();
     let mut store = CsvStorage::<u32>::new(&path).unwrap();
@@ -238,9 +254,17 @@ async fn csv_metadata_keys_survive_reopens_and_result_rewrites() {
     for round in 0..3 {
         drop(store);
         store = CsvStorage::<u32>::new(&path).unwrap();
-        let task = take(&mut store);
-        assert_eq!(task.args, json!(7));
-        assert_eq!(task.metadata().as_map(), expected.as_map());
+        if round == 0 {
+            let task = take(&mut store);
+            assert_eq!(task.args, json!(7));
+            assert_eq!(task.metadata().as_map(), expected.as_map());
+        } else {
+            // A row with a stored result is finished, so workers skip it.
+            let stored = records(&mut store);
+            assert_eq!(stored[0]["args"], 7);
+            let ctx: MetadataStore = serde_json::from_value(stored[0]["ctx"].clone()).unwrap();
+            assert_eq!(ctx.as_map(), stored_metadata.as_map());
+        }
         if round < 2 {
             store.set_result(0, json!(14 + round)).unwrap();
         }
