@@ -69,11 +69,13 @@ struct SharedState {
 }
 
 #[derive(Debug)]
+/// Retains inner readiness until dispatch; shared circuit policy can still reject the call.
 pub struct CircuitBreakerService<S> {
     inner: S,
     config: CircuitBreakerConfig,
     stats: Arc<RwLock<SharedState>>,
     recovery_delay: Option<Delay>,
+    inner_ready: bool,
 }
 
 impl<S: Clone> Clone for CircuitBreakerService<S> {
@@ -84,6 +86,7 @@ impl<S: Clone> Clone for CircuitBreakerService<S> {
             stats: self.stats.clone(),
             // Each service clone can wait with a different waker.
             recovery_delay: None,
+            inner_ready: false,
         }
     }
 }
@@ -100,6 +103,7 @@ impl<S> CircuitBreakerService<S> {
             config,
             stats: Arc::new(RwLock::new(SharedState::default())),
             recovery_delay: None,
+            inner_ready: false,
         }
     }
 
@@ -283,6 +287,9 @@ where
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        if self.inner_ready {
+            return Poll::Ready(Ok(()));
+        }
         // Check if circuit allows requests
         if !self.can_make_request(cx) {
             return Poll::Pending;
@@ -290,10 +297,13 @@ where
 
         self.recovery_delay = None;
         // Check inner service readiness
-        self.inner.poll_ready(cx).map_err(|e| e.into())
+        let readiness = self.inner.poll_ready(cx).map_err(|e| e.into());
+        self.inner_ready = matches!(readiness, Poll::Ready(Ok(())));
+        readiness
     }
 
     fn call(&mut self, req: Request) -> Self::Future {
+        self.inner_ready = false;
         // Check if we should allow the request
         if !self.should_allow_request() {
             return Box::pin(

@@ -489,7 +489,8 @@ impl WorkerContext {
         &self,
         ctx: &Arc<ExecutionContext>,
     ) -> Result<TaskContext, TaskStateError> {
-        self.get_task(ctx.task_id().unwrap().to_string().as_str())
+        let task_id = ctx.task_id().ok_or(TaskStateError::TaskNotFound)?;
+        self.get_task(&task_id.to_string())
     }
 
     /// Get the task context for a task attached to a worker

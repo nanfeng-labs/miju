@@ -195,6 +195,13 @@ async fn canceled_probes_do_not_change_failure_history() {
             let mut cx = Context::from_waker(&waker);
             assert!(matches!(service.poll_ready(&mut cx), Poll::Ready(Ok(()))));
             drop(service.call(true));
+            for _ in 0..3 {
+                assert!(matches!(service.poll_ready(&mut cx), Poll::Ready(Ok(()))));
+                let mut unused = service.clone();
+                assert!(matches!(unused.poll_ready(&mut cx), Poll::Ready(Ok(()))));
+                drop(unused);
+            }
+            assert_eq!(service.get_stats().half_open_calls, 0);
             assert!(matches!(service.poll_ready(&mut cx), Poll::Ready(Ok(()))));
             drop(service.call(true));
             assert!(

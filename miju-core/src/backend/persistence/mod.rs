@@ -370,6 +370,14 @@ where
     /// machine into `State::Ready`. An in-progress fetch returns `Pending`;
     /// `Dead` returns `None`. States owned by `poll_ready` or `poll_close`
     /// cause a panic when this method is called out of order.
+    ///
+    /// An empty batch also returns `Pending` and registers the worker's waker.
+    /// The heartbeat timer is the only wakeup the driver schedules, so an idle
+    /// worker that nothing else wakes fetches again on the next heartbeat. To
+    /// notice tasks added by other producers sooner, wrap the storage
+    /// integration with
+    /// [`poll_with_interval`](crate::backend::ext::BackendExt::poll_with_interval)
+    /// or another polling strategy.
     #[allow(clippy::type_complexity)]
     pub fn poll_next(
         &mut self,
