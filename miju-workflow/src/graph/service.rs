@@ -68,12 +68,15 @@ use crate::graph::response::GraphNodeResponse;
 /// clone semantics. Each call waits for its selected node service to become
 /// ready before dispatching on that same instance.
 ///
-/// Missing dependency IDs can produce a waiting response with no rescheduling.
-/// Fan-out records fresh IDs for newly enqueued nodes and retains other mappings.
-/// Each continuation into a join records the current predecessor's task ID when
-/// available. Other continuations retain their existing mapping behavior, and
-/// independently extended branches do not merge them. Joins across longer
-/// branches remain limited.
+/// A join runs in the task enqueued by its predecessor with the longest path from
+/// an entry node, with ties going to the highest node index; other predecessors'
+/// tasks return a waiting response. Fan-out records fresh IDs for newly enqueued
+/// nodes and retains other mappings, so the designated predecessor knows the task
+/// IDs of predecessors created at fan-outs it descends from. Each continuation
+/// into a join records the current predecessor's task ID when available.
+/// Independently extended branches do not merge mappings: if the designated
+/// predecessor lacks a dependency's task ID, the join returns
+/// [`GraphServiceError::MissingIncomingTaskId`].
 /// Progress positions are counters, not a reliable topological cursor, and
 /// completed-node sets are not advanced.
 /// If the next position cannot be represented, the completed node returns a
@@ -191,14 +194,44 @@ where
     }
 }
 
-/// Determine if the previous node is the designated predecessor in a fan-in scenario
-fn find_designated_fan_in_handler(
+/// Choose the predecessor whose task runs a join: the one with the longest path
+/// from an entry node, breaking ties by the highest index.
+///
+/// That predecessor descends from the fan-outs that recorded the other
+/// predecessors' task IDs, and with first-in, first-out delivery its task arrives
+/// last. Choosing by index alone could pick a shorter branch that never learns the
+/// task ID of a predecessor further down another branch.
+fn find_designated_fan_in_handler<N>(
+    graph: &DiGraph<N, ()>,
     incoming_nodes: &[NodeIndex],
-) -> Result<&NodeIndex, GraphFlowError> {
-    let designated_handler = incoming_nodes.iter().max_by_key(|n| n.index());
-    designated_handler.ok_or(GraphFlowError::Service(
-        GraphServiceError::MissingFaninHandler,
-    ))
+) -> Result<NodeIndex, GraphFlowError> {
+    fn depth<N>(
+        graph: &DiGraph<N, ()>,
+        node: NodeIndex,
+        memo: &mut HashMap<NodeIndex, usize>,
+    ) -> usize {
+        if let Some(&depth) = memo.get(&node) {
+            return depth;
+        }
+        let parents: Vec<_> = graph
+            .neighbors_directed(node, Direction::Incoming)
+            .collect();
+        let depth = parents
+            .into_iter()
+            .map(|parent| depth(graph, parent, memo) + 1)
+            .max()
+            .unwrap_or(0);
+        memo.insert(node, depth);
+        depth
+    }
+    let mut memo = HashMap::new();
+    incoming_nodes
+        .iter()
+        .copied()
+        .max_by_key(|&node| (depth(graph, node, &mut memo), node.index()))
+        .ok_or(GraphFlowError::Service(
+            GraphServiceError::MissingFaninHandler,
+        ))
 }
 
 impl<B, Err, CdcErr, Id, Compact> Service<Task<Compact>> for RootGraphService<B>
@@ -337,7 +370,7 @@ where
                             GraphServiceError::MissingPreviousNode,
                         ))?;
 
-                        let fan_in_node = *find_designated_fan_in_handler(&incoming_nodes)?;
+                        let fan_in_node = find_designated_fan_in_handler(&graph, &incoming_nodes)?;
                         #[cfg(feature = "tracing")]
                         tracing::debug!(
                             prev_node = ?prev_node,
@@ -404,18 +437,18 @@ where
                                         Ok(task_result)
                                     })
                                     .collect::<Result<Vec<_>, GraphFlowError>>();
+                                // Nothing reschedules this designated task, so a
+                                // waiting response here would stall the join.
                                 match res {
                                     Ok(v) => v,
-                                    Err(_error) => {
+                                    Err(error) => {
                                         #[cfg(feature = "tracing")]
                                         tracing::error!(
                                             node = ?context.current_node,
-                                            error = ?_error,
+                                            error = ?error,
                                             "Encountered an error resolving result",
                                         );
-                                        return Ok(GraphNodeResponse::WaitingForDependencies {
-                                            pending_dependencies: dependency_task_ids,
-                                        });
+                                        return Err(error);
                                     }
                                 }
                             };

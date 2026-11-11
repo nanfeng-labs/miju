@@ -75,6 +75,7 @@ use futures_util::TryStreamExt;
 pub struct Pipe<Dst, S> {
     pub(crate) from: S,
     pub(crate) into: Dst,
+    source_done: bool,
 }
 
 impl<S, Dst> Pipe<Dst, S> {
@@ -84,7 +85,11 @@ impl<S, Dst> Pipe<Dst, S> {
     ///
     /// [`BackendExt::pipe_to`]: crate::backend::ext::BackendExt
     pub fn new(from: S, into: Dst) -> Self {
-        Self { from, into }
+        Self {
+            from,
+            into,
+            source_done: false,
+        }
     }
 }
 
@@ -102,6 +107,7 @@ impl<Dst: Clone, S: Clone> Clone for Pipe<Dst, S> {
         Self {
             from: self.from.clone(),
             into: self.into.clone(),
+            source_done: self.source_done,
         }
     }
 }
@@ -125,9 +131,11 @@ where
     ) -> Poll<Result<(), Self::Error>> {
         trace!("poll_ready: polling source");
 
-        if let Poll::Ready(Err(e)) = S::poll_ready(&mut self.from, cx, wkr) {
-            trace!(error = ?e, "poll_ready: source returned error");
-            return Poll::Ready(Err(PipeError::Inner(e.into())));
+        if !self.source_done {
+            if let Poll::Ready(Err(e)) = S::poll_ready(&mut self.from, cx, wkr) {
+                trace!(error = ?e, "poll_ready: source returned error");
+                return Poll::Ready(Err(PipeError::Inner(e.into())));
+            }
         }
 
         trace!("poll_ready: polling destination");
@@ -147,7 +155,7 @@ where
         cx: &mut Context<'_>,
         worker: &WorkerContext,
     ) -> Poll<Option<Result<Self::Task, Self::Error>>> {
-        loop {
+        while !self.source_done {
             match TaskSink::poll_ready(Pin::new(&mut self.into), cx) {
                 Poll::Ready(Ok(())) => {
                     trace!("poll_next: destination ready");
@@ -185,6 +193,7 @@ where
                 }
                 Poll::Ready(None) => {
                     trace!("poll_next: source closed");
+                    self.source_done = true;
                     break;
                 }
                 Poll::Pending => break,

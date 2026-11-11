@@ -9,6 +9,7 @@ use crate::backend::ext::poll_strategy::{PollSnapshot, PollStrategy};
 #[derive(Debug, Clone)]
 pub struct StreamStrategy<S> {
     stm: S,
+    done: bool,
 }
 
 impl<S> StreamStrategy<S>
@@ -17,14 +18,18 @@ where
 {
     /// Create a new StreamStrategy from a stream
     pub fn new(stm: S) -> Self {
-        Self { stm }
+        Self { stm, done: false }
     }
 }
 
 impl<S: Stream + Unpin> PollStrategy for StreamStrategy<S> {
     fn poll_drive(&mut self, cx: &mut Context<'_>, _: &PollSnapshot) -> Poll<Option<()>> {
+        if self.done {
+            return Poll::Ready(None);
+        }
         trace!("StreamStrategy: poll start");
         self.stm.poll_next_unpin(cx).map(|s| {
+            self.done = s.is_none();
             trace!(ready = s.is_some(), "StreamStrategy: poll complete");
             s.map(|_| ())
         })
