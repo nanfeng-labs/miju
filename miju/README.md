@@ -85,7 +85,7 @@ Default builds require Rust 1.85. The `sentry` and `full` features require Rust
 | --- | --- |
 | Default | Core defaults, tracing, panic capture, limits, timeouts, retries, and worker configuration |
 | `default-features = false` | Core types, worker execution, and the ungated builder composition methods |
-| `full` | Default features, Sentry, Prometheus, OpenTelemetry, filtering, and task tracking |
+| `full` | Default features, Sentry, Prometheus, OpenTelemetry, filtering, task tracking, and timers |
 | `shared` | Cloneable backend handles; enable separately when using `full` |
 | `docsrs` | Generated feature documentation; enable separately when using `full` |
 
