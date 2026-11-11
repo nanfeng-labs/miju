@@ -354,7 +354,11 @@ fn filter_metadata_round_trips_and_reports_missing_invalid_and_duplicate_values(
         FilterState::extract(&metadata),
         Err(FilterStateError::Parse(_))
     ));
-    for ids in [json!([]), json!([17, "task-one"])] {
+    for ids in [
+        json!([]),
+        json!([17, "task-one"]),
+        json!(["42", "", "custom,7", "custom,8", "left=right"]),
+    ] {
         let context: FilterContext = serde_json::from_value(json!({"task_ids": ids})).unwrap();
         let mut metadata = MetadataStore::new();
         context.inject(&mut metadata).unwrap();
@@ -380,6 +384,42 @@ fn filter_metadata_round_trips_and_reports_missing_invalid_and_duplicate_values(
         FilterContext::extract(&metadata),
         Err(FilterContextError::ParseTaskId)
     ));
+}
+
+#[test]
+fn filter_id_metadata_reads_legacy_and_rejects_invalid_tagged_values() {
+    let mut legacy = MetadataStore::new();
+    legacy
+        .insert("miju_workflow.filter.task_ids", "17,task-one")
+        .unwrap();
+    let context = FilterContext::extract(&legacy).unwrap();
+    assert_eq!(
+        serde_json::to_value(&context).unwrap(),
+        json!({"task_ids": [17, "task-one"]})
+    );
+    let mut metadata = MetadataStore::new();
+    context.inject(&mut metadata).unwrap();
+    assert_eq!(
+        metadata.get("miju_workflow.filter.task_id_encoding"),
+        Some("1")
+    );
+    for (key, value) in [
+        ("miju_workflow.filter.task_id_encoding", "2"),
+        ("miju_workflow.filter.task_ids", "17,task-one"),
+        ("miju_workflow.filter.task_ids", r#"[{"Unknown":"x"}]"#),
+        ("miju_workflow.filter.task_ids", r#"[{"Typed":"17"}]"#),
+        ("miju_workflow.filter.task_ids", r#"[{"Typed":"opaque"}]"#),
+    ] {
+        let mut invalid = metadata.clone();
+        invalid.replace(key, value);
+        assert!(
+            matches!(
+                FilterContext::extract(&invalid),
+                Err(FilterContextError::ParseTaskId)
+            ),
+            "{key}: {value}"
+        );
+    }
 }
 
 async fn collect_stored_results(

@@ -5,7 +5,10 @@ use std::{
     fmt,
     pin::Pin,
     str::FromStr,
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
     task::{Context, Poll},
 };
 
@@ -18,10 +21,13 @@ use miju_core::{
     task::{
         Task,
         builder::TaskBuilder,
-        metadata::Metadata,
+        metadata::{Metadata, MetadataStore},
         task_id::{GenerateId, TaskId},
     },
-    worker::{context::WorkerContext, service::IntoWorkerService},
+    worker::{
+        builder::WorkerBuilder, context::WorkerContext, event::Event,
+        ext::event_listener::EventListenerExt, service::IntoWorkerService,
+    },
 };
 use miju_workflow::{
     GraphFlow,
@@ -32,7 +38,7 @@ use petgraph::graph::NodeIndex;
 use serde_json::json;
 use tower::ServiceExt;
 
-type Inner = Shared<InMemoryWorkflow<u32>>;
+type Inner = Shared<InMemoryWorkflow<Vec<u8>>>;
 
 #[derive(Clone, Debug, PartialEq)]
 struct CommaGenerator;
@@ -141,7 +147,7 @@ async fn linear_graph_preserves_custom_ids_and_existing_dependency_history() {
             .add_task(|value: u32| async move { value * 2 })
             .depends_on(&entry);
         graph.validate().unwrap();
-        let backend = CommaIdBackend(InMemoryWorkflow::<u32>::create());
+        let backend = CommaIdBackend(InMemoryWorkflow::<Vec<u8>>::create());
         let mut queue = backend.clone();
         let service = graph.into_service(backend).service;
         let root = TaskId::from_string("root");
@@ -172,5 +178,75 @@ async fn linear_graph_preserves_custom_ids_and_existing_dependency_history() {
             GraphNodeResponse::Complete { result: json!(16) }
         );
         assert!(Backend::poll_next(&mut queue, &mut cx, &WorkerContext::new("empty")).is_pending());
+    }
+}
+
+#[tokio::test]
+async fn diamond_joins_results_under_the_original_comma_ids() {
+    let graph = GraphFlow::<CommaIdBackend>::new("comma-join");
+    let entry = graph.add_task(|value: u32| async move { value });
+    let left = graph
+        .add_task(|value: u32| async move { value * 2 })
+        .depends_on(&entry);
+    let right = graph
+        .add_task(|value: u32| async move { value + 3 })
+        .depends_on(&entry);
+    let observed = Arc::new(AtomicUsize::new(0));
+    let result = observed.clone();
+    graph
+        .add_task(move |(left, right): (u32, u32), worker: WorkerContext| {
+            result.store((left * 100 + right) as usize, Ordering::SeqCst);
+            async move {
+                worker.stop().unwrap();
+                left + right
+            }
+        })
+        .depends_on((&left, &right));
+    let mut backend = CommaIdBackend(InMemoryWorkflow::<Vec<u8>>::create());
+    backend
+        .send(
+            TaskBuilder::new(b"7".to_vec())
+                .task_id(TaskId::from_string("42"))
+                .build(),
+        )
+        .await
+        .unwrap();
+    let worker = WorkerBuilder::new("comma-worker")
+        .backend(backend)
+        .on_event(|_, event| {
+            if let Event::Error(error) = event {
+                panic!("{error}");
+            }
+        })
+        .build(graph);
+    tokio::time::timeout(std::time::Duration::from_secs(5), worker.run())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(observed.load(Ordering::SeqCst), 1410);
+}
+
+#[tokio::test]
+async fn encoding_marker_alone_is_not_a_new_graph_execution() {
+    for version in ["1", "2"] {
+        let graph = GraphFlow::<CommaIdBackend>::new("incomplete-context");
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = calls.clone();
+        graph.add_task(move |value: u32| {
+            observed.fetch_add(1, Ordering::SeqCst);
+            async move { value }
+        });
+        let service = graph
+            .into_service(CommaIdBackend(InMemoryWorkflow::<Vec<u8>>::create()))
+            .service;
+        let mut metadata = MetadataStore::new();
+        metadata
+            .insert("miju_workflow.graph.task_id_encoding", version)
+            .unwrap();
+        let request = TaskBuilder::new(b"7".to_vec())
+            .with_metadata(metadata)
+            .build();
+        assert!(service.oneshot(request).await.is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 }
