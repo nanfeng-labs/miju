@@ -3,6 +3,20 @@
 ## [Unreleased]
 
 - fix(workflow)!: preserve task ID identity in metadata ([#110](https://github.com/nanfeng-labs/miju/pull/110))
+- fix(core): remember exhausted adapter inputs ([#109](https://github.com/nanfeng-labs/miju/pull/109))
+- fix(core): return errors for missing task extraction data ([#108](https://github.com/nanfeng-labs/miju/pull/108))
+- fix(core): retain worker errors during forced shutdown ([#107](https://github.com/nanfeng-labs/miju/pull/107))
+- docs(core): explain how an idle Persisted driver fetches again ([#128](https://github.com/nanfeng-labs/miju/pull/128))
+- feat(miju): expose the core sleep feature ([#127](https://github.com/nanfeng-labs/miju/pull/127))
+- fix(file-storage): skip finished records when delivering tasks ([#126](https://github.com/nanfeng-labs/miju/pull/126))
+- fix(workflow): run joins in the deepest predecessor's task ([#125](https://github.com/nanfeng-labs/miju/pull/125))
+- fix(core): wait for the shared backend lock when building middleware ([#124](https://github.com/nanfeng-labs/miju/pull/124))
+- fix(file-storage): wait for clone locks when flushing ([#123](https://github.com/nanfeng-labs/miju/pull/123))
+- fix(core): release idempotency keys of failed memory sends ([#122](https://github.com/nanfeng-labs/miju/pull/122))
+- fix(file-storage): return errors for repeated shared store send failures ([#121](https://github.com/nanfeng-labs/miju/pull/121))
+- fix(core): keep shared backends open when one handle closes ([#120](https://github.com/nanfeng-labs/miju/pull/120))
+- fix(core): return errors for repeated failed memory sends ([#119](https://github.com/nanfeng-labs/miju/pull/119))
+- fix(core): keep memory queues open after worker shutdown ([#118](https://github.com/nanfeng-labs/miju/pull/118))
 - deps(deps): bump sentry-tracing from 0.49.3 to 0.49.5 ([#106](https://github.com/nanfeng-labs/miju/pull/106))
 
 - deps(deps): bump sentry-tower from 0.49.3 to 0.49.5 ([#105](https://github.com/nanfeng-labs/miju/pull/105))

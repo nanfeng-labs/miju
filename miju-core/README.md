@@ -139,6 +139,12 @@ it through the provider. A queued lock event does not establish exclusive task
 ownership. Providers implement the actual storage operations and are responsible
 for atomic task claims, consistency, and durability.
 
+After an empty batch, the driver waits for the worker to be woken. The heartbeat
+timer is its only scheduled wakeup, so the heartbeat interval also sets how long
+an idle worker can take to notice tasks added by other producers. Wrap the
+storage integration with `BackendExt::poll_with_interval` or another polling
+strategy to fetch on a separate, shorter schedule.
+
 For repeated worker middleware initialization, `Persisted::shared_layer` reuses
 one driver's event channel. Cloning `Persisted` resets its local polling,
 submission, and event-channel state; storage sharing depends on the provider's

@@ -82,7 +82,9 @@ write fails, so finding a result does not establish successful file persistence.
 
 `new` and `try_new` load existing records and results without truncating the
 file. Invalid records return an error without changing its contents. Each new
-instance starts reading at the first record, including records with results.
+instance starts reading at the first record. Workers skip records that already
+have a result, successful or failed, so reopening a file resumes only unfinished
+tasks.
 `new_temp` retains the temporary file's restrictive permissions and removes it
 when the last storage clone is dropped.
 
@@ -148,8 +150,10 @@ File operations are synchronous, including those invoked through async traits.
 - Clones have independent read cursors and do not implement exclusive task
   claiming. Independently opening the same path does not share in-memory state
   or file-handle replacement; use one storage and its clones per file.
-- Concurrent operations on clones can return `WouldBlockLock`. An I/O failure
-  can occur after a mutation is staged in memory; retry `flush` to persist it.
+- Concurrent operations on clones can return `WouldBlockLock`. A push returns it
+  before staging its task, so retrying the push is safe; flushing waits for
+  clones instead. An I/O failure can occur after a mutation is staged in memory;
+  retry `flush` to persist it.
 - Flushing does not sync the file or directory to durable media. Cross-process
   coordination, crash or power-loss recovery, and exactly-once execution are
   not provided. Dropping storage does not flush pending changes.
