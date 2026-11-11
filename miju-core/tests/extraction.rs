@@ -312,3 +312,143 @@ fn data_middleware_preserves_readiness_and_call_errors() {
     assert_eq!(ready_output(service.call(Task::new(()))), Err("call"));
     assert_eq!(*data, 7);
 }
+
+#[cfg(feature = "task-context")]
+#[test]
+fn task_context_extraction_reports_missing_and_unregistered_ids() {
+    use miju_core::{
+        task::context::{TaskContext, TaskStateError},
+        worker::context::WorkerContext,
+    };
+
+    let worker = WorkerContext::new("unregistered-task");
+    for task in [
+        Task::new(()),
+        TaskBuilder::new(()).data(worker.clone()).build(),
+        TaskBuilder::new(())
+            .data(worker)
+            .task_id(TaskId::from_string("missing"))
+            .build(),
+    ] {
+        assert_eq!(
+            ready_output(task.extract::<TaskContext>()).unwrap_err(),
+            TaskStateError::TaskNotFound
+        );
+        assert!(
+            ready_output(task.extract::<Option<TaskContext>>())
+                .unwrap()
+                .is_none()
+        );
+    }
+}
+
+#[test]
+fn task_runner_extraction_without_configuration_returns_missing_data() {
+    use miju_core::worker::ext::long_running::{
+        LongRunningConfig, TaskRunner, future::LongRunningError,
+    };
+
+    let task = Task::new(());
+    let error = ready_output(task.extract::<TaskRunner<u32>>()).unwrap_err();
+    let LongRunningError::Execution(error) = error else {
+        panic!("expected an execution error for the missing configuration");
+    };
+    assert_eq!(
+        error.downcast_ref::<MissingDataError>(),
+        Some(&MissingDataError::NotFound(
+            type_name::<LongRunningConfig>().into()
+        ))
+    );
+    assert!(
+        ready_output(task.extract::<Option<TaskRunner<u32>>>())
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn missing_task_runner_configuration_emits_error_without_calling_handler() {
+    use futures_util::StreamExt;
+    use miju_core::{
+        backend::{TaskSink, memory::MemoryStorage},
+        worker::{
+            builder::WorkerBuilder,
+            context::WorkerContext,
+            event::Event,
+            ext::long_running::{LongRunningConfig, TaskRunner, future::LongRunningError},
+        },
+    };
+
+    let mut backend = MemoryStorage::new();
+    backend.push(()).await.unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let handler_calls = calls.clone();
+    let worker = WorkerContext::new("missing-runner-config");
+    let mut events = WorkerBuilder::new(&worker)
+        .backend(backend)
+        .build(move |_: (), _: TaskRunner<u32>| {
+            handler_calls.fetch_add(1, Ordering::SeqCst);
+            ready(())
+        })
+        .stream();
+
+    assert!(matches!(events.next().await, Some(Ok(Event::Start))));
+    let Some(Ok(Event::Error(error))) = events.next().await else {
+        panic!("expected an extractor error event");
+    };
+    let Some(LongRunningError::Execution(error)) = error.downcast_ref::<LongRunningError>() else {
+        panic!("expected the original long-running extraction error");
+    };
+    assert_eq!(
+        error.downcast_ref::<MissingDataError>(),
+        Some(&MissingDataError::NotFound(
+            type_name::<LongRunningConfig>().into()
+        ))
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert_eq!(worker.task_count(), 0);
+    worker.stop().unwrap();
+    while let Some(event) = events.next().await {
+        event.unwrap();
+    }
+    assert!(worker.is_terminated());
+}
+
+#[tokio::test]
+async fn configured_task_runner_executes_in_a_worker() {
+    use futures_util::StreamExt;
+    use miju_core::{
+        backend::{TaskSink, memory::MemoryStorage},
+        worker::{
+            builder::WorkerBuilder,
+            context::WorkerContext,
+            ext::long_running::{LongRunningExt, TaskRunner},
+        },
+    };
+
+    let mut backend = MemoryStorage::new();
+    backend.push(()).await.unwrap();
+    let result = Arc::new(AtomicUsize::new(0));
+    let handler_result = result.clone();
+    let worker = WorkerContext::new("configured-runner");
+    WorkerBuilder::new(&worker)
+        .backend(backend)
+        .long_running()
+        .build(
+            move |_: (), mut runner: TaskRunner<usize>, worker: WorkerContext| {
+                let result = handler_result.clone();
+                async move {
+                    runner.execute(ready(Ok::<_, std::io::Error>(7)));
+                    result.store(runner.next().await.unwrap().unwrap(), Ordering::SeqCst);
+                    assert!(runner.next().await.is_none());
+                    worker.stop().unwrap();
+                }
+            },
+        )
+        .run()
+        .await
+        .unwrap();
+    assert_eq!(result.load(Ordering::SeqCst), 7);
+    assert_eq!(worker.task_count(), 0);
+    assert!(worker.is_terminated());
+}
