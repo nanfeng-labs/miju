@@ -55,7 +55,7 @@ pub struct MonitorContext {
 }
 
 impl MonitorContext {
-    /// Returns a reference to all workers managed by this monitor.
+    /// Returns the workers registered when this context was created.
     #[must_use]
     pub fn workers(&self) -> &Vec<WorkerContext> {
         &self.workers
@@ -64,7 +64,8 @@ impl MonitorContext {
     /// Initiates a shutdown of the monitor.
     ///
     /// This signals the shutdown handle but does not block waiting
-    /// for workers to finish.
+    /// for workers to finish. Workers registered after this context was created
+    /// also observe the shared shutdown signal when they run.
     pub fn shutdown(&self) -> Result<(), MonitorError> {
         self.shutdown.start_shutdown();
         // Setting the flag does not re-poll a parked worker; wake each one so it observes it.

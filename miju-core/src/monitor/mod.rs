@@ -538,8 +538,9 @@ impl Monitor {
         };
         if let Some(terminator) = self.terminator {
             let mut signal_error = None;
+            let mut worker_errors = Vec::new();
             let result = match futures_util::future::select(
-                Self::run_all_workers(self.workers, shutdown).boxed(),
+                Self::run_all_workers(self.workers, shutdown, &mut worker_errors).boxed(),
                 async {
                     signal_error = shutdown_after.await.err();
                     terminator.await;
@@ -555,6 +556,9 @@ impl Monitor {
                 return Err(MonitorError::ShutdownSignal(error));
             }
             result?;
+            if !worker_errors.is_empty() {
+                return Err(MonitorError::ExitError(ExitError(worker_errors)));
+            }
         } else {
             let runner = self.run();
             let res = futures_util::join!(shutdown_after, runner); // If no terminator is provided, we wait for both the shutdown call and all workers to complete
@@ -581,8 +585,9 @@ impl Monitor {
     pub async fn run(self) -> Result<(), MonitorError> {
         let shutdown = self.shutdown.clone();
         let shutdown_future = self.shutdown.boxed().map(|_| ());
+        let mut worker_errors = Vec::new();
         let (result, _) = futures_util::join!(
-            Self::run_all_workers(self.workers, shutdown),
+            Self::run_all_workers(self.workers, shutdown, &mut worker_errors),
             shutdown_future,
         );
 
@@ -591,25 +596,21 @@ impl Monitor {
     async fn run_all_workers(
         workers: Vec<MonitoredWorker>,
         shutdown: Shutdown,
+        errors: &mut Vec<MonitoredWorkerError>,
     ) -> Result<(), MonitorError> {
         // `FuturesUnordered` only polls a worker whose waker fired, so every shutdown path
         // must wake the workers explicitly; `MonitorContext::shutdown` does that.
-        let results: Vec<_> = FuturesUnordered::from_iter(workers).collect().await;
+        let mut workers = FuturesUnordered::from_iter(workers);
+        while let Some(result) = workers.next().await {
+            if let Err(error) = result {
+                errors.push(error);
+            }
+        }
 
         shutdown.start_shutdown();
 
-        let mut errors = Vec::new();
-        // Check if any worker errored
-        for r in results {
-            match r {
-                Ok(_) => {}
-                Err(MonitoredWorkerError { ctx, error }) => {
-                    errors.push(MonitoredWorkerError { ctx, error })
-                }
-            }
-        }
         if !errors.is_empty() {
-            return Err(MonitorError::ExitError(ExitError(errors)));
+            return Err(MonitorError::ExitError(ExitError(std::mem::take(errors))));
         }
         Ok(())
     }
