@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- fix(core): remember exhausted adapter inputs ([#109](https://github.com/nanfeng-labs/miju/pull/109))
 - fix(core): return errors for missing task extraction data ([#108](https://github.com/nanfeng-labs/miju/pull/108))
 - fix(core): retain worker errors during forced shutdown ([#107](https://github.com/nanfeng-labs/miju/pull/107))
 - docs(core): explain how an idle Persisted driver fetches again ([#128](https://github.com/nanfeng-labs/miju/pull/128))
