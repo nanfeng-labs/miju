@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 - fix(core): keep shared backends open when one handle closes ([#120](https://github.com/nanfeng-labs/miju/pull/120))
+- fix(core): return errors for repeated failed memory sends ([#119](https://github.com/nanfeng-labs/miju/pull/119))
+- fix(core): keep memory queues open after worker shutdown ([#118](https://github.com/nanfeng-labs/miju/pull/118))
 - deps(deps): bump sentry-tracing from 0.49.3 to 0.49.5 ([#106](https://github.com/nanfeng-labs/miju/pull/106))
 
 - deps(deps): bump sentry-tower from 0.49.3 to 0.49.5 ([#105](https://github.com/nanfeng-labs/miju/pull/105))
