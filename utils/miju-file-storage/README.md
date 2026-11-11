@@ -148,8 +148,10 @@ File operations are synchronous, including those invoked through async traits.
 - Clones have independent read cursors and do not implement exclusive task
   claiming. Independently opening the same path does not share in-memory state
   or file-handle replacement; use one storage and its clones per file.
-- Concurrent operations on clones can return `WouldBlockLock`. An I/O failure
-  can occur after a mutation is staged in memory; retry `flush` to persist it.
+- Concurrent operations on clones can return `WouldBlockLock`. A push returns it
+  before staging its task, so retrying the push is safe; flushing waits for
+  clones instead. An I/O failure can occur after a mutation is staged in memory;
+  retry `flush` to persist it.
 - Flushing does not sync the file or directory to durable media. Cross-process
   coordination, crash or power-loss recovery, and exactly-once execution are
   not provided. Dropping storage does not flush pending changes.

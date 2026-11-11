@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- fix(file-storage): wait for clone locks when flushing ([#123](https://github.com/nanfeng-labs/miju/pull/123))
 - fix(core): release idempotency keys of failed memory sends ([#122](https://github.com/nanfeng-labs/miju/pull/122))
 - fix(file-storage): return errors for repeated shared store send failures ([#121](https://github.com/nanfeng-labs/miju/pull/121))
 - fix(core): keep shared backends open when one handle closes ([#120](https://github.com/nanfeng-labs/miju/pull/120))
