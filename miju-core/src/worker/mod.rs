@@ -204,6 +204,15 @@ where
 {
     /// Run the worker until completion
     ///
+    /// Backend errors return immediately, dropping owned in-flight futures and
+    /// marking a started worker's context terminated. After an error there is
+    /// no further task draining or backend-close polling; pending
+    /// acknowledgements may be cancelled. Separately spawned work can outlive
+    /// the worker.
+    ///
+    /// For graceful shutdown, request [`WorkerContext::stop`] and keep driving
+    /// the worker so its tasks can finish and its backend can close.
+    ///
     /// # Example
     /// ```no_run
     /// # use miju_core::error::BoxDynError;
@@ -242,6 +251,11 @@ where
     }
 
     /// Run the worker until a shutdown signal future is complete.
+    ///
+    /// A successful signal requests graceful shutdown. A failed signal returns
+    /// its error and drops the worker through the fail-fast teardown described
+    /// by [`run`](Self::run). Dropping the returned future also drops owned work
+    /// without driving backend close.
     pub async fn run_until<Fut, Err>(mut self, signal: Fut) -> Result<(), WorkerError>
     where
         Fut: Future<Output = Result<(), Err>> + Send + 'static,
@@ -262,9 +276,13 @@ where
         .map(|_| ())
     }
 
-    /// Run the worker until a shutdown signal future is complete.
+    /// Run the worker alongside a context-aware control future.
     ///
     /// *Note*: Using this function requires you to call `ctx.stop()` in the future to completely stop the worker.
+    ///
+    /// A control-future error is preserved and drops the worker through the
+    /// fail-fast teardown described by [`run`](Self::run). Dropping the returned
+    /// future also drops owned work without driving backend close.
     ///
     /// This can also be very powerful with pausing and resuming the worker using the context.
     ///
@@ -313,6 +331,18 @@ where
     }
 
     /// Returns a stream that will yield events as they occur within the worker's lifecycle
+    ///
+    /// The stream owns the execution after it successfully starts the context.
+    /// Dropping it drops owned in-flight futures and marks that context
+    /// terminated, without further backend-close polling. Teardown itself emits
+    /// no Stop/Exit events. Unpolled streams and failed starts do not terminate
+    /// an existing execution that shares the context. Separately spawned work
+    /// may continue.
+    ///
+    /// Backend errors are yielded as `Err` items. Keeping the stream alive
+    /// retains execution ownership; [`run`](Self::run) instead returns on the
+    /// first such error and drops the stream. Normal shutdown requires driving
+    /// the stream after requesting [`WorkerContext::stop`].
     ///
     /// # Example
     ///

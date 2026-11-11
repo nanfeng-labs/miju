@@ -321,9 +321,20 @@ impl WorkerContext {
 
     /// Checks whether the worker is terminated
     ///
+    /// Termination includes fail-fast teardown and does not imply successful
+    /// task completion or backend cleanup.
     #[must_use]
     pub fn is_terminated(&self) -> bool {
         self.state.load(Ordering::SeqCst) == InnerWorkerState::Terminated
+    }
+
+    pub(super) fn mark_terminated(&self) {
+        if !self.is_terminated() {
+            self.state
+                .store(InnerWorkerState::Terminated, Ordering::SeqCst);
+            self.is_ready.store(false, Ordering::SeqCst);
+            self.wake();
+        }
     }
 
     /// Checks the current futures in the worker domain
