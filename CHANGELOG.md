@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- fix(core): wait for the shared backend lock when building middleware ([#124](https://github.com/nanfeng-labs/miju/pull/124))
 - fix(file-storage): wait for clone locks when flushing ([#123](https://github.com/nanfeng-labs/miju/pull/123))
 - fix(core): release idempotency keys of failed memory sends ([#122](https://github.com/nanfeng-labs/miju/pull/122))
 - fix(file-storage): return errors for repeated shared store send failures ([#121](https://github.com/nanfeng-labs/miju/pull/121))
