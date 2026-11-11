@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- fix(core): retain worker errors during forced shutdown ([#107](https://github.com/nanfeng-labs/miju/pull/107))
 - docs(core): explain how an idle Persisted driver fetches again ([#128](https://github.com/nanfeng-labs/miju/pull/128))
 - feat(miju): expose the core sleep feature ([#127](https://github.com/nanfeng-labs/miju/pull/127))
 - fix(file-storage): skip finished records when delivering tasks ([#126](https://github.com/nanfeng-labs/miju/pull/126))
