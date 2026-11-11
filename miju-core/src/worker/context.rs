@@ -394,6 +394,9 @@ impl WorkerContext {
     ///
     /// This is used to wake the worker when tasks complete or shutdown is triggered.
     pub(crate) fn register_waker(&self, cx: &Context<'_>) {
+        if let Some(shutdown) = &self.shutdown {
+            let _ = shutdown.poll_shutdown(cx);
+        }
         if let Ok(mut guard) = self.waker.lock() {
             if guard
                 .as_ref()
