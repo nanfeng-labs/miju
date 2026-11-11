@@ -47,7 +47,8 @@ impl<B> Drop for NotifyOnUnlock<'_, B> {
 ///
 /// Each handle owns its codec clone and pending-send buffer. Sink `poll_ready`,
 /// `poll_flush`, and `poll_close` drain that buffer before delegating to the
-/// underlying backend.
+/// underlying backend. Because other handles still use that backend, `poll_close`
+/// flushes it instead of closing it, and may wait for backpressure like `poll_flush`.
 ///
 /// Calling [`BackendConfig::config`] panics. Middleware construction also
 /// panics if another handle currently holds the backend lock.
@@ -230,7 +231,8 @@ where
         let mut guard = ready!(Self::poll_lock(&this.inner, this.waker_key, cx));
         _notify = NotifyOnUnlock(&this.inner);
         ready!(Self::poll_drain_buffer(&mut this.sink, &mut guard, cx))?;
-        guard.poll_close_unpin(cx)
+        // Closing the shared backend would end it for every other handle.
+        guard.poll_flush_unpin(cx)
     }
 }
 
@@ -582,23 +584,16 @@ mod tests {
             };
             assert_eq!(first.args, 1);
 
-            let completion = poll_completion(&mut shared, &mut cx, close);
-            if close {
-                // Closing must not wait for capacity to accept an additional task.
-                assert!(matches!(completion, Poll::Ready(Ok(()))));
-            } else {
-                assert!(completion.is_pending());
-            }
+            // Closing a handle flushes the shared backend, so it waits like flushing.
+            assert!(poll_completion(&mut shared, &mut cx, close).is_pending());
             let Poll::Ready(Some(second)) = receiver.poll_next_unpin(&mut cx) else {
                 panic!("missing buffered task")
             };
             assert_eq!(second.args, 7);
-            if !close {
-                assert!(matches!(
-                    shared.poll_flush_unpin(&mut cx),
-                    Poll::Ready(Ok(()))
-                ));
-            }
+            assert!(matches!(
+                poll_completion(&mut shared, &mut cx, close),
+                Poll::Ready(Ok(()))
+            ));
             drop(shared);
             drop(inner);
             assert!(matches!(
@@ -627,6 +622,26 @@ mod tests {
                 Poll::Ready(Err(_))
             ));
         }
+    }
+
+    #[test]
+    fn closing_one_handle_keeps_the_backend_open_for_other_handles() {
+        let (mut closing, mut receiver) = channel_backend();
+        let mut other = closing.clone();
+        let mut cx = Context::from_waker(noop_waker_ref());
+        assert!(matches!(
+            closing.poll_close_unpin(&mut cx),
+            Poll::Ready(Ok(()))
+        ));
+        assert!(matches!(
+            other.poll_ready_unpin(&mut cx),
+            Poll::Ready(Ok(()))
+        ));
+        other.start_send_unpin(Task::new(9)).unwrap();
+        let Poll::Ready(Some(task)) = receiver.poll_next_unpin(&mut cx) else {
+            panic!("another handle's close ended the shared backend")
+        };
+        assert_eq!(task.args, 9);
     }
 
     #[test]
