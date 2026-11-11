@@ -125,7 +125,7 @@ impl MonitorContext {
             })
     }
 
-    /// Attempt to cancel a task
+    /// Attempt to cancel a task, found as in [`WorkerContext::get_task`]
     #[cfg(feature = "task-context")]
     pub fn cancel_task(
         &self,

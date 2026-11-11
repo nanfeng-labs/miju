@@ -55,7 +55,10 @@ use std::{
 use futures_util::task::AtomicWaker;
 
 #[cfg(feature = "task-context")]
-use crate::task::context::{TaskContext, TaskStateError};
+use crate::task::{
+    context::{TaskContext, TaskStateError},
+    task_id::TaskId,
+};
 
 use crate::{
     error::{WorkerError, WorkerStateError},
@@ -89,7 +92,7 @@ pub struct WorkerContext {
     pub(crate) backend_maintenance: Arc<AtomicBool>,
     service: Arc<String>,
     #[cfg(feature = "task-context")]
-    tasks: Arc<dashmap::DashSet<TaskContext>>,
+    tasks: Arc<dashmap::DashMap<TaskId, TaskContext>>,
 
     #[cfg(not(feature = "task-context"))]
     tasks: Arc<AtomicUsize>,
@@ -441,13 +444,11 @@ impl WorkerContext {
         &self,
         ctx: &Arc<ExecutionContext>,
     ) -> Result<TaskContext, TaskLifecycleError> {
-        let tasks = &self.tasks;
-        ctx.task_id().ok_or(TaskLifecycleError::MissingTaskId)?;
-        let token = TaskContext::new(ctx);
-        if !tasks.insert(token.clone()) {
-            return Err(TaskLifecycleError::Duplicate);
+        let id = ctx.task_id().ok_or(TaskLifecycleError::MissingTaskId)?;
+        match self.tasks.entry(id.clone()) {
+            dashmap::Entry::Occupied(_) => Err(TaskLifecycleError::Duplicate),
+            dashmap::Entry::Vacant(entry) => Ok(entry.insert(TaskContext::new(ctx)).clone()),
         }
-        Ok(token)
     }
 
     #[cfg(not(feature = "task-context"))]
@@ -464,7 +465,7 @@ impl WorkerContext {
     pub fn cancel_task(&self, context: &TaskContext) -> Result<(), TaskStateError> {
         if let Some(token) = &self
             .tasks
-            .get(context)
+            .get(&context.id)
             .filter(|token| token.same_execution(context))
         {
             token.cancel()
@@ -476,9 +477,8 @@ impl WorkerContext {
     /// Remove the token once the task completes, to avoid unbounded growth.
     #[cfg(feature = "task-context")]
     pub(super) fn remove_task(&self, ctx: &TaskContext) -> Result<(), TaskStateError> {
-        let task_id = ctx.task_id();
         self.tasks
-            .remove(task_id)
+            .remove(&ctx.id)
             .ok_or(TaskStateError::TaskNotFound)?;
         Ok(())
     }
@@ -501,24 +501,36 @@ impl WorkerContext {
         ctx: &Arc<ExecutionContext>,
     ) -> Result<TaskContext, TaskStateError> {
         let task_id = ctx.task_id().ok_or(TaskStateError::TaskNotFound)?;
-        self.get_task(&task_id.to_string())
+        self.find_task(task_id).ok_or(TaskStateError::TaskNotFound)
+    }
+
+    #[cfg(feature = "task-context")]
+    fn find_task(&self, id: &TaskId) -> Option<TaskContext> {
+        self.tasks.get(id).map(|token| token.clone())
     }
 
     /// Get the task context for a task attached to a worker
+    ///
+    /// Finds the running task whose ID is written exactly as `task_id`. When a
+    /// string ID and another kind of ID share that text, such as the string
+    /// `"42"` and the integer 42, the other kind is returned while it is running.
     #[cfg(feature = "task-context")]
     pub fn get_task(&self, task_id: &str) -> Result<TaskContext, TaskStateError> {
-        Ok(self
-            .tasks
-            .get(task_id)
-            .ok_or(TaskStateError::TaskNotFound)?
-            .clone())
+        task_id
+            .parse::<TaskId>()
+            .ok()
+            // Parsing accepts other spellings, such as "042" for 42.
+            .filter(|id| id.to_string() == task_id)
+            .and_then(|id| self.find_task(&id))
+            .or_else(|| self.find_task(&TaskId::from_string(task_id)))
+            .ok_or(TaskStateError::TaskNotFound)
     }
 
     /// Remove any completed tasks
     #[cfg(feature = "task-context")]
     pub fn cleanup(&self) -> Result<(), TaskStateError> {
         let tasks = &self.tasks;
-        tasks.retain(|token| !(token.is_completed() && token.is_empty()));
+        tasks.retain(|_, token| !(token.is_completed() && token.is_empty()));
         Ok(())
     }
 
@@ -526,7 +538,7 @@ impl WorkerContext {
     #[cfg(feature = "task-context")]
     pub fn tasks(&self) -> Result<Vec<TaskContext>, TaskStateError> {
         let tasks = &self.tasks;
-        Ok(tasks.iter().map(|s| s.clone()).collect())
+        Ok(tasks.iter().map(|s| s.value().clone()).collect())
     }
 
     /// Returns the amount of time elapsed since this worker started.
