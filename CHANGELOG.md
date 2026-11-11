@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- fix(core): run calls admitted before the circuit opened ([#129](https://github.com/nanfeng-labs/miju/pull/129))
 - fix(core)!: return atomic task registration errors ([#113](https://github.com/nanfeng-labs/miju/pull/113))
 - fix(workflow)!: preserve task ID identity in metadata ([#110](https://github.com/nanfeng-labs/miju/pull/110))
 - fix(core): maintain persistence while buffered tasks drain ([#117](https://github.com/nanfeng-labs/miju/pull/117))
