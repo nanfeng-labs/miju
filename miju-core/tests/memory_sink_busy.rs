@@ -62,7 +62,7 @@ fn keyed(value: u32, key: &str) -> Task<u32> {
     TaskBuilder::new(value).idempotency_key(key).build()
 }
 #[test]
-fn busy_send_returns_error_and_preserves_existing_key_recording_policy() {
+fn busy_send_returns_error_and_releases_its_key() {
     for with_key in [false, true] {
         let (mut s, inner, values) = setup(false, false);
         ready(&mut s);
@@ -83,11 +83,8 @@ fn busy_send_returns_error_and_preserves_existing_key_recording_policy() {
             Task::new(2)
         })
         .unwrap();
-        // Characterize the existing policy, not a claim that failed keyed sends recover.
-        assert_eq!(
-            *values.lock().unwrap(),
-            if with_key { vec![] } else { vec![2] }
-        );
+        // The busy send never reached the sink, so a keyed retry is stored.
+        assert_eq!(*values.lock().unwrap(), vec![2]);
     }
 }
 #[test]
@@ -112,7 +109,7 @@ fn success_remains_immediately_visible_and_handle_drop_does_not_discard_it() {
     assert_eq!(*values.lock().unwrap(), vec![3]);
 }
 #[test]
-fn actual_underlying_errors_remain_synchronous_and_keep_the_key() {
+fn actual_underlying_errors_remain_synchronous_and_release_the_key() {
     for committed in [false, true] {
         let (mut s, _, values) = setup(true, committed);
         ready(&mut s);
@@ -120,9 +117,11 @@ fn actual_underlying_errors_remain_synchronous_and_keep_the_key() {
         assert!(err.to_string().contains("underlying failure"));
         ready(&mut s);
         s.start_send_unpin(keyed(2, "failed")).unwrap();
+        // A sink that stored the task before failing and does not deduplicate
+        // receives the retry as well.
         assert_eq!(
             *values.lock().unwrap(),
-            if committed { vec![1] } else { vec![] }
+            if committed { vec![1, 2] } else { vec![2] }
         );
     }
 }
