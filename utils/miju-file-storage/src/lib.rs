@@ -543,7 +543,18 @@ where
         cx: &mut Context<'_>,
         _: &WorkerContext,
     ) -> Poll<Option<Result<Self::Task, Self::Error>>> {
-        self.poll_next_unpin(cx).map_ok(|(line_id, mut job)| {
+        loop {
+            let (line_id, mut job) = match self.poll_next_unpin(cx) {
+                Poll::Ready(Some(Ok(entry))) => entry,
+                Poll::Ready(Some(Err(error))) => return Poll::Ready(Some(Err(error))),
+                Poll::Ready(None) => return Poll::Ready(None),
+                Poll::Pending => return Poll::Pending,
+            };
+            // A stored result, successful or not, means the task already finished,
+            // for example before the file was reopened.
+            if job.result.is_some() {
+                continue;
+            }
             let has_line_id = job.ctx.contains_key("line_id");
             if !has_line_id {
                 job.ctx.insert("line_id", line_id.to_string()).unwrap();
@@ -551,13 +562,13 @@ where
             let task = TaskBuilder::new(job.args)
                 .with_metadata(job.ctx)
                 .task_id(job.task_id);
-            if has_line_id {
+            return Poll::Ready(Some(Ok(if has_line_id {
                 // Keep the application field separate from the acknowledgement address.
                 task.data(FileLineId(line_id)).build()
             } else {
                 task.build()
-            }
-        })
+            })));
+        }
     }
 
     fn poll_close(

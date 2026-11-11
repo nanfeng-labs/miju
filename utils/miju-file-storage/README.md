@@ -82,7 +82,9 @@ write fails, so finding a result does not establish successful file persistence.
 
 `new` and `try_new` load existing records and results without truncating the
 file. Invalid records return an error without changing its contents. Each new
-instance starts reading at the first record, including records with results.
+instance starts reading at the first record. Workers skip records that already
+have a result, successful or failed, so reopening a file resumes only unfinished
+tasks.
 `new_temp` retains the temporary file's restrictive permissions and removes it
 when the last storage clone is dropped.
 
