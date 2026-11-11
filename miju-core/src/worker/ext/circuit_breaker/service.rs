@@ -69,7 +69,9 @@ struct SharedState {
 }
 
 #[derive(Debug)]
-/// Retains inner readiness until dispatch; shared circuit policy can still reject the call.
+/// Retains readiness until dispatch and admits the call it was ready for, even if
+/// a peer has opened the shared circuit since; the call still updates the shared
+/// recovery state. A call made without readiness is rejected while the circuit is open.
 pub struct CircuitBreakerService<S> {
     inner: S,
     config: CircuitBreakerConfig,
@@ -303,9 +305,11 @@ where
     }
 
     fn call(&mut self, req: Request) -> Self::Future {
-        self.inner_ready = false;
-        // Check if we should allow the request
-        if !self.should_allow_request() {
+        // A worker takes a task from its queue only after readiness, so rejecting the
+        // call here would fail a task that never ran.
+        let admitted = std::mem::take(&mut self.inner_ready);
+        // Evaluate the policy first so its state transitions and probe counts still apply.
+        if !self.should_allow_request() && !admitted {
             return Box::pin(
                 async move { Err(BoxDynError::from(CircuitBreakerError::CircuitOpen)) },
             );
