@@ -124,6 +124,13 @@ pub trait Backend: Sized {
     /// yet. The implementation must register `cx.waker()` and wake it when the
     /// backend becomes ready.
     ///
+    /// Backends delegating to `Persisted` with an event layer continue driving
+    /// this method during an explicit stop while dispatched requests drain. Such
+    /// integrations must forward the supplied worker context and support a
+    /// stopping worker without claiming new tasks.
+    /// No further `poll_next` calls are made during that drain. Other backends,
+    /// and backends that already returned `None`, retain close-only shutdown.
+    ///
     /// [`poll_next`]: Backend::poll_next
     fn poll_ready(
         &mut self,

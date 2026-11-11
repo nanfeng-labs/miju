@@ -62,6 +62,89 @@ fn graph_progress_round_trips_through_metadata_and_json() {
 }
 
 #[test]
+fn graph_metadata_preserves_id_variants_and_delimiters() {
+    for id in [
+        TaskId::from_int(42),
+        TaskId::from_string("42"),
+        TaskId::from_string(""),
+        TaskId::from_string("left,right=\"value\""),
+        TaskId::from_string("550e8400-e29b-41d4-a716-446655440000"),
+        "550e8400-e29b-41d4-a716-446655440000".parse().unwrap(),
+        "01ARZ3NDEKTSV4RRFFQ69G5FAV".parse().unwrap(),
+    ] {
+        let mut context = GraphFlowContext::new(Some(id.clone()));
+        context.node_task_ids.insert(NodeIndex::new(1), id);
+        let mut metadata = MetadataStore::new();
+        context.inject(&mut metadata).unwrap();
+        assert_context_eq(&GraphFlowContext::extract(&metadata).unwrap(), &context);
+    }
+    let mut legacy = required_metadata();
+    legacy
+        .insert("miju_workflow.graph.node_task_ids", "1=17,2=task-two")
+        .unwrap();
+    legacy
+        .insert("miju_workflow.graph.root_task_id", "root")
+        .unwrap();
+    let context = GraphFlowContext::extract(&legacy).unwrap();
+    assert_eq!(
+        context.node_task_ids[&NodeIndex::new(1)],
+        TaskId::from_int(17)
+    );
+    assert_eq!(
+        context.node_task_ids[&NodeIndex::new(2)],
+        TaskId::from_string("task-two")
+    );
+    assert_eq!(context.root_task_id, Some(TaskId::from_string("root")));
+}
+
+#[test]
+fn tagged_graph_metadata_rejects_malformed_ids_and_unknown_versions() {
+    let mut metadata = MetadataStore::new();
+    GraphFlowContext::new(None).inject(&mut metadata).unwrap();
+    assert_eq!(
+        metadata.get("miju_workflow.graph.task_id_encoding"),
+        Some("1")
+    );
+    for (key, value) in [
+        ("miju_workflow.graph.task_id_encoding", "2"),
+        ("miju_workflow.graph.node_task_ids", "1=17"),
+        (
+            "miju_workflow.graph.node_task_ids",
+            r#"{"1":{"Unknown":"x"}}"#,
+        ),
+        ("miju_workflow.graph.root_task_id", r#"{"Typed":"17"}"#),
+        ("miju_workflow.graph.root_task_id", r#"{"Typed":"opaque"}"#),
+        ("miju_workflow.graph.root_task_id", "root"),
+    ] {
+        let mut invalid = metadata.clone();
+        invalid.replace(key, value);
+        assert!(
+            matches!(
+                GraphFlowContext::extract(&invalid),
+                Err(GraphFlowContextError::ParseTaskId(_))
+            ),
+            "{key}: {value}"
+        );
+    }
+    for text in [
+        "550e8400-e29b-41d4-a716-446655440000",
+        "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+    ] {
+        let id = text.parse::<TaskId>().unwrap();
+        metadata.replace(
+            "miju_workflow.graph.root_task_id",
+            json!({"Typed": text}).to_string(),
+        );
+        let result = GraphFlowContext::extract(&metadata);
+        if matches!(id, TaskId::String(_) | TaskId::Int(_)) {
+            assert!(matches!(result, Err(GraphFlowContextError::ParseTaskId(_))));
+        } else {
+            assert_eq!(result.unwrap().root_task_id, Some(id));
+        }
+    }
+}
+
+#[test]
 fn dependency_lookup_omits_unknown_nodes_and_clones_are_independent() {
     let mut original = GraphFlowContext::new(Some(TaskId::from_string("root")));
     original.completed_nodes.insert(NodeIndex::new(0));

@@ -26,6 +26,7 @@ where
     phase: WorkerPhase,
     #[pin]
     call_all: CallAllUnordered<Svc, B>,
+    // Finalize only after owned futures have dropped their task registrations.
     handle: WorkerHandle,
 }
 
@@ -68,7 +69,7 @@ where
         loop {
             match this.phase {
                 WorkerPhase::Start => {
-                    this.handle.inner.start()?;
+                    this.handle.start()?;
                     debug!("worker started");
                     *this.phase = WorkerPhase::Running;
                     return Poll::Ready(Some(Ok(Event::Start)));
@@ -116,5 +117,38 @@ where
                 WorkerPhase::Done => return Poll::Ready(None),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{backend::dequeue::VecDequeBackend, task::task_fn::task_fn};
+    use futures_util::StreamExt;
+    use std::{future::ready, sync::atomic::Ordering, task::Waker};
+
+    #[test]
+    fn handle_error_done_phase_still_finalizes_its_started_owner() {
+        let worker = WorkerContext::new("handle-error");
+        let service = task_fn(|_: u32| ready(()));
+        let mut stream = WorkerStream::new(service, VecDequeBackend::new(), &worker);
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(matches!(
+            stream.poll_next_unpin(&mut cx),
+            Poll::Ready(Some(Ok(Event::Start)))
+        ));
+        stream.phase = WorkerPhase::ShuttingDown;
+        worker.restart().unwrap();
+        worker.is_ready.store(true, Ordering::SeqCst);
+        assert!(matches!(
+            stream.poll_next_unpin(&mut cx),
+            Poll::Ready(Some(Err(WorkerError::StateError(
+                crate::error::WorkerStateError::NotStarted
+            ))))
+        ));
+        assert!(matches!(stream.phase, WorkerPhase::Done));
+        drop(stream);
+        assert!(worker.is_terminated());
+        assert!(!worker.is_ready.load(Ordering::SeqCst));
     }
 }

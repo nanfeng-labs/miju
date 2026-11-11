@@ -3,6 +3,10 @@
 use std::{
     future::{Future, pending, ready},
     io,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use futures_channel::oneshot;
@@ -48,6 +52,55 @@ fn worker_error_is_preserved_before_signal_or_terminator_finishes() {
 
     let Err(MonitorError::ExitError(error)) = result else {
         panic!("the selected worker failure must remain observable: {result:?}");
+    };
+    assert_eq!(error.0.len(), 1);
+    assert!(error.to_string().contains("provider unavailable"));
+}
+
+#[test]
+fn terminator_preserves_worker_error_while_another_worker_is_still_shutting_down() {
+    let failure_observed = Arc::new(AtomicBool::new(false));
+    let failed = failure_observed.clone();
+    let cleanup_started = Arc::new(AtomicBool::new(false));
+    let cleanup = cleanup_started.clone();
+    let monitor = failing_worker()
+        .register(move |_| {
+            let cleanup = cleanup.clone();
+            WorkerBuilder::new("blocked-cleanup")
+                .backend(MemoryStorage::<u32>::new().before_stop(move |_| {
+                    cleanup.store(true, Ordering::SeqCst);
+                    pending()
+                }))
+                .build(|_: u32| async {})
+        })
+        .should_restart(move |_, _| {
+            failed.store(true, Ordering::SeqCst);
+            false
+        });
+    let context = monitor.context();
+    let (terminate, terminator) = oneshot::channel::<()>();
+    let mut run = monitor
+        .with_terminator(terminator.map(Result::unwrap))
+        .run_with_signal(ready(Ok(())))
+        .boxed();
+
+    assert!(run.as_mut().now_or_never().is_none());
+    assert!(failure_observed.load(Ordering::SeqCst));
+    assert!(run.as_mut().now_or_never().is_none());
+    assert!(cleanup_started.load(Ordering::SeqCst));
+    assert!(
+        !context
+            .get_worker("blocked-cleanup")
+            .unwrap()
+            .is_terminated()
+    );
+    terminate.send(()).unwrap();
+    let result = run
+        .now_or_never()
+        .expect("the terminator must finish without waiting for blocked cleanup");
+
+    let Err(MonitorError::ExitError(error)) = result else {
+        panic!("the observed worker error must survive forced termination: {result:?}");
     };
     assert_eq!(error.0.len(), 1);
     assert!(error.to_string().contains("provider unavailable"));
@@ -187,6 +240,7 @@ fn terminator_can_force_exit_while_worker_cleanup_is_pending() {
 
         assert!(run.as_mut().now_or_never().is_none());
         assert!(run.as_mut().now_or_never().is_none());
+        assert!(!context.workers()[0].is_terminated());
         terminate.send(()).unwrap();
         let result = run
             .now_or_never()
@@ -197,7 +251,7 @@ fn terminator_can_force_exit_while_worker_cleanup_is_pending() {
         } else {
             assert!(result.is_ok());
         }
-        assert!(!context.workers()[0].is_terminated());
+        assert!(context.workers()[0].is_terminated());
     }
 }
 

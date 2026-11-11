@@ -204,6 +204,15 @@ where
 {
     /// Run the worker until completion
     ///
+    /// Backend errors return immediately, dropping owned in-flight futures and
+    /// marking a started worker's context terminated. After an error there is
+    /// no further task draining or backend-close polling; pending
+    /// acknowledgements may be cancelled. Separately spawned work can outlive
+    /// the worker.
+    ///
+    /// For graceful shutdown, request [`WorkerContext::stop`] and keep driving
+    /// the worker so its tasks can finish and its backend can close.
+    ///
     /// # Example
     /// ```no_run
     /// # use miju_core::error::BoxDynError;
@@ -242,6 +251,11 @@ where
     }
 
     /// Run the worker until a shutdown signal future is complete.
+    ///
+    /// A successful signal requests graceful shutdown. A failed signal returns
+    /// its error and drops the worker through the fail-fast teardown described
+    /// by [`run`](Self::run). Dropping the returned future also drops owned work
+    /// without driving backend close.
     pub async fn run_until<Fut, Err>(mut self, signal: Fut) -> Result<(), WorkerError>
     where
         Fut: Future<Output = Result<(), Err>> + Send + 'static,
@@ -262,9 +276,13 @@ where
         .map(|_| ())
     }
 
-    /// Run the worker until a shutdown signal future is complete.
+    /// Run the worker alongside a context-aware control future.
     ///
     /// *Note*: Using this function requires you to call `ctx.stop()` in the future to completely stop the worker.
+    ///
+    /// A control-future error is preserved and drops the worker through the
+    /// fail-fast teardown described by [`run`](Self::run). Dropping the returned
+    /// future also drops owned work without driving backend close.
     ///
     /// This can also be very powerful with pausing and resuming the worker using the context.
     ///
@@ -314,6 +332,18 @@ where
 
     /// Returns a stream that will yield events as they occur within the worker's lifecycle
     ///
+    /// The stream owns the execution after it successfully starts the context.
+    /// Dropping it drops owned in-flight futures and marks that context
+    /// terminated, without further backend-close polling. Teardown itself emits
+    /// no Stop/Exit events. Unpolled streams and failed starts do not terminate
+    /// an existing execution that shares the context. Separately spawned work
+    /// may continue.
+    ///
+    /// Backend errors are yielded as `Err` items. Keeping the stream alive
+    /// retains execution ownership; [`run`](Self::run) instead returns on the
+    /// first such error and drops the stream. Normal shutdown requires driving
+    /// the stream after requesting [`WorkerContext::stop`].
+    ///
     /// # Example
     ///
     /// ```rust,no_run
@@ -345,6 +375,8 @@ where
         mut self,
     ) -> impl Stream<Item = Result<Event, WorkerError>> + use<Args, S, M, FB> {
         let ctx = &mut self.context;
+        // Each run opts in independently, even when a monitor reuses its context.
+        ctx.backend_maintenance = Default::default();
         ctx.bind_service::<M::Service>();
         let mut backend = self.backend;
         let event_handler = self.event_handler;
@@ -697,6 +729,44 @@ mod tests {
         assert_eq!(stops.load(Ordering::SeqCst), 1);
         assert!(ctx.is_terminated());
         assert!(events.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn stopping_closed_memory_storage_drains_a_handler_before_eof() {
+        use crate::backend::memory::MemorySink;
+        use futures_util::SinkExt;
+        let gate = Arc::new(Notify::new());
+        let (sender, receiver) = futures_channel::mpsc::unbounded::<Task<u32>>();
+        let mut producer = MemorySink::new(Arc::new(futures_util::lock::Mutex::new(Box::new(
+            sender.sink_map_err(Into::into),
+        ))));
+        let mut backend = MemoryStorage::new_with(producer.clone(), receiver.boxed());
+        backend.push(7u32).await.unwrap();
+        let ctx = WorkerContext::new("stop-closed-memory");
+        ctx.backend_maintenance.store(true, Ordering::SeqCst);
+        let worker = WorkerBuilder::new(&ctx).backend(backend).build({
+            let gate = gate.clone();
+            move |_: u32| {
+                let gate = gate.clone();
+                async move { gate.notified().await }
+            }
+        });
+        let mut events = Box::pin(worker.stream());
+        assert!(matches!(events.next().await, Some(Ok(Event::Start))));
+        assert!(events.next().now_or_never().is_none());
+        assert_eq!(ctx.task_count(), 1);
+        producer.close().await.unwrap();
+        ctx.stop().unwrap();
+        let waiting = events.next().now_or_never();
+        assert!(
+            waiting.is_none(),
+            "stopping must not recheck a closed producer: {waiting:?}"
+        );
+        assert_eq!(ctx.task_count(), 1);
+        gate.notify_one();
+        assert!(matches!(events.next().await, Some(Ok(Event::Success(_)))));
+        assert!(matches!(events.next().await, Some(Ok(Event::Exit))));
+        assert!(ctx.is_terminated());
     }
 
     #[tokio::test]

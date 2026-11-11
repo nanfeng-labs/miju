@@ -883,12 +883,13 @@ async fn fan_in_requires_designated_predecessor_and_complete_id_mapping() {
     );
     context.prev_node = Some(NodeIndex::new(1));
     context.node_task_ids.clear();
-    assert_eq!(
-        service.oneshot(request(b"0", &context)).await.unwrap(),
-        GraphNodeResponse::WaitingForDependencies {
-            pending_dependencies: HashMap::new()
-        }
-    );
+    // Nothing reschedules the designated task, so missing IDs are an error.
+    assert!(matches!(
+        service.oneshot(request(b"0", &context)).await,
+        Err(GraphFlowError::Service(
+            GraphServiceError::MissingIncomingTaskId
+        ))
+    ));
 }
 
 #[tokio::test]
