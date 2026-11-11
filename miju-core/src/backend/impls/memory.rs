@@ -144,6 +144,7 @@ impl<Args: Send + 'static> MemoryStorage<Args> {
             sender: MemorySink {
                 inner: Arc::new(futures_util::lock::Mutex::new(sender)),
                 idempotency_keys: Default::default(),
+                unflushed_keys: Vec::new(),
                 lock_retry: None,
             },
             receiver: receiver.boxed().into(),
@@ -212,11 +213,15 @@ type ArcIdempotencySet = Arc<SyncMutex<HashSet<String>>>;
 /// Memory sink for sending tasks to the in-memory backend
 ///
 /// Lock contention during `start_send` returns [`MemoryStorageError::Other`]
-/// without submitting the task. An idempotency key recorded before contention
-/// remains recorded, as it does after an error from the underlying sink.
+/// without submitting the task. Idempotency keys recorded by a handle stay
+/// provisional until its next successful flush: contention or an error from the
+/// underlying sink before then releases them, so the tasks can be retried with
+/// the same keys. If the underlying sink stored a task before reporting the
+/// error, such a retry relies on that sink to deduplicate it.
 pub struct MemorySink<Args> {
     pub(super) inner: ArcMemorySink<Args>,
     pub(super) idempotency_keys: ArcIdempotencySet,
+    unflushed_keys: Vec<String>,
     lock_retry: Option<Delay>,
 }
 
@@ -226,7 +231,33 @@ impl<Args> MemorySink<Args> {
         Self {
             inner: sink,
             idempotency_keys: Arc::new(SyncMutex::new(HashSet::new())),
+            unflushed_keys: Vec::new(),
             lock_retry: None,
+        }
+    }
+
+    // A deferring sink may only write accepted tasks during readiness or flush,
+    // so those can fail after the keys were recorded. Releasing the keys keeps a
+    // retry from being dropped as a duplicate of a task that was never stored.
+    fn release_unflushed_keys(&mut self) {
+        if self.unflushed_keys.is_empty() {
+            return;
+        }
+        let mut keys = self.idempotency_keys.lock().unwrap();
+        for key in self.unflushed_keys.drain(..) {
+            keys.remove(&key);
+        }
+    }
+
+    fn settle_unflushed_keys(
+        &mut self,
+        result: &Poll<Result<(), MemoryStorageError>>,
+        flush: bool,
+    ) {
+        match result {
+            Poll::Ready(Err(_)) => self.release_unflushed_keys(),
+            Poll::Ready(Ok(())) if flush => self.unflushed_keys.clear(),
+            Poll::Ready(Ok(())) | Poll::Pending => {}
         }
     }
 
@@ -269,6 +300,7 @@ impl<Args> Clone for MemorySink<Args> {
         Self {
             inner: Arc::clone(&self.inner),
             idempotency_keys: Arc::clone(&self.idempotency_keys),
+            unflushed_keys: Vec::new(),
             lock_retry: None,
         }
     }
@@ -278,13 +310,18 @@ impl<Args> Sink<Task<Args>> for MemorySink<Args> {
     type Error = MemoryStorageError;
 
     fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        let mut lock = ready!(self.get_mut().poll_lock(cx));
-        Pin::new(&mut *lock).poll_ready_unpin(cx)
+        let this = self.get_mut();
+        let result = {
+            let mut lock = ready!(this.poll_lock(cx));
+            Pin::new(&mut *lock).poll_ready_unpin(cx)
+        };
+        this.settle_unflushed_keys(&result, false);
+        result
     }
 
     fn start_send(self: Pin<&mut Self>, mut item: Task<Args>) -> Result<(), Self::Error> {
         let this = self.get_mut();
-        if let Some(key) = item.idempotency_key() {
+        let recorded = if let Some(key) = item.idempotency_key() {
             let mut keys = this.idempotency_keys.lock().unwrap();
 
             if keys.contains(key) {
@@ -292,7 +329,11 @@ impl<Args> Sink<Task<Args>> for MemorySink<Args> {
             }
 
             keys.insert(key.to_owned());
-        }
+            this.unflushed_keys.push(key.to_owned());
+            true
+        } else {
+            false
+        };
 
         if item.task_id().is_none() {
             let task = item
@@ -301,20 +342,39 @@ impl<Args> Sink<Task<Args>> for MemorySink<Args> {
             item = task.build();
         }
 
-        let mut sink = this.inner.try_lock().ok_or_else(|| {
-            MemoryStorageError::Other("Memory sink is busy; task was not sent".into())
-        })?;
-        Pin::new(&mut *sink).start_send_unpin(item)
+        let result = match this.inner.try_lock() {
+            Some(mut sink) => Pin::new(&mut *sink).start_send_unpin(item),
+            None => Err(MemoryStorageError::Other(
+                "Memory sink is busy; task was not sent".into(),
+            )),
+        };
+        // Only this task missed the sink; earlier accepted tasks keep their keys.
+        if result.is_err() && recorded {
+            if let Some(key) = this.unflushed_keys.pop() {
+                this.idempotency_keys.lock().unwrap().remove(&key);
+            }
+        }
+        result
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        let mut lock = ready!(self.get_mut().poll_lock(cx));
-        Pin::new(&mut *lock).poll_flush_unpin(cx)
+        let this = self.get_mut();
+        let result = {
+            let mut lock = ready!(this.poll_lock(cx));
+            Pin::new(&mut *lock).poll_flush_unpin(cx)
+        };
+        this.settle_unflushed_keys(&result, true);
+        result
     }
 
     fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        let mut lock = ready!(self.get_mut().poll_lock(cx));
-        Pin::new(&mut *lock).poll_close_unpin(cx)
+        let this = self.get_mut();
+        let result = {
+            let mut lock = ready!(this.poll_lock(cx));
+            Pin::new(&mut *lock).poll_close_unpin(cx)
+        };
+        this.settle_unflushed_keys(&result, true);
+        result
     }
 }
 

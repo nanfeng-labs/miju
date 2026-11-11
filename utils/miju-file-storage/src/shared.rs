@@ -311,6 +311,53 @@ mod tests {
         assert_eq!(entries.read().unwrap().len(), 1);
     }
 
+    #[test]
+    fn keyed_retries_after_failed_sends_store_each_task_once() {
+        use futures_util::FutureExt;
+
+        let keyed = |value: u32, key: &str| TaskBuilder::new(value).idempotency_key(key).build();
+        let mut factory = SharedJsonStore::new();
+        let mut producer: MemoryStorage<u32> = factory.create().unwrap();
+        let entries = Arc::clone(&factory.inner.entries);
+
+        // The entry lock is held, so the task is never staged.
+        let reader = entries.read().unwrap();
+        assert!(matches!(
+            producer.push_task(keyed(1, "a")).now_or_never(),
+            Some(Err(_))
+        ));
+        drop(reader);
+        producer
+            .push_task(keyed(1, "a"))
+            .now_or_never()
+            .unwrap()
+            .unwrap();
+        assert_eq!(entries.read().unwrap().len(), 1);
+
+        // The file lock is held, so the task is staged but flushing fails.
+        let file = std::fs::File::open(&factory.inner.path).unwrap();
+        let mut file_lock = fd_lock::RwLock::new(file);
+        let held = file_lock.write().unwrap();
+        assert!(matches!(
+            producer.push_task(keyed(2, "b")).now_or_never(),
+            Some(Err(_))
+        ));
+        drop(held);
+        producer
+            .push_task(keyed(2, "b"))
+            .now_or_never()
+            .unwrap()
+            .unwrap();
+
+        let stored: Vec<_> = entries
+            .read()
+            .unwrap()
+            .iter()
+            .map(|entry| entry.args.clone())
+            .collect();
+        assert_eq!(stored, vec![serde_json::json!(1), serde_json::json!(2)]);
+    }
+
     const ITEMS: u32 = 10;
 
     #[tokio::test]
