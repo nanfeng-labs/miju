@@ -4,15 +4,20 @@ use std::{
     collections::{BTreeMap, HashSet},
     fmt::Debug,
     panic::AssertUnwindSafe,
+    pin::Pin,
     sync::{Arc, Mutex},
-    task::Context,
+    task::{Context, Poll},
     time::Duration,
 };
 
-use futures_util::{FutureExt, SinkExt, future::poll_fn};
+use futures_util::{FutureExt, Sink, future::poll_fn};
 use miju_core::{
-    backend::{Backend, TaskSinkError},
-    task::metadata::Metadata,
+    backend::{
+        Backend, TaskSinkError,
+        ext::shared::Shared,
+        memory::{MemorySink, MemoryStorageError},
+    },
+    task::{Task, metadata::Metadata},
     worker::{
         builder::WorkerBuilder, context::WorkerContext, event::Event,
         ext::event_listener::EventListenerExt, service::IntoWorkerService,
@@ -47,6 +52,38 @@ where
     .unwrap()
     .unwrap()
     .unwrap()
+}
+
+/// Rejects every send after encoding succeeds.
+struct RejectingSink;
+
+impl Sink<Task<Vec<u8>>> for RejectingSink {
+    type Error = MemoryStorageError;
+
+    fn poll_ready(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Err(MemoryStorageError::Other("rejected".into())))
+    }
+
+    fn start_send(self: Pin<&mut Self>, _: Task<Vec<u8>>) -> Result<(), Self::Error> {
+        Err(MemoryStorageError::Other("rejected".into()))
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_close(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+}
+
+fn rejecting_backend() -> Shared<InMemoryWorkflow<Vec<u8>>> {
+    let sink: Box<dyn Sink<Task<Vec<u8>>, Error = MemoryStorageError> + Send + Sync + Unpin> =
+        Box::new(RejectingSink);
+    InMemoryWorkflow::new_with(
+        MemorySink::new(Arc::new(futures_util::lock::Mutex::new(sink))),
+        Box::pin(futures_util::stream::empty()),
+    )
 }
 
 fn assert_empty<B: Backend>(backend: &mut B) {
@@ -140,10 +177,9 @@ async fn encoding_failures_leave_the_queue_empty_and_reusable() {
 }
 
 #[tokio::test]
-async fn closed_sink_errors_are_distinct_from_encoding_errors() {
+async fn rejected_sends_are_distinct_from_encoding_errors() {
     for method in 0..4 {
-        let mut backend = InMemoryWorkflow::<Vec<u8>>::create();
-        SinkExt::close(&mut backend).await.unwrap();
+        let mut backend = rejecting_backend();
         let error = match method {
             0 => backend.push_start(7_u32).await.unwrap_err(),
             1 => backend.start_fan_out((7_u32, 8_u32)).await.unwrap_err(),
@@ -155,8 +191,7 @@ async fn closed_sink_errors_are_distinct_from_encoding_errors() {
         };
         assert!(matches!(error, TaskSinkError::PushError(_)));
     }
-    let mut backend = InMemoryWorkflow::<Vec<u8>>::create();
-    SinkExt::close(&mut backend).await.unwrap();
+    let mut backend = rejecting_backend();
     let invalid = BTreeMap::from([(vec![1_u8], 2_u32)]);
     assert!(matches!(
         backend.push_start(invalid).await,
@@ -166,13 +201,13 @@ async fn closed_sink_errors_are_distinct_from_encoding_errors() {
         backend.push_start(7_u32).await,
         Err(TaskSinkError::PushError(_))
     ));
-    // The channel's error mapper is consumed by the first failed send.
-    assert!(
+    // Later failed sends keep returning errors.
+    assert!(matches!(
         AssertUnwindSafe(backend.push_start(7_u32))
             .catch_unwind()
-            .await
-            .is_err()
-    );
+            .await,
+        Ok(Err(TaskSinkError::PushError(_)))
+    ));
 }
 
 #[tokio::test]

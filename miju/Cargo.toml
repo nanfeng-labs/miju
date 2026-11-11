@@ -53,6 +53,8 @@ sentry = ["dep:sentry-core", "dep:uuid", "miju-core/uuid"]
 task-context = ["miju-core/task-context"]
 ## Share a backend through cloneable handles
 shared = ["miju-core/shared"]
+## Enable runtime-independent timers: shutdown timeouts and interval or backoff polling
+sleep = ["miju-core/sleep"]
 ## Enable middleware integrations and task tracking (requires Rust 1.89)
 full = [
     "default",
@@ -67,6 +69,7 @@ full = [
     "catch-panic",
     "config",
     "task-context",
+    "sleep",
 ]
 ## Generate the feature flag reference when building documentation
 docsrs = ["dep:document-features"]

@@ -78,7 +78,7 @@ tracing subscriber 和其他遥测客户端由应用安装。
 | --- | --- |
 | 默认 | core 默认 feature、tracing、panic 捕获、限制、超时、重试和 Worker 配置 |
 | `default-features = false` | 核心类型、Worker 执行，以及不受 feature 限制的 builder 组合方法 |
-| `full` | 默认 feature、Sentry、Prometheus、OpenTelemetry、过滤和任务跟踪 |
+| `full` | 默认 feature、Sentry、Prometheus、OpenTelemetry、过滤、任务跟踪和计时器 |
 | `shared` | 可克隆的后端句柄；使用 `full` 时仍需单独启用 |
 | `docsrs` | 生成 feature 文档；使用 `full` 时仍需单独启用 |
 
