@@ -919,8 +919,7 @@ mod tests {
 
         for (first_id, duplicate_id) in [
             (TaskId::from_int(42), TaskId::from_int(42)),
-            (TaskId::from_int(42), TaskId::from_string("42")),
-            (TaskId::from_string("42"), TaskId::from_int(42)),
+            (TaskId::from_string("42"), TaskId::from_string("42")),
         ] {
             let worker = WorkerContext::new("duplicate-registration");
             let first = TaskBuilder::new(1_u32).task_id(first_id).build();
@@ -967,6 +966,45 @@ mod tests {
             assert_eq!(worker.task_count(), 0);
             assert!(worker.is_terminated());
         }
+    }
+
+    #[cfg(feature = "task-context")]
+    #[test]
+    fn ids_that_share_only_their_text_are_tracked_separately() {
+        use crate::task::task_id::TaskId;
+
+        let worker = WorkerContext::new("id-variants");
+        let integer = TaskBuilder::new(1_u32)
+            .task_id(TaskId::from_int(42))
+            .build();
+        let string = TaskBuilder::new(2_u32)
+            .task_id(TaskId::from_string("42"))
+            .build();
+        let integer_token = worker.register_task(integer.ctx()).unwrap();
+        let string_token = worker.register_task(string.ctx()).unwrap();
+        assert_eq!(worker.task_count(), 2);
+        for (task, token) in [(&integer, &integer_token), (&string, &string_token)] {
+            let found = worker.get_task_context(task.ctx()).unwrap();
+            assert!(found.same_execution(token));
+        }
+
+        // Text lookup prefers the parsed ID and falls back to the string ID.
+        assert!(
+            worker
+                .get_task("42")
+                .unwrap()
+                .same_execution(&integer_token)
+        );
+        // Only the exact text matches: "042" parses as 42 but is not that ID's text.
+        assert_eq!(worker.get_task("042"), Err(TaskStateError::TaskNotFound));
+        worker.cancel_task(&string_token).unwrap();
+        assert!(string_token.is_cancelled());
+        assert!(!integer_token.is_cancelled());
+        worker.remove_task(&integer_token).unwrap();
+        assert!(worker.get_task("42").unwrap().same_execution(&string_token));
+        worker.remove_task(&string_token).unwrap();
+        assert_eq!(worker.get_task("42"), Err(TaskStateError::TaskNotFound));
+        assert_eq!(worker.task_count(), 0);
     }
 
     #[cfg(feature = "task-context")]

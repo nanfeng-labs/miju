@@ -59,7 +59,7 @@ use std::{
 };
 
 use crate::{
-    task::{ExecutionContext, Task, from_request::FromRequest},
+    task::{ExecutionContext, Task, from_request::FromRequest, task_id::TaskId},
     worker::context::WorkerContext,
 };
 
@@ -76,6 +76,8 @@ const COMPLETED: usize = 2; // Task was completed via polling
 #[derive(Clone, Debug)]
 pub struct TaskContext {
     task_id: Arc<str>,
+    /// The worker tracks executions by this ID, so IDs that only share their text stay apart.
+    pub(crate) id: TaskId,
     state: Arc<AtomicUsize>,
     /// Wakes any pending [`WaitForExecutionFuture`] future when `complete() or cancel()` is called.
     waiters: Arc<Mutex<Vec<Arc<AtomicWaker>>>>,
@@ -94,13 +96,10 @@ impl TaskContext {
     /// a task is expected to carry one.
     #[must_use]
     pub(crate) fn new(ctx: &Arc<ExecutionContext>) -> Self {
+        let id = ctx.task_id.clone().expect("A task id must be included");
         Self {
-            task_id: ctx
-                .task_id
-                .as_ref()
-                .expect("A task id must be included")
-                .to_string()
-                .into(),
+            task_id: id.to_string().into(),
+            id,
             state: Arc::new(AtomicUsize::new(RUNNING)),
             waiters: Arc::new(Mutex::new(Vec::new())),
             instant: Instant::now(),

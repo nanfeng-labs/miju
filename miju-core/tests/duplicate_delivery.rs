@@ -1,5 +1,6 @@
 //! A task ID delivered again while its first execution runs is rejected without
 //! recording a result, so the running execution's result is the only one stored.
+//! IDs that only share their text are different tasks and run side by side.
 
 #![cfg(feature = "task-context")]
 
@@ -87,6 +88,28 @@ async fn rejected_duplicate_is_not_acknowledged() {
 
     assert_eq!(*errors.lock().unwrap(), ["task already has a token"]);
     assert_eq!(*acks.lock().unwrap(), ["7 Ok(10)"]);
+}
+
+#[tokio::test]
+async fn ids_that_share_only_their_text_both_run() {
+    let mut backend = MemoryStorage::new();
+    for (args, id) in [(1, TaskId::from_int(7)), (2, TaskId::from_string("7"))] {
+        let task = TaskBuilder::new(args).task_id(id).build();
+        backend.push_task(task).await.unwrap();
+    }
+    let (acks, errors) = (Log::default(), Log::default());
+    WorkerBuilder::new("id-variants")
+        .backend(backend)
+        .ack_with(Recorder(acks.clone()))
+        .on_event(record_errors(&errors))
+        .build(slow_first)
+        .run_until(stop_after_both_deliveries())
+        .await
+        .unwrap();
+
+    assert!(errors.lock().unwrap().is_empty(), "{errors:?}");
+    // The string ID's task finishes while the integer ID's task is still running.
+    assert_eq!(*acks.lock().unwrap(), ["7 Ok(20)", "7 Ok(10)"]);
 }
 
 #[cfg(feature = "sleep")]
