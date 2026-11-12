@@ -578,13 +578,17 @@ mod tests {
     use crate::{
         backend::codec::Codec,
         task::{builder::TaskBuilder, status::Status, task_id::TaskId},
+        worker::lifecycle::TaskLifecycleError,
     };
     use futures_channel::oneshot;
     use futures_util::{SinkExt, future::poll_fn, task::noop_waker_ref};
     use std::{
         collections::HashMap,
         io,
-        sync::{Arc, Mutex},
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicUsize, Ordering},
+        },
     };
     use tower_layer::Layer;
     use tower_service::Service;
@@ -1600,19 +1604,23 @@ mod tests {
     #[tokio::test]
     async fn default_layer_requires_id_but_emits_no_events() {
         let (_, mut driver, _) = fixture();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&calls);
         let mut service = driver
             .layer(NumberCodec { fail: false }, 1)
-            .layer(tower::service_fn(|_: Task<u32>| async {
-                Ok::<_, io::Error>(1u32)
+            .layer(tower::service_fn(move |_: Task<u32>| {
+                counted.fetch_add(1, Ordering::SeqCst);
+                async { Ok::<_, io::Error>(1u32) }
             }));
         assert_eq!(service.call(task(1)).await.unwrap(), 1);
         assert!(driver.receiver.as_mut().unwrap().try_recv().is_err());
-        assert!(
-            std::panic::AssertUnwindSafe(service.call(Task::new(1)))
-                .catch_unwind()
-                .await
-                .is_err()
-        );
+        let error = service.call(Task::new(1)).await.unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<TaskLifecycleError>(),
+            Some(TaskLifecycleError::MissingTaskId)
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(driver.receiver.as_mut().unwrap().try_recv().is_err());
     }
 
     #[test]
