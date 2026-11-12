@@ -24,6 +24,8 @@ use crate::{
 /// failure is recorded in the completion event without changing a successful
 /// service result; a channel send failure is returned as a service error.
 /// A task rejected because its ID is already running gets no completion event.
+/// A task without an ID is rejected with [`TaskLifecycleError::MissingTaskId`]
+/// before the inner service is called.
 ///
 /// # Type Parameters
 ///
@@ -129,14 +131,19 @@ where
     }
 
     fn call(&mut self, req: Task<Args>) -> Self::Future {
-        let mut sender = self.sender.clone();
         let ctx = req.ctx().clone();
+        let Some(task_id) = ctx.task_id().cloned() else {
+            return async {
+                Err::<S::Response, BoxDynError>(TaskLifecycleError::MissingTaskId.into())
+            }
+            .boxed();
+        };
+        let mut sender = self.sender.clone();
         let fut = self.inner.call(req);
         let codec = self.codec.clone();
         let should_ack = self.should_ack;
         let should_lock = self.should_lock;
         async move {
-            let task_id = ctx.task_id().unwrap().clone();
             if should_lock {
                 sender
                     .send(TaskEvent::Lock {
