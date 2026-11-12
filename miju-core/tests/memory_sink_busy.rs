@@ -1,4 +1,4 @@
-//! Public contention behavior without buffering tasks or reserving readiness.
+//! Synchronous send errors and idempotency while the underlying sink is busy.
 use futures_util::{Sink, SinkExt, lock::Mutex as AsyncMutex, task::noop_waker_ref};
 use miju_core::{
     backend::memory::{MemorySink, MemoryStorageError},
@@ -140,7 +140,6 @@ fn contention_drops_task_after_releasing_the_key_registry_guard() {
     s.start_send_unpin(keyed(1, "known")).unwrap();
     ready(&mut s);
     let mut peer = s.clone();
-    ready(&mut peer);
     let observed = Arc::new(AtomicUsize::new(0));
     let mark = observed.clone();
     let mut data = Extensions::default();
@@ -185,8 +184,7 @@ fn missing_id_context_clone_stays_outside_locks_and_preserves_key_winner() {
         }
     }
     let (mut s, inner, values) = setup(false, false);
-    let mut peer = s.clone();
-    ready(&mut peer);
+    let peer = s.clone();
     ready(&mut s);
     let calls = Arc::new(AtomicUsize::new(0));
     let mut data = Extensions::default();

@@ -55,7 +55,7 @@ use futures_channel::mpsc::{SendError, UnboundedSender, unbounded};
 use futures_core::ready;
 use futures_sink::Sink;
 use futures_timer::Delay;
-use futures_util::lock::{Mutex, MutexGuard};
+use futures_util::lock::{Mutex, MutexGuard, OwnedMutexGuard};
 use futures_util::{FutureExt, SinkExt, Stream, StreamExt};
 use std::collections::HashSet;
 use std::{
@@ -146,6 +146,8 @@ impl<Args: Send + 'static> MemoryStorage<Args> {
                 idempotency_keys: Default::default(),
                 unflushed_keys: Vec::new(),
                 lock_retry: None,
+                readiness: Default::default(),
+                ready: None,
             },
             receiver: receiver.boxed().into(),
         }
@@ -212,6 +214,12 @@ type ArcIdempotencySet = Arc<SyncMutex<HashSet<String>>>;
 
 /// Memory sink for sending tasks to the in-memory backend
 ///
+/// Successful readiness reserves the next send for this handle. Other clones
+/// wait for send readiness until it sends, flushes, closes, or drops. Flushing
+/// or closing the sink does not wait for another handle's unused permit.
+/// The underlying sink mutex is not held between calls. Direct access to the
+/// sink passed to [`Self::new`] must coordinate readiness with these handles.
+///
 /// Lock contention during `start_send` returns [`MemoryStorageError::Other`]
 /// without submitting the task. Idempotency keys recorded by a handle stay
 /// provisional until its next successful flush: contention or an error from the
@@ -223,6 +231,8 @@ pub struct MemorySink<Args> {
     pub(super) idempotency_keys: ArcIdempotencySet,
     unflushed_keys: Vec<String>,
     lock_retry: Option<Delay>,
+    readiness: Arc<Mutex<()>>,
+    ready: Option<OwnedMutexGuard<()>>,
 }
 
 impl<Args> MemorySink<Args> {
@@ -233,6 +243,8 @@ impl<Args> MemorySink<Args> {
             idempotency_keys: Arc::new(SyncMutex::new(HashSet::new())),
             unflushed_keys: Vec::new(),
             lock_retry: None,
+            readiness: Default::default(),
+            ready: None,
         }
     }
 
@@ -272,17 +284,28 @@ impl<Args> MemorySink<Args> {
             return Poll::Ready(lock);
         }
 
+        Self::poll_retry(&mut self.lock_retry, cx);
+        Poll::Pending
+    }
+
+    fn poll_retry(lock_retry: &mut Option<Delay>, cx: &mut Context<'_>) {
         // A retained mutex waiter can strand other owners when a sink operation is cancelled.
-        let retry = self
-            .lock_retry
-            .get_or_insert_with(|| Delay::new(Duration::from_millis(1)));
+        let retry = lock_retry.get_or_insert_with(|| Delay::new(Duration::from_millis(1)));
         if retry.poll_unpin(cx).is_ready() {
             retry.reset(Duration::from_millis(1));
             if retry.poll_unpin(cx).is_ready() {
                 cx.waker().wake_by_ref();
             }
         }
-        Poll::Pending
+    }
+
+    fn poll_inner_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), MemoryStorageError>> {
+        let result = {
+            let mut lock = ready!(self.poll_lock(cx));
+            Pin::new(&mut *lock).poll_ready_unpin(cx)
+        };
+        self.settle_unflushed_keys(&result, false);
+        result
     }
 }
 
@@ -302,6 +325,8 @@ impl<Args> Clone for MemorySink<Args> {
             idempotency_keys: Arc::clone(&self.idempotency_keys),
             unflushed_keys: Vec::new(),
             lock_retry: None,
+            readiness: Arc::clone(&self.readiness),
+            ready: None,
         }
     }
 }
@@ -311,16 +336,26 @@ impl<Args> Sink<Task<Args>> for MemorySink<Args> {
 
     fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let this = self.get_mut();
-        let result = {
-            let mut lock = ready!(this.poll_lock(cx));
-            Pin::new(&mut *lock).poll_ready_unpin(cx)
+        if this.ready.is_some() {
+            return Poll::Ready(Ok(()));
+        }
+        let Some(permit) = this.readiness.try_lock_owned() else {
+            Self::poll_retry(&mut this.lock_retry, cx);
+            return Poll::Pending;
         };
-        this.settle_unflushed_keys(&result, false);
+        let result = this.poll_inner_ready(cx);
+        if matches!(result, Poll::Ready(Ok(()))) {
+            this.ready = Some(permit);
+        }
         result
     }
 
     fn start_send(self: Pin<&mut Self>, mut item: Task<Args>) -> Result<(), Self::Error> {
         let this = self.get_mut();
+        let permit = this
+            .ready
+            .take()
+            .or_else(|| this.readiness.try_lock_owned());
         let recorded = if let Some(key) = item.idempotency_key() {
             let mut keys = this.idempotency_keys.lock().unwrap();
 
@@ -342,7 +377,7 @@ impl<Args> Sink<Task<Args>> for MemorySink<Args> {
             item = task.build();
         }
 
-        let result = match this.inner.try_lock() {
+        let result = match permit.as_ref().and_then(|_| this.inner.try_lock()) {
             Some(mut sink) => Pin::new(&mut *sink).start_send_unpin(item),
             None => Err(MemoryStorageError::Other(
                 "Memory sink is busy; task was not sent".into(),
@@ -359,6 +394,7 @@ impl<Args> Sink<Task<Args>> for MemorySink<Args> {
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let this = self.get_mut();
+        drop(this.ready.take());
         let result = {
             let mut lock = ready!(this.poll_lock(cx));
             Pin::new(&mut *lock).poll_flush_unpin(cx)
@@ -369,6 +405,7 @@ impl<Args> Sink<Task<Args>> for MemorySink<Args> {
 
     fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let this = self.get_mut();
+        drop(this.ready.take());
         let result = {
             let mut lock = ready!(this.poll_lock(cx));
             Pin::new(&mut *lock).poll_close_unpin(cx)
@@ -406,7 +443,7 @@ impl<Args> Backend for MemoryStorage<Args> {
         cx: &mut Context<'_>,
         _: &WorkerContext,
     ) -> Poll<Result<(), Self::Error>> {
-        self.sender.poll_ready_unpin(cx)
+        self.sender.poll_inner_ready(cx)
     }
 
     fn poll_next(
