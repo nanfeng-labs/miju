@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- docs: align graph context and catch-panic guides ([#137](https://github.com/nanfeng-labs/miju/pull/137))
 - ci: append full changelog links to releases ([#133](https://github.com/nanfeng-labs/miju/pull/133))
 - fix(core): wake shared handles after management operations ([#131](https://github.com/nanfeng-labs/miju/pull/131))
 - fix(core): track running tasks by ID instead of ID text ([#130](https://github.com/nanfeng-labs/miju/pull/130))
