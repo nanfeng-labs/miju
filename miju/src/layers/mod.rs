@@ -85,6 +85,11 @@ pub trait WorkerBuilderExt<Args, Source, Middleware> {
     ) -> WorkerBuilder<Args, Source, Stack<tower::retry::RetryLayer<P>, Middleware>>;
 
     /// Fails requests that take longer than `timeout`.
+    ///
+    /// Expiry drops the inner future. If an executor added with
+    /// [`parallelize`](miju_core::worker::ext::parallelize) runs the inner
+    /// layers, the executor's task keeps running; add `parallelize` before
+    /// `retry` and `timeout` so each attempt is dropped before the next starts.
     #[cfg(feature = "timeout")]
     fn timeout(
         self,

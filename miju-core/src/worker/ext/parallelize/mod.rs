@@ -26,6 +26,29 @@
 //!     worker.run().await.unwrap();
 //! }
 //! ```
+//!
+//! # Executor ownership, timeouts and retries
+//!
+//! [`ParallelizeService`] hands the future of the layers added after it, and of
+//! the handler, to the executor. Dropping the future it returns drops only the
+//! executor's handle: with `tokio::spawn` the spawned task keeps running. An
+//! outer timeout therefore does not stop a handler that runs on the executor.
+//! With `.retry(..).timeout(..).parallelize(tokio::spawn)`, a timed-out attempt
+//! keeps running while the retry starts the next one, so two attempts of the
+//! same task can run at once and the late one can still change task state.
+//!
+//! Add `parallelize` before `retry` and `timeout` so that the timeout owns each
+//! attempt's handler future and drops it before the next attempt starts:
+//!
+//! ```text
+//! .concurrency(1)
+//! .parallelize(tokio::spawn)
+//! .retry(RetryPolicy::retries(1))
+//! .timeout(deadline)
+//! ```
+//!
+//! This order does not cancel tasks that the handler spawns itself, and it
+//! does not make results durable when the worker is aborted.
 use std::future::ready;
 
 use futures_core::future::BoxFuture;
