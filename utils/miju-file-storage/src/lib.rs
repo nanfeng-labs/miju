@@ -906,27 +906,37 @@ where
                     let vault = &state.vault;
 
                     let completed_task = {
-                        let Ok(vault) = vault.entries.try_read() else {
-                            return Some((Err(FileStorageError::WouldBlockLock), state));
-                        };
-                        vault.iter().find_map(|value| {
-                            let attempt = value
-                                .ctx
-                                .get("attempt")
-                                .map(FromStr::from_str)
-                                .transpose()
-                                .unwrap_or_default()
-                                .unwrap_or_default();
-                            let task_id = value.task_id.clone();
-                            if state.pending_tasks.contains(&task_id) {
-                                Some((task_id, value.result.clone()?, attempt))
-                            } else {
-                                None
+                        match vault.entries.try_read() {
+                            Err(std::sync::TryLockError::WouldBlock) => None,
+                            Err(std::sync::TryLockError::Poisoned(_)) => {
+                                Some(Err(FileStorageError::PoisonedLock))
                             }
-                        })
+                            Ok(vault) => vault.iter().find_map(|value| {
+                                let attempt = value
+                                    .ctx
+                                    .get("attempt")
+                                    .map(FromStr::from_str)
+                                    .transpose()
+                                    .unwrap_or_default()
+                                    .unwrap_or_default();
+                                let task_id = value.task_id.clone();
+                                if state.pending_tasks.contains(&task_id) {
+                                    Some(Ok((task_id, value.result.clone()?, attempt)))
+                                } else {
+                                    None
+                                }
+                            }),
+                        }
                     };
 
-                    if let Some((task_id, result, attempt)) = completed_task {
+                    if let Some(completed_task) = completed_task {
+                        let (task_id, result, attempt) = match completed_task {
+                            Ok(task) => task,
+                            Err(error) => {
+                                state.pending_tasks.clear();
+                                return Some((Err(error), state));
+                            }
+                        };
                         state.pending_tasks.remove(&task_id);
                         let result: Result<O, String> = match serde_json::from_value(result) {
                             Ok(result) => result,

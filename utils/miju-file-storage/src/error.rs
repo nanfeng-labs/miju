@@ -31,6 +31,14 @@ pub enum FileStorageError<A: Adapter> {
     /// A required lock could not be acquired.
     #[error("Lock would block")]
     WouldBlockLock,
+
+    /// A storage lock was poisoned by a panic.
+    ///
+    /// `wait_for` reports this once and ends the query; it does not repair the
+    /// lock or reopen the file. Other operations still report lock failures,
+    /// including poisoning, as [`Self::WouldBlockLock`].
+    #[error("Lock poisoned")]
+    PoisonedLock,
 }
 
 impl<A> fmt::Debug for FileStorageError<A>
@@ -49,6 +57,7 @@ where
             Self::Parse(msg) => f.debug_tuple("Parse").field(msg).finish(),
             Self::AdapterError(err) => f.debug_tuple("AdapterError").field(err).finish(),
             Self::WouldBlockLock => f.write_str("WouldBlockLock"),
+            Self::PoisonedLock => f.write_str("PoisonedLock"),
         }
     }
 }
