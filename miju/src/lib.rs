@@ -3,10 +3,7 @@
 //! ## Feature flags
 //!
 //! Enable `docsrs` when building documentation to generate the feature reference.
-#![cfg_attr(
-    feature = "docsrs",
-    cfg_attr(doc, doc = ::document_features::document_features!())
-)]
+#![cfg_attr(feature = "docsrs", doc = ::document_features::document_features!())]
 
 /// Middleware built on Tower's [`Layer`](prelude::Layer) trait.
 pub mod layers;

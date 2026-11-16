@@ -4,7 +4,7 @@
 //! The [`Persisted` driver](crate::backend::persistence::Persisted) drives registration,
 //! heartbeats, event processing, and task batches, and implements a submission
 //! sink. A storage integration connects its polling methods to
-//! [`Backend`](crate::backend::Backend) and uses
+//! the [`Backend` trait](crate::backend::Backend) and uses
 //! [`Persisted::shared_layer`](crate::backend::persistence::Persisted::shared_layer) for
 //! backend middleware that can be initialized by multiple workers. The driver
 //! itself does not implement `Backend`.
