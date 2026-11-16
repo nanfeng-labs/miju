@@ -103,6 +103,29 @@ return an error. Older versions of this crate cannot read these result cells.
 Existing CSV files without this column retain their legacy read/write format;
 they are not upgraded, and their known result-recovery limitations remain.
 
+### CSV task ID format and compatibility
+
+New CSV files, including empty files, store task IDs in a `task_id_v1` column:
+hexadecimal UTF-8 JSON that records whether the ID is an integer, a string or a
+typed ID. An integer ID `42` and a string ID `"42"` therefore stay distinct after
+reopening, and string IDs are never parsed as another type. Reading a typed ID
+requires the matching miju-core feature (`uuid` or `ulid`). An unknown
+`task_id_v*` column, mixed or duplicate ID columns, or a missing or malformed
+cell returns an `InvalidData` adapter error without rewriting the file. The ID
+and result columns are versioned independently.
+
+Files with a legacy `task_id` column, including header-only files, keep that
+format when tasks are appended or results rewritten. Their existing limits
+remain: IDs are restored from text, so an integer and a string with the same
+text collide, and an empty or missing ID becomes a new random ID on each load.
+Records whose ID variant was already lost cannot be recovered automatically.
+
+Older versions of this crate cannot safely use new files. They accept the file,
+ignore `task_id_v1` and assign random IDs, and a write from an older version
+drops the column. Upgrade every reader and writer of a file before any of them
+creates a new-format file, and do not roll back by pointing an older version at
+such a file.
+
 ### File flushing and retries
 
 ```mermaid
