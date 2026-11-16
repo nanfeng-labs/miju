@@ -4,6 +4,8 @@
 
 ## [0.3.0](https://github.com/nanfeng-labs/miju/releases/tag/v0.3.0)
 
+- bump: to v0.3.0 ([#146](https://github.com/nanfeng-labs/miju/pull/146))
+
 ### Upgrading to v0.3.0
 
 This release changes stored data formats and several error and readiness contracts. Check the following before upgrading.
