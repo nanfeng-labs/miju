@@ -37,8 +37,8 @@ async fn main() -> Result<(), BoxDynError> {
         .backend(backend)
         // Keep the concurrency permit for the whole task, including retries.
         .concurrency(2)
-        // Panic capture boxes its AbortError. This policy does not unpack it,
-        // so each task panics once, retries once, then reports the final error.
+        // Panic capture reports a boxed AbortError, which this policy recognises,
+        // so each task panics once and reports its error without a retry.
         .retry(RetryPolicy::retries(1))
         // Poll the handler inside this layer so unwinding panics are caught here.
         .catch_panic()

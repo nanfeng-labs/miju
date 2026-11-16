@@ -29,7 +29,7 @@ Use the package names and any `--bin` arguments listed under [runtime behavior](
 
 | Example | Scenario |
 | --- | --- |
-| [`catch-panic`](catch-panic) | Capture deliberate email-task panics, retry each task once, and observe worker error events. |
+| [`catch-panic`](catch-panic) | Capture deliberate email-task panics, show that the retry policy does not retry the resulting `AbortError`, and observe worker error events. |
 | [`graceful-shutdown`](graceful-shutdown) | Respond to Ctrl+C, finish a batch, and simulate saving task state before shutdown. |
 | [`long-running`](long-running) | Run concurrent data exports with `TaskRunner`, collect their results, and drain active work on shutdown. |
 | [`retries`](retries) | Apply three retries with exponential backoff to ordinary errors while excluding `AbortError`. |
@@ -66,7 +66,7 @@ Use the package names and any `--bin` arguments listed under [runtime behavior](
 - **`deps-injection`** exits after ten tasks.
 - **`task-context`** requests cancellation after three seconds, waits for the worker to record `Killed`, then stops automatically. The cancellation produces an expected task error event; the rest of the cancelled handler never runs.
 - **`worker-context`** observes one task for five seconds, then stops and waits for the external observer to finish.
-- **`catch-panic`** runs until Ctrl+C. Each of its two tasks panics twice: panic capture boxes the error, and this retry policy does not unpack it. The output contains four panic-hook messages and two final worker errors; no email is sent.
+- **`catch-panic`** runs until Ctrl+C. Each of its two tasks panics once: panic capture reports an `AbortError`, which the retry policy does not retry. The output contains two panic-hook messages and two worker errors; no email is sent.
 - **`graceful-shutdown`** runs until Ctrl+C. It checks for shutdown between five-second batches, then spends five seconds simulating a checkpoint without writing data.
 - **`long-running`** simulates three concurrent exports lasting eight to twelve seconds. The worker stays running until Ctrl+C, which waits for any active export to finish and its results to be collected.
 - **`retries`** processes three addresses: one succeeds once, one fails on four attempts, and one aborts on its first attempt. Errors are intentional. Backoff uses a one-second minimum, a five-second maximum, and jitter; press Ctrl+C after the attempts finish to stop the worker.
