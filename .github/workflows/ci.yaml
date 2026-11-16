@@ -25,7 +25,38 @@ jobs:
         with:
           tool: cargo-hack
       - name: cargo-hack
-        run: cargo hack check --workspace --locked
+        # Build each feature on its own so a feature that only compiles alongside
+        # others is caught. The workspace checks above already deny warnings.
+        env:
+          CARGO_BUILD_WARNINGS: warn
+        run: cargo hack check --workspace --each-feature --locked
+
+  msrv:
+    name: cargo-msrv (${{ matrix.toolchain }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Library crates on the declared rust-version, one feature at a time.
+          # ulid, uuid, sentry and full document a Rust 1.89 requirement.
+          - toolchain: "1.85.0"
+            args: --each-feature --exclude-features ulid,uuid,sentry,full
+          - toolchain: "1.89.0"
+            args: --all-features
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          toolchain: ${{ matrix.toolchain }}
+      - name: install-cargo-hack
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-hack
+      - name: cargo-hack
+        run: >-
+          cargo hack check --locked ${{ matrix.args }}
+          -p miju-core -p miju -p miju-workflow -p miju-codec -p miju-file-storage
 
   test:
     name: cargo-test
