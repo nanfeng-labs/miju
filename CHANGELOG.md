@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- fix(core): return typed errors for missing persistence task IDs ([#132](https://github.com/nanfeng-labs/miju/pull/132))
 - fix: keep the workspace warning-free on Rust 1.100 ([#136](https://github.com/nanfeng-labs/miju/pull/136))
 - ci: append full changelog links to releases ([#133](https://github.com/nanfeng-labs/miju/pull/133))
 - fix(core): wake shared handles after management operations ([#131](https://github.com/nanfeng-labs/miju/pull/131))
