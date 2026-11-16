@@ -117,6 +117,13 @@ impl Filter {
     ///
     /// The `u64` result represents the full range of positive `u32` page numbers
     /// and `u32` page sizes.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `page` is 0 and overflow checks are enabled, as in debug
+    /// builds. Without overflow checks the page number wraps and the offset lies
+    /// far beyond any stored task. Validate a page number taken from user input,
+    /// for example a deserialized filter, before calling this.
     #[must_use]
     pub fn offset(&self) -> u64 {
         u64::from(self.page - 1) * u64::from(self.page_size.unwrap_or(DEFAULT_PAGE_SIZE))

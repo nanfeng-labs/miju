@@ -1,5 +1,7 @@
 //! MessagePack encoding through Serde, with structs encoded as positional arrays.
 //!
+//! Decoding returns the first value and accepts trailing bytes.
+//!
 //! ```rust
 //! use miju_codec::msgpack::{MsgPackCodec, MsgPackCodecError};
 //! use miju_core::backend::codec::Codec;
@@ -72,6 +74,15 @@ mod tests {
     fn test_decode_invalid_input() {
         let decoded: Result<TestStruct, _> = MsgPackCodec.decode(&vec![]);
         assert!(matches!(decoded, Err(MsgPackCodecError::DecodeError(_))));
+    }
+
+    #[test]
+    fn test_decode_accepts_trailing_bytes() {
+        let mut encoded = MsgPackCodec.encode(&42_u32).unwrap();
+        assert_eq!(encoded, vec![42]);
+        encoded.extend_from_slice(&[0xff, 0xff]);
+        let decoded: u32 = MsgPackCodec.decode(&encoded).unwrap();
+        assert_eq!(decoded, 42);
     }
 
     #[test]
