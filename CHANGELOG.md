@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- fix(core): reserve memory sink readiness across clones ([#135](https://github.com/nanfeng-labs/miju/pull/135))
 - fix(core): keep shared waiters per polling operation ([#134](https://github.com/nanfeng-labs/miju/pull/134))
 - fix(core): return typed errors for missing persistence task IDs ([#132](https://github.com/nanfeng-labs/miju/pull/132))
 - fix: keep the workspace warning-free on Rust 1.100 ([#136](https://github.com/nanfeng-labs/miju/pull/136))
