@@ -17,6 +17,21 @@ use crate::{backend::*, task::Task, worker::context::WorkerContext};
 /// This is useful for backends where pushing a task should immediately cause
 /// a worker that is waiting for work to poll the backend again.
 ///
+/// # Clones and notification timing
+///
+/// The stored waker belongs to each instance, and cloning copies the waker held
+/// at that moment. A clone made before the worker first polls holds no waker,
+/// so pushes through it do not wake the worker; a clone also does not follow
+/// later waker changes recorded by the instance the worker polls. In the common
+/// setup where producers keep clones taken before the worker is built, their
+/// pushes rely on the wrapped backend's own notification.
+///
+/// The wake fires when the wrapped sink accepts the task in `start_send`. For a
+/// sink that makes tasks visible only later, such as on flush, the worker can
+/// poll before the task is visible and wait again without a further wake. A
+/// backend that must reliably wake waiting workers should notify them from its
+/// own source once a task becomes visible.
+///
 /// # Examples
 ///
 /// ```rust

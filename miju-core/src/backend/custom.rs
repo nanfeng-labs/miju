@@ -87,6 +87,20 @@
 //! }
 //! ```
 //!
+//! ## Fetcher items and worker lifetime
+//!
+//! The fetcher returns a stream of `Result<Option<Task>, E>`. `Ok(Some(task))`
+//! delivers a task. `Ok(None)` ends the backend's task stream exactly like the
+//! end of the fetcher stream, so the worker treats it as the end of its input
+//! and stops; tasks pushed afterwards stay in the database until another worker
+//! runs. The example above returns `Ok(None)` once its queue is empty, which
+//! suits a worker that drains existing work and exits.
+//!
+//! A long-lived worker needs a fetcher that stays `Pending` while no task is
+//! available and wakes the polling task when one arrives, for example by
+//! reading from a channel that the sink writes to. Returning `Pending` without
+//! arranging such a wake-up leaves the worker waiting indefinitely.
+//!
 //! ## Features
 //!
 //! - **Custom Fetcher**: Define how jobs are fetched from your storage.
@@ -270,6 +284,10 @@ impl<Args, DB, Fetch, Sink, Config> BackendBuilder<Args, DB, Fetch, Sink, Config
     }
 
     /// The fetcher function to retrieve tasks from the database
+    ///
+    /// The returned stream yields `Result<Option<Task>, E>`; `Ok(None)` ends the
+    /// worker's input just like the end of the stream. See the
+    /// [module documentation](self) for long-lived workers.
     #[must_use]
     pub fn fetcher<F: Fn(&mut DB, &Config, &WorkerContext) -> Fetch + Send + Sync + 'static>(
         mut self,
