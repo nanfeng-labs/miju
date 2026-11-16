@@ -6,6 +6,15 @@
 //! A task rejected because its ID is already running was not executed, so it is
 //! not acknowledged.
 //!
+//! # Acknowledgement errors
+//!
+//! Acknowledgement runs after the handler and outside the layer that records the
+//! task status. When [`Acknowledge::ack`] fails, the service returns the
+//! acknowledgement error instead of the handler's result: the worker reports the
+//! acknowledgement error, and a handler error is not reported separately. The
+//! status already recorded from the handler's outcome, such as `Done` or
+//! `Failed`, is not changed.
+//!
 //! # Example
 //!
 //! ```rust

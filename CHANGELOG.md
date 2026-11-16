@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - fix: clear the remaining docsrs and rustdoc warnings ([#145](https://github.com/nanfeng-labs/miju/pull/145))
+- docs: document Filter page 0, ack error precedence and MsgPack trailing bytes ([#144](https://github.com/nanfeng-labs/miju/pull/144))
 - fix(file-storage): keep CSV task ID variants across reopening ([#143](https://github.com/nanfeng-labs/miju/pull/143))
 - fix(file-storage): wait through lock contention in wait\_for ([#142](https://github.com/nanfeng-labs/miju/pull/142))
 - docs: explain executor ownership with parallelize, timeout and retry ([#141](https://github.com/nanfeng-labs/miju/pull/141))
