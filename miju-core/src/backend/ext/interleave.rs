@@ -18,6 +18,21 @@ use crate::{backend::*, task::Task, worker::context::WorkerContext};
 /// isn't itself a `Backend` — e.g. a broadcast channel, webhook listener, or
 /// manually-fed queue — without needing to implement the full `Backend` trait
 /// for that source.
+///
+/// # Readiness and lifetime
+///
+/// Readiness comes from the wrapped backend alone: [`Backend::poll_ready`]
+/// delegates to it, and the worker asks for tasks only once it is ready. If the
+/// wrapped backend is not ready, for example an empty backend that waits for its
+/// own work before reporting readiness, tasks already available on the external
+/// stream wait as well.
+///
+/// The end of the wrapped backend's stream ends the worker's input, even while
+/// the external stream is still open; items sent to the external source after
+/// that are not handled. The end of the external stream does not stop the
+/// worker. To serve the external source independently, wrap a backend whose
+/// readiness does not depend on its own queue and whose stream does not end
+/// while the external source is in use.
 #[derive(Debug, Clone)]
 pub struct Interleave<B, S> {
     pub(super) backend: B,
