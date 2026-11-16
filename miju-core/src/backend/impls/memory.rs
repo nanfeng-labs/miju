@@ -220,6 +220,13 @@ type ArcIdempotencySet = Arc<SyncMutex<HashSet<String>>>;
 /// The underlying sink mutex is not held between calls. Direct access to the
 /// sink passed to [`Self::new`] must coordinate readiness with these handles.
 ///
+/// A task that polls one handle ready must send through, flush, close, or drop
+/// that same handle before it awaits a send on another clone. Otherwise the
+/// second send waits for the first handle's permit, which that task can no
+/// longer release. [`SinkExt::send`], [`SinkExt::feed`], and
+/// [`SinkExt::send_all`] reserve and use readiness on one handle, so they
+/// release it before returning.
+///
 /// Lock contention during `start_send` returns [`MemoryStorageError::Other`]
 /// without submitting the task. Idempotency keys recorded by a handle stay
 /// provisional until its next successful flush: contention or an error from the
