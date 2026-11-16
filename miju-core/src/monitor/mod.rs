@@ -790,10 +790,7 @@ mod tests {
                     "Encountered error in {} with {e:?} for attempt {restarts}",
                     worker.name()
                 );
-                if restarts < 3 {
-                    return true;
-                }
-                false
+                restarts < 3
             })
             .on_event(|wrk, e| {
                 println!("{}: {e:?}", wrk.name());
