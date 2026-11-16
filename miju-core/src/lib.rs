@@ -306,10 +306,7 @@
 //!
 //! All features are opt-in. Enable `docsrs` when building documentation to
 //! generate the feature reference from the package manifest.
-#![cfg_attr(
-    feature = "docsrs",
-    cfg_attr(doc, doc = ::document_features::document_features!())
-)]
+#![cfg_attr(feature = "docsrs", doc = ::document_features::document_features!())]
 //!
 //! # Development
 //!
