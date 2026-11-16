@@ -2,6 +2,65 @@
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/nanfeng-labs/miju/releases/tag/v0.3.0)
+
+- bump: to v0.3.0 ([#146](https://github.com/nanfeng-labs/miju/pull/146))
+
+### Upgrading to v0.3.0
+
+This release changes stored data formats and several error and readiness contracts. Check the following before upgrading.
+
+#### Stored formats that older versions cannot read
+
+- **Workflow metadata.** Graph dependencies and root IDs, filter collectors and repeater predecessors now store task IDs as tagged JSON with an encoding marker, so ID variants and commas round-trip. New readers still read marker-free legacy metadata, with its existing ambiguity. Older `miju-workflow` versions cannot read the new metadata. Drain or separate queues before mixing versions, and do not roll back across this boundary. ([#110](https://github.com/nanfeng-labs/miju/pull/110))
+- **CSV file storage task IDs.** New and empty CSV files store task IDs in a `task_id_v1` column that preserves integer, string and typed variants. Older versions accept such files, ignore the column and assign random IDs, and a write from an older version drops it. Upgrade every reader and writer of a file before any of them creates a new-format file. Existing files keep their legacy format and limits; they are not migrated. ([#143](https://github.com/nanfeng-labs/miju/pull/143))
+
+#### Error and behaviour changes
+
+- **Task registration.** A duplicate or missing task ID now returns a typed `TaskLifecycleError` before the handler runs instead of panicking, and a rejected duplicate is not acknowledged or persisted. `LifecycleService`'s associated `Future` type is now an `Either`. ([#113](https://github.com/nanfeng-labs/miju/pull/113))
+- **`FileStorage::wait_for`.** Transient lock contention no longer yields `WouldBlockLock`; the query waits and retries. A poisoned lock yields the new `FileStorageError::PoisonedLock` once and ends the query. Other operations keep their lock classification. ([#142](https://github.com/nanfeng-labs/miju/pull/142))
+- **`MemorySink` readiness.** A successful `poll_ready` reserves the next send for that handle across its clones until it sends, flushes, closes or drops. Code that polls one clone ready and then sends through another must release the first handle first. ([#135](https://github.com/nanfeng-labs/miju/pull/135))
+- **TaskPersist.** A task without an ID now fails with `MissingTaskId` instead of panicking. ([#132](https://github.com/nanfeng-labs/miju/pull/132))
+- **Extraction.** Missing task extraction data returns an error instead of panicking. ([#108](https://github.com/nanfeng-labs/miju/pull/108))
+- **Memory queues.** A worker's close flushes instead of closing the shared sender, so pushes after the only worker stops succeed and stay queued instead of failing. ([#118](https://github.com/nanfeng-labs/miju/pull/118))
+- **Shared backends.** Closing one handle no longer ends the backend or signals end of input to workers; stop workers explicitly. Building middleware waits for the backend lock instead of panicking under contention. ([#120](https://github.com/nanfeng-labs/miju/pull/120)) ([#124](https://github.com/nanfeng-labs/miju/pull/124))
+- **Memory idempotency keys.** Keys of failed sends are released, so a retry can reuse them. A sink that stores a task and still reports an error stores the retry again unless it deduplicates. ([#122](https://github.com/nanfeng-labs/miju/pull/122))
+- **File storage locks and reopening.** Under contention, `flush` and pushes may wait briefly for a clone's write instead of returning `WouldBlockLock`. Reopening a file resumes only unfinished tasks; records with a stored result, successful or failed, are not delivered again. ([#123](https://github.com/nanfeng-labs/miju/pull/123)) ([#126](https://github.com/nanfeng-labs/miju/pull/126))
+- **`prometheus` feature.** It no longer pulls in `metrics-exporter-prometheus`; applications that use the exporter declare it themselves, as the module docs already describe. ([#136](https://github.com/nanfeng-labs/miju/pull/136))
+
+### Features
+
+- `miju` gains a `sleep` feature that forwards to `miju-core/sleep`, enabling shutdown timeouts, interval and backoff polling, and persistence through the facade. It is included in `full`. ([#127](https://github.com/nanfeng-labs/miju/pull/127))
+
+### Fixes
+
+- **Workers and lifecycle:** keep worker errors during forced shutdown, make `stop` and `kill` repeatable, notify every shutdown waiter and worker, finalize worker state after execution teardown, and track running tasks by `TaskId` rather than its text. ([#107](https://github.com/nanfeng-labs/miju/pull/107)) ([#114](https://github.com/nanfeng-labs/miju/pull/114)) ([#115](https://github.com/nanfeng-labs/miju/pull/115)) ([#116](https://github.com/nanfeng-labs/miju/pull/116)) ([#130](https://github.com/nanfeng-labs/miju/pull/130))
+- **Circuit breaker:** keep readiness until dispatch, and run calls admitted before the circuit opened. ([#111](https://github.com/nanfeng-labs/miju/pull/111)) ([#129](https://github.com/nanfeng-labs/miju/pull/129))
+- **Shared backends:** relay backend notifications to every handle, keep shared backends open when one handle closes, wait for the shared lock when building middleware, wake handles after management operations, and keep one waiter per polling operation. ([#112](https://github.com/nanfeng-labs/miju/pull/112)) ([#120](https://github.com/nanfeng-labs/miju/pull/120)) ([#124](https://github.com/nanfeng-labs/miju/pull/124)) ([#131](https://github.com/nanfeng-labs/miju/pull/131)) ([#134](https://github.com/nanfeng-labs/miju/pull/134))
+- **Memory backend:** keep queues open after worker shutdown, return errors for repeated failed sends and release their idempotency keys. ([#118](https://github.com/nanfeng-labs/miju/pull/118)) ([#119](https://github.com/nanfeng-labs/miju/pull/119)) ([#122](https://github.com/nanfeng-labs/miju/pull/122))
+- **Persistence:** maintain persistence while buffered tasks drain. ([#117](https://github.com/nanfeng-labs/miju/pull/117))
+- **Adapters:** remember exhausted adapter inputs. ([#109](https://github.com/nanfeng-labs/miju/pull/109))
+- **File storage:** return errors for repeated shared-store send failures, wait for clone locks when flushing, and skip finished records when delivering tasks. ([#121](https://github.com/nanfeng-labs/miju/pull/121)) ([#123](https://github.com/nanfeng-labs/miju/pull/123)) ([#126](https://github.com/nanfeng-labs/miju/pull/126))
+- **Workflows:** run graph joins in the deepest predecessor's task. ([#125](https://github.com/nanfeng-labs/miju/pull/125))
+
+### Documentation
+
+- Explain how an idle `Persisted` driver fetches again. ([#128](https://github.com/nanfeng-labs/miju/pull/128))
+- Align the graph context and catch-panic guides with current behaviour. ([#137](https://github.com/nanfeng-labs/miju/pull/137))
+- Document `CustomBackend` fetcher, `Interleave` and `WakeOnPush` contracts, and executor ownership with `parallelize`, `timeout` and `retry`. ([#140](https://github.com/nanfeng-labs/miju/pull/140)) ([#141](https://github.com/nanfeng-labs/miju/pull/141))
+- Document `Filter` page 0, acknowledgement error precedence and MsgPack trailing bytes. ([#144](https://github.com/nanfeng-labs/miju/pull/144))
+
+### CI and tooling
+
+- Append full changelog links to releases, check each feature and the declared rust-version (1.85, and 1.89 for typed IDs and Sentry), and limit the crates.io token to the publish steps. ([#133](https://github.com/nanfeng-labs/miju/pull/133)) ([#138](https://github.com/nanfeng-labs/miju/pull/138)) ([#139](https://github.com/nanfeng-labs/miju/pull/139))
+- Stay warning-free on Rust 1.100. ([#136](https://github.com/nanfeng-labs/miju/pull/136)) ([#145](https://github.com/nanfeng-labs/miju/pull/145))
+
+### Dependencies
+
+- Update the workspace lockfile to sentry, sentry-tower and sentry-tracing 0.49.5. ([#104](https://github.com/nanfeng-labs/miju/pull/104)) ([#105](https://github.com/nanfeng-labs/miju/pull/105)) ([#106](https://github.com/nanfeng-labs/miju/pull/106))
+
+#### PR breakdown
+
 - fix: clear the remaining docsrs and rustdoc warnings ([#145](https://github.com/nanfeng-labs/miju/pull/145))
 - docs: document Filter page 0, ack error precedence and MsgPack trailing bytes ([#144](https://github.com/nanfeng-labs/miju/pull/144))
 - fix(file-storage): keep CSV task ID variants across reopening ([#143](https://github.com/nanfeng-labs/miju/pull/143))
@@ -42,9 +101,7 @@
 - fix(core): return errors for repeated failed memory sends ([#119](https://github.com/nanfeng-labs/miju/pull/119))
 - fix(core): keep memory queues open after worker shutdown ([#118](https://github.com/nanfeng-labs/miju/pull/118))
 - deps(deps): bump sentry-tracing from 0.49.3 to 0.49.5 ([#106](https://github.com/nanfeng-labs/miju/pull/106))
-
 - deps(deps): bump sentry-tower from 0.49.3 to 0.49.5 ([#105](https://github.com/nanfeng-labs/miju/pull/105))
-
 - deps(deps): bump sentry from 0.49.3 to 0.49.5 ([#104](https://github.com/nanfeng-labs/miju/pull/104))
 
 ## [0.2.1](https://github.com/nanfeng-labs/miju/releases/tag/v0.2.1)
