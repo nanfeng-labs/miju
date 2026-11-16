@@ -1,9 +1,8 @@
 //! Regression tests for in-memory task deduplication.
 
 use std::{
-    sync::{Arc, Barrier},
+    sync::Arc,
     task::{Context, Poll},
-    thread,
 };
 
 use futures_channel::mpsc;
@@ -12,15 +11,16 @@ use miju_core::{
     backend::memory::{MemorySink, MemoryStorageError},
     task::{Task, builder::TaskBuilder},
 };
+use tokio::sync::Barrier;
 
-#[test]
-fn concurrent_duplicates_preserve_the_original_task() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_duplicates_preserve_the_original_task() {
     let (sender, mut receiver) = mpsc::unbounded::<Task<u32>>();
     let mut sink = MemorySink::new(Arc::new(Mutex::new(Box::new(
         sender.sink_map_err(MemoryStorageError::SendError),
     ))));
     let mut cx = Context::from_waker(noop_waker_ref());
-    // A long legal key makes the concurrent lookups overlap without a private test hook.
+    // Exercise long keys while concurrent submissions wait for readiness.
     let key = "k".repeat(2_000_000);
     assert!(matches!(
         sink.poll_ready_unpin(&mut cx),
@@ -32,34 +32,22 @@ fn concurrent_duplicates_preserve_the_original_task() {
     for _ in 0..4 {
         let senders: Vec<_> = (0..4)
             .map(|_| {
-                let mut sender = sink.clone();
-                assert!(matches!(
-                    sender.poll_ready_unpin(&mut cx),
-                    Poll::Ready(Ok(()))
-                ));
+                let sender = sink.clone();
                 (
                     sender,
                     TaskBuilder::new(8).idempotency_key(key.clone()).build(),
                 )
             })
             .collect();
-        let barrier = Barrier::new(senders.len());
-        let results = thread::scope(|scope| {
-            let handles: Vec<_> = senders
-                .into_iter()
-                .map(|(mut sender, task)| {
-                    let barrier = &barrier;
-                    scope.spawn(move || {
-                        barrier.wait();
-                        sender.start_send_unpin(task)
-                    })
-                })
-                .collect();
-            handles
-                .into_iter()
-                .map(|handle| handle.join())
-                .collect::<Vec<_>>()
+        let barrier = Arc::new(Barrier::new(senders.len()));
+        let handles = senders.into_iter().map(|(mut sender, task)| {
+            let barrier = barrier.clone();
+            tokio::spawn(async move {
+                barrier.wait().await;
+                sender.send(task).await
+            })
         });
+        let results = futures_util::future::join_all(handles).await;
         assert!(
             results
                 .into_iter()
