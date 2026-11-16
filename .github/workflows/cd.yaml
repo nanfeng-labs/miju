@@ -25,8 +25,8 @@ jobs:
     concurrency:
       group: crates-io-publish
       cancel-in-progress: false
-    env:
-      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+    # CARGO_REGISTRY_TOKEN is set only on the publish steps, so checkout,
+    # toolchain setup and version validation never see it.
     steps:
       - uses: actions/checkout@v7
         with:
@@ -91,18 +91,28 @@ jobs:
           PY
       - name: publish miju-core
         if: steps.versions.outputs.miju_core == 'pending'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: cargo publish --registry crates-io --locked -p miju-core
       - name: publish miju-codec
         if: steps.versions.outputs.miju_codec == 'pending'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: cargo publish --registry crates-io --locked -p miju-codec
       - name: publish miju-file-storage
         if: steps.versions.outputs.miju_file_storage == 'pending'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: cargo publish --registry crates-io --locked -p miju-file-storage
       - name: publish miju-workflow
         if: steps.versions.outputs.miju_workflow == 'pending'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: cargo publish --registry crates-io --locked -p miju-workflow
       - name: publish miju
         if: steps.versions.outputs.miju == 'pending'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: cargo publish --registry crates-io --locked -p miju
 
   full-changelog:
