@@ -71,6 +71,11 @@ as strings, and calls `set_result` using the internal line identifier.
 `WaitForCompletion` reads shared in-memory records rather than reopening the file:
 
 - `wait_for` polls at 100 ms intervals and can keep waiting for an unknown ID.
+  While a clone holds the records' lock, it keeps waiting and retries on the
+  next interval instead of yielding `WouldBlockLock`. If a panic poisoned that
+  lock, it yields `PoisonedLock` once and ends. A stored result that cannot be
+  decoded as the requested type yields a `Json` error for that record, and the
+  query continues with the other IDs.
 - `check_status` omits unknown IDs, reports records without results as `Pending`,
   and classifies stored successful or failed results as `Done` or `Failed`.
   These states do not track the worker's live `Running` state.
