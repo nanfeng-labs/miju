@@ -363,7 +363,7 @@ assert_eq!(dependencies.len(), 1);
 
 元数据键使用 `miju_workflow.graph.` 前缀。提取需要 `current_node` 和 `current_position`；缺失的可选字段使用空值或默认值。依赖查询会省略没有记录任务 ID 的节点，不检查完成情况。`new` 从节点零开始，并设置 `is_initial = true`；派生的 `Default` 则将该标志设为 false。两者都不验证节点索引，也不选择图的实际入口节点。
 
-缺失或格式错误的 `is_initial` 元数据会被视为 true。注入可能在返回错误前完成部分写入，而重复的 `is_initial` 键目前会 panic。请向新的元数据存储注入。节点与任务映射使用逗号分隔且不转义，因此包含逗号的任务 ID 无法可靠往返转换。
+缺失或格式错误的 `is_initial` 元数据会被视为 true。注入时，节点与任务映射以及根任务 ID 以带标签的 JSON 写入，并记录 `miju_workflow.graph.task_id_encoding = 1`，因此 ID 变体和逗号都能往返保留。没有该标记的元数据按旧格式读取：逗号分隔的 `node=task_id` 对，以及根 ID 的显示文本，其中 ID 变体与逗号仍有歧义。遇到未知编码或缺少相应的 typed ID feature 时返回错误；旧版本的 `miju-workflow` 无法读取带标签的字段。注入不是原子操作：已存在的键会在前面字段写入后返回 `GraphFlowContextError::DuplicateEntry`，因此请向新的元数据存储注入。
 
 `graph::response::GraphNodeResponse` 表示入口分发、节点分发、下一步骤入队、依赖等待和完成。其值携带 JSON 结果以及节点与任务映射。`graph::error` 提供 `GraphFlowError` 和 `GraphServiceError`，包括包装的底层错误。`RootGraphService` 使用这些记录报告节点执行与后续任务调度。
 

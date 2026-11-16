@@ -511,10 +511,15 @@ check completion. `new` starts at node zero with `is_initial = true`, while
 derived `Default` sets that flag to false. Neither validates node indices or
 selects a graph's actual entry node.
 
-Missing or malformed `is_initial` metadata becomes true. Injection can partially
-write before returning an error, and a duplicate `is_initial` key currently
-panics. Inject into a fresh metadata store. Node/task mappings are comma-separated
-without escaping, so task IDs containing commas cannot round-trip reliably.
+Missing or malformed `is_initial` metadata becomes true. Injection writes the
+node/task mapping and root task ID as tagged JSON and records
+`miju_workflow.graph.task_id_encoding = 1`, so ID variants and commas round-trip.
+Metadata without that marker is read in the legacy format: comma-separated
+`node=task_id` pairs and a displayed root ID, where ID variants and commas remain
+ambiguous. Unknown encodings or unavailable typed ID features return an error, and
+older `miju-workflow` versions cannot read the tagged fields. Injection is not
+atomic: an existing key returns `GraphFlowContextError::DuplicateEntry` after
+earlier fields have been written, so inject into a fresh metadata store.
 
 `graph::response::GraphNodeResponse` represents entry fan-out, node fan-out,
 next-step enqueueing, waiting dependencies and completion. Its values carry JSON
