@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- fix(file-storage): wait through lock contention in wait\_for ([#142](https://github.com/nanfeng-labs/miju/pull/142))
 - docs: explain executor ownership with parallelize, timeout and retry ([#141](https://github.com/nanfeng-labs/miju/pull/141))
 - docs(core): document backend wrapper and custom fetcher contracts ([#140](https://github.com/nanfeng-labs/miju/pull/140))
 - ci: limit the registry token to publish steps ([#139](https://github.com/nanfeng-labs/miju/pull/139))
