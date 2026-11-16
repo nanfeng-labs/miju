@@ -616,8 +616,9 @@ where
 
 /// A CSV adapter for serializing and deserializing tasks.
 ///
-/// New files store results in a single versioned column. Existing files
-/// without that column retain the legacy result representation and its limits.
+/// New files store results and task IDs in versioned columns, so result types
+/// and ID variants survive reopening. Existing files keep the representation
+/// their header selects, with its known limits; they are not upgraded.
 #[derive(Debug, Clone, Default)]
 pub struct CsvAdapter {
     /// Column names, in BTreeMap (alphabetical) order.
@@ -628,20 +629,35 @@ pub struct CsvAdapter {
 /// A `FileStorage` using `CsvAdapter` for line encoding.
 pub type CsvStorage<Args> = FileStorage<Args, CsvAdapter>;
 
+#[derive(Serialize, Deserialize)]
+enum CsvTaskId {
+    Int(u64),
+    String(String),
+    Typed(String),
+}
+
 impl CsvAdapter {
-    fn decode_result(encoded: &str) -> io::Result<Option<Value>> {
+    fn encode_cell<T: Serialize + ?Sized>(value: &T) -> io::Result<String> {
+        Ok(serde_json::to_vec(value)?
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect())
+    }
+
+    fn decode_cell<T: DeserializeOwned>(encoded: &str, message: &str) -> io::Result<T> {
         if !encoded.is_ascii() || encoded.len() % 2 != 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "invalid CSV result",
-            ));
+            return Err(io::Error::new(io::ErrorKind::InvalidData, message));
         }
         let bytes = (0..encoded.len())
             .step_by(2)
             .map(|i| u8::from_str_radix(&encoded[i..i + 2], 16))
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        let mut values: Vec<Value> = serde_json::from_slice(&bytes)?;
+        Ok(serde_json::from_slice(&bytes)?)
+    }
+
+    fn decode_result(encoded: &str) -> io::Result<Option<Value>> {
+        let mut values: Vec<Value> = Self::decode_cell(encoded, "invalid CSV result")?;
         if values.len() > 1 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -651,11 +667,82 @@ impl CsvAdapter {
         Ok(values.pop())
     }
 
-    fn legacy_line(line: &BTreeMap<String, String>) -> io::Result<BTreeMap<String, String>> {
+    fn encode_id(id: &TaskId) -> io::Result<String> {
+        let stored = match id {
+            TaskId::Int(value) => CsvTaskId::Int(*value),
+            TaskId::String(value) => CsvTaskId::String(value.clone()),
+            _ => CsvTaskId::Typed(id.to_string()),
+        };
+        Self::encode_cell(&stored)
+    }
+
+    fn decode_id(encoded: &str) -> io::Result<TaskId> {
+        let stored = Self::decode_cell::<CsvTaskId>(encoded, "invalid CSV task ID")
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        match stored {
+            CsvTaskId::Int(value) => Ok(TaskId::from_int(value)),
+            CsvTaskId::String(value) => Ok(TaskId::from_string(value)),
+            CsvTaskId::Typed(value) => {
+                let id = value
+                    .parse()
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                if matches!(id, TaskId::Int(_) | TaskId::String(_)) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "unsupported typed CSV task ID",
+                    ));
+                }
+                Ok(id)
+            }
+        }
+    }
+
+    fn versioned_id<'a>(columns: impl Iterator<Item = &'a str>) -> io::Result<bool> {
+        let mut legacy = false;
+        let mut versioned = false;
+        for column in columns {
+            legacy |= column == "task_id";
+            if column.starts_with("task_id_v") {
+                if column != "task_id_v1" || versioned {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "unsupported CSV task ID encoding",
+                    ));
+                }
+                versioned = true;
+            }
+        }
+        if legacy && versioned {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "mixed CSV task ID encodings",
+            ));
+        }
+        Ok(versioned)
+    }
+
+    fn line_for_header(
+        line: &BTreeMap<String, String>,
+        columns: &[String],
+    ) -> io::Result<BTreeMap<String, String>> {
         let mut line = line.clone();
-        if let Some(encoded) = line.remove("result_v1") {
-            let result = Self::decode_result(&encoded)?.unwrap_or(Value::Null);
-            line.extend(util::from_value(Some("result"), &result));
+        let versioned = Self::versioned_id(columns.iter().map(String::as_str))?;
+        if !versioned {
+            if let Some(encoded) = line.remove("task_id_v1") {
+                line.insert("task_id".to_owned(), Self::decode_id(&encoded)?.to_string());
+            }
+        }
+        if Self::versioned_id(line.keys().map(String::as_str))? != versioned {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "CSV task ID encoding does not match header",
+            ));
+        }
+        if !columns.iter().any(|column| column == "result_v1") {
+            if let Some(encoded) = line.remove("result_v1") {
+                let result = Self::decode_result(&encoded)?.unwrap_or(Value::Null);
+                line.extend(util::from_value(Some("result"), &result));
+            }
         }
         Ok(line)
     }
@@ -674,17 +761,15 @@ impl Adapter for CsvAdapter {
             .lock()
             .map_err(|_| io::Error::other("header mutex poisoned"))?;
 
-        // Keep writing loaded legacy files in their existing representation.
-        let legacy;
-        let line = if header
-            .as_ref()
-            .is_some_and(|cols| !cols.iter().any(|col| col == "result_v1"))
-        {
-            legacy = Self::legacy_line(line)?;
-            &legacy
+        // Keep each loaded file's ID and result representations independently.
+        let compatible;
+        let line = if let Some(columns) = header.as_ref() {
+            compatible = Self::line_for_header(line, columns)?;
+            &compatible
         } else {
             line
         };
+        Self::versioned_id(line.keys().map(String::as_str))?;
 
         if header.is_none() {
             let cols: Vec<String> = line.keys().cloned().collect();
@@ -720,6 +805,7 @@ impl Adapter for CsvAdapter {
             )
         })?;
 
+        Self::versioned_id(cols.iter().map(String::as_str))?;
         let map = row
             .split(',')
             .zip(cols.iter())
@@ -754,10 +840,29 @@ impl Adapter for CsvAdapter {
 
         let idempotency_key = line.get("idempotency_key").cloned();
 
-        let task_id = line
-            .get("task_id")
-            .and_then(|s| FromStr::from_str(s).ok())
-            .unwrap_or(TaskId::from_string(RandomId::default()));
+        let versioned_id = Self::versioned_id(line.keys().map(String::as_str))?;
+        let header = self
+            .header
+            .lock()
+            .map_err(|_| io::Error::other("header mutex poisoned"))?;
+        if let Some(columns) = header.as_ref() {
+            if Self::versioned_id(columns.iter().map(String::as_str))? != versioned_id {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "missing or mismatched CSV task ID encoding",
+                ));
+            }
+        }
+        drop(header);
+        let task_id = if versioned_id {
+            Self::decode_id(line.get("task_id_v1").ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "missing CSV task ID")
+            })?)?
+        } else {
+            line.get("task_id")
+                .and_then(|s| FromStr::from_str(s).ok())
+                .unwrap_or(TaskId::from_string(RandomId::default()))
+        };
 
         let ctx = line
             .iter()
@@ -778,17 +883,14 @@ impl Adapter for CsvAdapter {
     fn from_entry(entry: &RawTask) -> Result<Self::Line, Self::Error> {
         let mut line = BTreeMap::new();
 
-        line.insert("task_id".to_owned(), entry.task_id.to_string());
+        line.insert("task_id_v1".to_owned(), Self::encode_id(&entry.task_id)?);
 
         let args = util::from_value(Some("args"), &entry.args);
 
         line.extend(args);
 
         // A zero/one-element array distinguishes pending from a stored JSON null.
-        let result = serde_json::to_vec(entry.result.as_slice())?
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>();
+        let result = Self::encode_cell(entry.result.as_slice())?;
         line.insert("result_v1".to_owned(), result);
 
         if let Some(idempotency_key) = &entry.idempotency_key {
@@ -815,7 +917,10 @@ impl Adapter for CsvAdapter {
                     .map(|s| s.to_owned())
                     .collect();
 
+                let supported = Self::versioned_id(cols.iter().map(String::as_str)).is_ok();
                 *header = Some(cols);
+                // Route invalid headers through deserialize so empty files also fail.
+                return supported;
             }
 
             return true; // this line is the header, skip it
@@ -828,14 +933,8 @@ impl Adapter for CsvAdapter {
         let first = entries.first()?;
 
         let mut line = Self::from_entry(first).ok()?;
-        if self
-            .header
-            .lock()
-            .ok()?
-            .as_ref()
-            .is_some_and(|cols| !cols.iter().any(|col| col == "result_v1"))
-        {
-            line = Self::legacy_line(&line).ok()?;
+        if let Some(columns) = self.header.lock().ok()?.as_ref() {
+            line = Self::line_for_header(&line, columns).ok()?;
         }
 
         let cols: Vec<String> = line.keys().cloned().collect();
