@@ -36,3 +36,9 @@ who = "Codex (AI-assisted review)"
 criteria = "safe-to-deploy"
 delta = "1.28.0 -> 1.29.0"
 notes = "Reviewed the crates.io package delta and traced every added NonNilUuid constructor through the existing Uuid constructors, builders, and timestamp encoders. Their fixed nonzero version bits preserve the NonZeroU128 invariant before each new_unchecked call. Other changes are tests, documentation, release metadata, and the optional wasm RNG dependency version; no new I/O or FFI is introduced. The upstream library tests passed with v1, v3, v4, v5, v6, v7, and v8 enabled (99 tests). The existing 1.28.0 exemption remains the baseline; this is an incremental audit."
+
+[[audits.uuid]]
+who = "Codex (AI-assisted review)"
+criteria = "safe-to-deploy"
+delta = "1.29.0 -> 1.29.2"
+notes = "Reviewed the checksum-verified crates.io package delta. Timestamp arithmetic now uses u128 nanoseconds, checked SystemTime conversion and saturating v7 timestamp advancement; counter precision cannot move the counter backwards. The wasm target conditions extend the existing WebCrypto and RNG paths to wasm64 without changing their buffer bounds or FFI. No unsafe blocks or new I/O are added, and the v4/v5 generation used by miju is unchanged. Other changes are tests, documentation, release metadata, deprecated borsh support and the unstable zerocopy dependency condition. Upstream library tests passed with v1, v3, v4, v5, v6, v7, v8 and serde enabled (139 tests); miju-core state and snapshot tests passed with all features (18 tests). The existing 1.28.0 exemption and 1.28.0 to 1.29.0 audit remain the baseline; this is an incremental audit."
