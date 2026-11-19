@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- feat(workflow): add broadcast workflow with per-worker decisions ([#148](https://github.com/nanfeng-labs/miju/pull/148))
 - deps(deps): bump uuid from 1.29.0 to 1.29.2 ([#147](https://github.com/nanfeng-labs/miju/pull/147))
 
 ## [0.3.0](https://github.com/nanfeng-labs/miju/releases/tag/v0.3.0)

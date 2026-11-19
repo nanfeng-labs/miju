@@ -58,7 +58,7 @@
 
 | Crate | Responsibility |
 | --- | --- |
-| [`miju-workflow`](miju-workflow) | Typed sequential and graph workflow execution. |
+| [`miju-workflow`](miju-workflow) | Typed sequential, graph and broadcast workflow execution. |
 
 ### Data formats and storage
 
@@ -116,7 +116,7 @@ async fn main() -> Result<(), BoxDynError> {
 
 ## Workflows
 
-`miju-workflow` adds sequential flows and dependency graphs. Sequential steps pass typed results to the next step; graph workflows schedule dependent nodes and collect results when branches converge. See the [`miju-workflow` guide](miju-workflow/README.md) for examples and current behavior.
+`miju-workflow` adds sequential flows, dependency graphs and broadcasts. Sequential steps pass typed results to the next step; graph workflows schedule dependent nodes and collect results when branches converge; broadcasts deliver one publication to several workers that each decide whether to handle it. See the [`miju-workflow` guide](miju-workflow/README.md) for examples and current behavior.
 
 ## Examples
 

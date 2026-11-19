@@ -8,13 +8,15 @@
   <a href="https://github.com/nanfeng-labs/miju/blob/main/miju-workflow/README.zh-CN.md">简体中文</a>
 </p>
 
-Build typed sequences and dependency graphs of tasks for miju workers.
+Build typed sequences, dependency graphs and broadcasts of tasks for miju workers.
 
 - **[Sequential workflows](#sequential-workflows):** ordinary nonterminal steps encode their outputs and
   enqueue tasks for the next step. Collection steps filter and map elements or
   reduce them into an accumulator.
 - **[Graph workflows](#graph-workflows):** graph services execute nodes, enqueue outgoing tasks and
   collect stored results when branches converge.
+- **[Broadcast workflows](#broadcast-workflows):** one publication sends a task to
+  every subscriber's queue, and each subscriber's worker decides whether to handle it.
 
 ## Sequential workflows
 
@@ -579,6 +581,118 @@ an array into the handler input. This preserves the supplied order but does not
 fetch results, check readiness or infer which dependency belongs in each position.
 `RootGraphService` performs that dependency lookup before calling the adapter.
 
+## Broadcast workflows
+
+### Broadcast execution
+
+This diagram follows one publication to two subscribers. Each subscriber has
+its own queue and worker; the workers decide independently.
+
+```mermaid
+flowchart LR
+    publish["Publisher::publish(args)<br/>Encode once · publication ID"] -->|Task · fresh TaskId| qa["Queue of subscriber A"]
+    publish -->|Task · fresh TaskId| qb["Queue of subscriber B"]
+    publish -.->|Return| receipt["PublishReceipt<br/>Deliveries · failures"]
+    qa -->|Worker A fetches| wa["when(predicate, handler)<br/>Decode → predicate"]
+    qb -->|Worker B fetches| wb["when(predicate, handler)<br/>Decode → predicate"]
+    wa -->|true| ha["Call handler<br/>Decision::Handled(output)"]
+    wa -.->|false| sa["Decision::Skipped<br/>Handler not called"]
+    wb -->|true| hb["Call handler<br/>Decision::Handled(output)"]
+    wb -.->|false| sb["Decision::Skipped<br/>Handler not called"]
+    classDef source fill:#eff6ff,stroke:#3b82f6,color:#172554
+    classDef action fill:#ecfdf5,stroke:#10b981,color:#064e3b
+    classDef outcome fill:#f5f3ff,stroke:#8b5cf6,color:#2e1065
+    class publish,qa,qb source
+    class wa,wb,ha,hb action
+    class receipt,sa,sb outcome
+```
+
+`BroadcastFlow` declares the subscribers. `in_memory` creates one
+`InMemoryWorkflow` queue and result store per subscriber; `build_with` creates
+backends with a function instead. Give each subscriber's `backend` to its
+worker and wrap the handler with `when`. The predicate receives the decoded
+arguments. When it returns `false`, the handler does not run and the task
+succeeds with `Decision::Skipped`; otherwise the handler's output becomes
+`Decision::Handled`. `When::new` wraps a Tower service instead of a task
+function.
+
+```rust
+use futures_util::StreamExt;
+use miju_core::{backend::WaitForCompletion, error::BoxDynError, worker::builder::WorkerBuilder};
+use miju_workflow::broadcast::{BroadcastFlow, Decision, when};
+
+# #[tokio::main]
+# async fn main() -> Result<(), BoxDynError> {
+let orders = BroadcastFlow::<u32>::new("orders")
+    .subscriber("large")
+    .subscriber("small")
+    .in_memory()?;
+let large = WorkerBuilder::new("large")
+    .backend(orders.backend("large").unwrap())
+    .build(when(|amount: &u32| *amount >= 100, async |amount: u32| amount * 2));
+let small = WorkerBuilder::new("small")
+    .backend(orders.backend("small").unwrap())
+    .build(when(|amount: &u32| *amount < 100, async |amount: u32| amount));
+tokio::spawn(large.run());
+tokio::spawn(small.run());
+
+let receipt = orders.publisher().publish(150).await?;
+assert_eq!(receipt.deliveries.len(), 2);
+
+for (delivery, expected) in receipt.deliveries.iter().zip([Decision::Handled(300), Decision::Skipped]) {
+    let mut backend = orders.backend(&delivery.subscriber).unwrap();
+    let mut results =
+        WaitForCompletion::<Decision<u32>>::wait_for_single(&mut backend, delivery.task_id.clone());
+    let stored = results.next().await.expect("one result per delivery")?;
+    assert_eq!(stored.result, Ok(expected));
+}
+# Ok(())
+# }
+```
+
+One `publish` call encodes the arguments once and sends a task with a fresh
+task ID to every subscriber, in declaration order. `PublishReceipt` carries a
+publication ID and each delivery's task ID. Success means each listed delivery
+was accepted by its backend, not that any handler ran. A failed send is recorded
+in `failures` with its task ID and a `FailureKind`. `NotSent` means nothing was
+enqueued. `Unconfirmed` means the backend took the task before reporting the
+error, so the task may still run; look it up by its task ID before sending it
+again. The other subscribers still receive the task, and nothing is rolled
+back. A publisher does not poll a backend again after it returns an error, and
+reports that subscriber as `Disabled` from then on; a new `publisher()` tries
+it again. Encoding failures return `PublishError::Codec` before anything is
+sent. A broadcast without subscribers returns an empty receipt.
+
+Each subscriber's in-memory queue keeps one publisher's tasks in publication
+order. The predicate sees tasks in the order they reach `when`, which matches
+publication order only with a FIFO backend and middleware that keeps order:
+`filter_async`, for example, can let a later task through first. Tasks published
+before a worker starts wait in its queue. Each `publisher()` owns its own
+handles, so publishers on different threads can publish concurrently; there is
+no total order across concurrent publishers. Handler completion order follows
+the worker's concurrency settings.
+
+The predicate runs inside the worker's service call, on the worker's task. Keep
+it cheap, non-blocking and pure: a blocking predicate occupies a runtime thread,
+and a retry layer runs it again after a handler error. Declining does not emit
+an error event or trigger a retry. Middleware added to the worker still sees
+skipped tasks, so rate limits and timeouts apply to them too. Inside `when`, a
+skipped task releases any capacity the handler service reserved in `poll_ready`,
+such as a shared concurrency permit; this is why the wrapped handler or service
+must be `Clone`. With `catch_panic`, a panic in the predicate or handler fails
+only that delivery; without it, the panic stops that worker. Workers spawned on
+separate tasks do not affect each other or the publisher.
+
+Membership is fixed when the broadcast is built. The in-memory queues are
+process-local, unbounded and not persistent. A subscriber whose worker has
+stopped keeps accumulating tasks while the `Broadcast` or any `Publisher` holds
+its handle. `publish` awaits subscribers one at a time, so a backend that
+applies backpressure delays the subscribers after it. Dropping a `publish`
+future before it completes can leave the task with some subscribers and not
+others, and the receipt is lost. Every subscriber backend
+must use the same wire format, because the publication is encoded with the
+first subscriber's codec.
+
 ## Backends and task submission
 
 ### In-memory results
@@ -664,5 +778,5 @@ inherited readiness limitations, so custom steps must not assume every inner
 service is polled for readiness before its first call.
 
 The low-level `GoTo::DelayFor` transition also attaches scheduling metadata;
-actual delay enforcement depends on the backend. Graph-specific execution limits
-are described above.
+actual delay enforcement depends on the backend. Graph- and broadcast-specific
+execution limits are described above.

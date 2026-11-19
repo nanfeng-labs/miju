@@ -8,10 +8,11 @@
   <a href="https://github.com/nanfeng-labs/miju/blob/main/miju-workflow/README.md">English</a>
 </p>
 
-为 miju worker 构建类型化任务序列和依赖图。
+为 miju worker 构建类型化任务序列、依赖图和广播。
 
 - **[顺序工作流](#顺序工作流)：** 普通的非终止步骤会编码输出，并将下一步骤的任务加入队列；集合步骤负责筛选、映射元素，或将元素归约到累加器。
 - **[图工作流](#图工作流)：** 图服务执行节点、将后续任务入队，并在分支汇合时收集已存储的结果。
+- **[广播工作流](#广播工作流)：** 一次发布向每个订阅者的队列发送一个任务，由各订阅者的 Worker 自行决定是否处理。
 
 ## 顺序工作流
 
@@ -401,6 +402,75 @@ assert_eq!(value, json!(9));
 
 汇合输入绕过 `GraphCodec::decode`：其 JSON 值作为数组反序列化为处理器输入。这会保留提供的顺序，但不会获取结果、检查就绪状态或推断每个位置应属于哪个依赖。`RootGraphService` 在调用适配器前执行依赖查询。
 
+## 广播工作流
+
+### 广播执行
+
+下图跟踪一次发布到两个订阅者的过程。每个订阅者有自己的队列和 Worker，各 Worker 独立决定是否处理。
+
+```mermaid
+flowchart LR
+    publish["Publisher::publish(args)<br/>编码一次 · 发布 ID"] -->|任务 · 新 TaskId| qa["订阅者 A 的队列"]
+    publish -->|任务 · 新 TaskId| qb["订阅者 B 的队列"]
+    publish -.->|返回| receipt["PublishReceipt<br/>投递 · 失败"]
+    qa -->|Worker A 领取| wa["when(谓词, 处理器)<br/>解码 → 谓词"]
+    qb -->|Worker B 领取| wb["when(谓词, 处理器)<br/>解码 → 谓词"]
+    wa -->|true| ha["调用处理器<br/>Decision::Handled(输出)"]
+    wa -.->|false| sa["Decision::Skipped<br/>不调用处理器"]
+    wb -->|true| hb["调用处理器<br/>Decision::Handled(输出)"]
+    wb -.->|false| sb["Decision::Skipped<br/>不调用处理器"]
+    classDef source fill:#eff6ff,stroke:#3b82f6,color:#172554
+    classDef action fill:#ecfdf5,stroke:#10b981,color:#064e3b
+    classDef outcome fill:#f5f3ff,stroke:#8b5cf6,color:#2e1065
+    class publish,qa,qb source
+    class wa,wb,ha,hb action
+    class receipt,sa,sb outcome
+```
+
+`BroadcastFlow` 声明订阅者。`in_memory` 为每个订阅者创建一个 `InMemoryWorkflow` 队列和结果存储；`build_with` 则通过函数创建后端。把每个订阅者的 `backend` 交给对应的 Worker，并用 `when` 包装处理器。谓词接收解码后的参数：返回 `false` 时不调用处理器，任务以 `Decision::Skipped` 成功完成；否则处理器的输出成为 `Decision::Handled`。如需包装 Tower 服务而不是任务函数，使用 `When::new`。
+
+```rust
+use futures_util::StreamExt;
+use miju_core::{backend::WaitForCompletion, error::BoxDynError, worker::builder::WorkerBuilder};
+use miju_workflow::broadcast::{BroadcastFlow, Decision, when};
+
+# #[tokio::main]
+# async fn main() -> Result<(), BoxDynError> {
+let orders = BroadcastFlow::<u32>::new("orders")
+    .subscriber("large")
+    .subscriber("small")
+    .in_memory()?;
+let large = WorkerBuilder::new("large")
+    .backend(orders.backend("large").unwrap())
+    .build(when(|amount: &u32| *amount >= 100, async |amount: u32| amount * 2));
+let small = WorkerBuilder::new("small")
+    .backend(orders.backend("small").unwrap())
+    .build(when(|amount: &u32| *amount < 100, async |amount: u32| amount));
+tokio::spawn(large.run());
+tokio::spawn(small.run());
+
+let receipt = orders.publisher().publish(150).await?;
+assert_eq!(receipt.deliveries.len(), 2);
+
+for (delivery, expected) in receipt.deliveries.iter().zip([Decision::Handled(300), Decision::Skipped]) {
+    let mut backend = orders.backend(&delivery.subscriber).unwrap();
+    let mut results =
+        WaitForCompletion::<Decision<u32>>::wait_for_single(&mut backend, delivery.task_id.clone());
+    let stored = results.next().await.expect("one result per delivery")?;
+    assert_eq!(stored.result, Ok(expected));
+}
+# Ok(())
+# }
+```
+
+一次 `publish` 调用只编码一次参数，并按声明顺序向每个订阅者发送一个带新任务 ID 的任务。`PublishReceipt` 包含发布 ID 和每次投递的任务 ID。成功表示所列投递都已被各自的后端接受，不表示有处理器已经运行。发送失败会连同任务 ID 和 `FailureKind` 记录在 `failures` 中。`NotSent` 表示任务没有入队。`Unconfirmed` 表示后端接收任务之后才报错，任务仍可能执行，重新发送前应先按任务 ID 查询。其他订阅者照常收到任务，且不会回滚。后端报错后，同一个发布者不再轮询它，之后的发布把该订阅者记为 `Disabled`；新的 `publisher()` 会重新尝试。编码失败会在发送任何任务之前返回 `PublishError::Codec`。没有订阅者的广播返回空回执。
+
+每个订阅者的内存队列按发布顺序保存同一个发布者的任务。谓词按任务到达 `when` 的顺序执行；只有使用 FIFO 后端和保序的中间件时，这一顺序才与发布顺序一致，例如 `filter_async` 就可能让后发布的任务先通过。Worker 启动之前发布的任务会在其队列中等待。每次 `publisher()` 得到的发布者都持有自己的句柄，因此不同线程上的发布者可以并发发布；并发发布者之间没有全局顺序。处理器的完成顺序取决于 Worker 的并发设置。
+
+谓词在 Worker 的服务调用中、于 Worker 自己的任务上运行。谓词应当廉价、非阻塞且无副作用：阻塞的谓词会占用运行时线程，处理器出错后重试层也会再次运行谓词。不处理不会产生错误事件，也不会触发重试。Worker 上添加的中间件仍会看到被跳过的任务，因此速率限制和超时也会作用于它们。在 `when` 内部，被跳过的任务会释放处理器服务在 `poll_ready` 中预留的容量（例如共享的并发许可），因此被包装的处理器或服务必须实现 `Clone`。启用 `catch_panic` 时，谓词或处理器的 panic 只让这一次投递失败；不启用时，panic 会停止该 Worker。分别 spawn 的 Worker 互不影响，也不影响发布者。
+
+订阅者在构建广播时固定，之后不能增删。内存队列只存在于进程内，没有容量上限，也不持久化。Worker 已停止的订阅者，只要 `Broadcast` 或任何 `Publisher` 还持有其句柄，队列就会继续积压任务。`publish` 逐个等待订阅者，因此施加背压的后端会延迟排在其后的订阅者。在 `publish` 返回的 future 完成之前丢弃它，可能只有部分订阅者收到任务，回执也会丢失。所有订阅者后端必须使用相同的线上格式，因为发布内容由第一个订阅者的 codec 编码。
+
 ## 后端与任务提交
 
 ### 内存结果
@@ -442,4 +512,4 @@ assert_eq!(value, json!(9));
 
 在顺序工作流中，普通处理器错误和解码错误由服务返回，不调度下一步骤。最后一个普通步骤返回 `GoTo::Done`，其输出不会保留在该响应中。缺失或格式错误的工作流元数据目前会分派到步骤零。未知索引或空工作流会返回 `AbortError`；Worker 将任务标记为 `Killed`，内置重试策略不会重试该任务。服务还存在既有的就绪性限制，因此自定义步骤不应假定每个内部服务在首次调用前都已接受就绪轮询。
 
-底层 `GoTo::DelayFor` 转移也会附带调度元数据；实际延迟执行取决于后端。图特有的执行限制见上文。
+底层 `GoTo::DelayFor` 转移也会附带调度元数据；实际延迟执行取决于后端。图与广播特有的执行限制见上文。
