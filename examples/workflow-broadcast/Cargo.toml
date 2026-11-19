@@ -1,0 +1,23 @@
+[package]
+name = "workflow-broadcast"
+version = "0.1.0"
+publish = false
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Demonstrates one publication delivered to three workers that each decide whether to handle it"
+
+[dependencies]
+futures-util = { version = "0.3.34", default-features = false }
+miju = { version = "0.3.0", default-features = false, features = ["catch-panic", "tracing"] }
+miju-workflow = { version = "0.3.0" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1.53.2", default-features = false, features = ["macros", "rt-multi-thread", "sync", "time"] }
+tracing = { version = "0.1.44", default-features = false, features = ["std"] }
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["env-filter", "fmt"] }
+
+[lints]
+workspace = true

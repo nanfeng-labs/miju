@@ -45,6 +45,7 @@ Use the package names and any `--bin` arguments listed under [runtime behavior](
 | [`workflow-stepped`](workflow-stepped) | Pass typed results through three steps, configure a continuation delay, and inject a shared backend into each handler. |
 | [`workflow-graph`](workflow-graph) | Distribute entry inputs to three graph nodes, collect a typed dependency tuple, and print the graph as DOT. |
 | [`workflow-graph-dynamic`](workflow-graph-dynamic) | Generate 1,000 dependent nodes, validate the DAG, and collect their results through a vector of node handles. |
+| [`workflow-broadcast`](workflow-broadcast) | Publish each order once to three workers on separate tasks, let each decide whether to handle it, and read every decision from its result store. |
 
 ## Observability
 
@@ -75,6 +76,7 @@ Use the package names and any `--bin` arguments listed under [runtime behavior](
 - **`workflow-stepped`** runs welcome, campaign, and completion steps with IDs 1, 2, and 3, then stops automatically. `delay_for(1s)` records a scheduled time, but the in-memory backend does not enforce it: the next step runs immediately. Actual waiting requires a backend that honors scheduling. The worker spawns task futures with a concurrency limit of two; step dependencies still determine execution order.
 - **`workflow-graph`** sends 42, 43, and 44 to the name, age, and address-code entry nodes respectively. These are three inputs to one graph run. The collector receives `("42", 63, 144)`, prints a total of 249, and stops the worker. Its DOT output can be rendered with Graphviz.
 - **`workflow-graph-dynamic`** starts with one source value of 1. Each of 1,000 generated branches adds one; the collector receives 1,000 results, prints their sum of 2,000, and stops automatically. Graph construction happens before execution; this does not demonstrate editing a running graph.
+- **`workflow-broadcast`** publishes order 7 (250,000 cents, US) and order 8 (4,500 cents, DE) once each. Every worker receives both orders: audit handles both, fraud handles order 7, and eu-vat handles order 8 and returns its VAT of 855. The main task logs each worker's `Handled` or `Skipped` decision, then stops the workers.
 
 - **`monitor`** submits one task to each of two temporary JSON backends. The five contextual workers use independent file cursors and can process the same entry; this is not a competing-consumer queue. Each handler stops its worker after one second and emits an intentional business error. All six workers normally exit automatically; Ctrl+C can also initiate shutdown with a five-second limit. Business errors do not trigger the worker restart predicate. Context metadata is wired without a provider here; the `tracing` example supplies full trace propagation.
 
