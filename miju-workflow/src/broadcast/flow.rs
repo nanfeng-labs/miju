@@ -1,6 +1,6 @@
 use std::{collections::HashSet, fmt, marker::PhantomData};
 
-use miju_core::backend::ext::shared::Shared;
+use miju_core::backend::{BackendConfig, ext::shared::Shared};
 
 use super::Publisher;
 use crate::in_memory::InMemoryWorkflow;
@@ -49,7 +49,8 @@ impl<Args> BroadcastFlow<Args> {
     /// Builds the broadcast, calling `make` once per subscriber in declaration
     /// order to create its backend.
     ///
-    /// Every backend must use the same wire format, because
+    /// Each backend must take `Args` as its argument type, which is checked at
+    /// compile time. Every backend must also use the same wire format, because
     /// [`Publisher::publish`] encodes once with the first subscriber's codec.
     ///
     /// # Errors
@@ -59,7 +60,10 @@ impl<Args> BroadcastFlow<Args> {
     pub fn build_with<B>(
         self,
         mut make: impl FnMut(&str) -> B,
-    ) -> Result<Broadcast<Args, B>, BroadcastError> {
+    ) -> Result<Broadcast<Args, B>, BroadcastError>
+    where
+        B: BackendConfig<Args = Args>,
+    {
         let mut seen = HashSet::new();
         if let Some(duplicate) = self
             .subscribers
@@ -143,10 +147,12 @@ impl<Args, B: Clone> Broadcast<Args, B> {
             .map(|(_, backend)| backend.clone())
     }
 
-    /// A new publisher that owns clones of every subscriber's backend handle.
+    /// A new publisher that owns fresh clones of every subscriber's backend
+    /// handle.
     ///
     /// Create one publisher per producer task; publishers do not share a lock
-    /// with each other in this layer.
+    /// with each other in this layer. A new publisher also tries backends that
+    /// an earlier publisher stopped using after an error.
     #[must_use]
     pub fn publisher(&self) -> Publisher<Args, B> {
         Publisher::new(self.members.clone())

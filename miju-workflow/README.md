@@ -654,25 +654,34 @@ One `publish` call encodes the arguments once and sends a task with a fresh
 task ID to every subscriber, in declaration order. `PublishReceipt` carries a
 publication ID and each delivery's task ID. Success means each listed delivery
 was accepted by its backend, not that any handler ran. A failed send is recorded
-in `failures`; the other subscribers still receive the task, and nothing is
-rolled back. Encoding failures return `PublishError::Codec` before anything is
+in `failures` with its task ID and a `FailureKind`. `NotSent` means nothing was
+enqueued. `Unconfirmed` means the backend took the task before reporting the
+error, so the task may still run; look it up by its task ID before sending it
+again. The other subscribers still receive the task, and nothing is rolled
+back. A publisher does not poll a backend again after it returns an error, and
+reports that subscriber as `Disabled` from then on; a new `publisher()` tries
+it again. Encoding failures return `PublishError::Codec` before anything is
 sent. A broadcast without subscribers returns an empty receipt.
 
-Each subscriber's queue keeps one publisher's tasks in publication order, and
-its worker evaluates predicates in that order. Tasks published before a worker
-starts wait in its queue. Each `publisher()` owns its own handles, so publishers
-on different threads can publish concurrently; there is no total order across
-concurrent publishers. Handler completion order follows the worker's
-concurrency settings.
+Each subscriber's in-memory queue keeps one publisher's tasks in publication
+order. The predicate sees tasks in the order they reach `when`, which matches
+publication order only with a FIFO backend and middleware that keeps order:
+`filter_async`, for example, can let a later task through first. Tasks published
+before a worker starts wait in its queue. Each `publisher()` owns its own
+handles, so publishers on different threads can publish concurrently; there is
+no total order across concurrent publishers. Handler completion order follows
+the worker's concurrency settings.
 
 The predicate runs inside the worker's service call, on the worker's task. Keep
 it cheap, non-blocking and pure: a blocking predicate occupies a runtime thread,
 and a retry layer runs it again after a handler error. Declining does not emit
 an error event or trigger a retry. Middleware added to the worker still sees
-skipped tasks, so rate limits and timeouts apply to them too. With
-`catch_panic`, a panic in the predicate or handler fails only that delivery;
-without it, the panic stops that worker. Workers spawned on separate tasks do
-not affect each other or the publisher.
+skipped tasks, so rate limits and timeouts apply to them too. Inside `when`, a
+skipped task releases any capacity the handler service reserved in `poll_ready`,
+such as a shared concurrency permit; this is why the wrapped handler or service
+must be `Clone`. With `catch_panic`, a panic in the predicate or handler fails
+only that delivery; without it, the panic stops that worker. Workers spawned on
+separate tasks do not affect each other or the publisher.
 
 Membership is fixed when the broadcast is built. The in-memory queues are
 process-local, unbounded and not persistent. A subscriber whose worker has

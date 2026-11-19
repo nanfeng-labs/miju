@@ -1,5 +1,5 @@
 use std::{
-    fmt,
+    fmt, mem,
     task::{Context, Poll},
 };
 
@@ -17,15 +17,21 @@ use super::Decision;
 
 /// Wraps a task function so the worker decides whether to handle each task.
 ///
-/// `predicate` runs on the decoded arguments inside the worker's service call,
-/// in the order tasks are fetched. It should be cheap, non-blocking and pure:
-/// it runs on the worker's task, and a retry layer around the worker calls it
-/// again. When it returns `false` the handler does not run and the task
-/// completes with [`Decision::Skipped`]; otherwise the handler's output is
-/// returned as [`Decision::Handled`]. Middleware added to the worker still sees
-/// every task, including skipped ones.
+/// `predicate` runs on the decoded arguments inside the worker's service call.
+/// It should be cheap, non-blocking and pure: it runs on the worker's task, and
+/// a retry layer around the worker calls it again. When it returns `false` the
+/// handler does not run and the task completes with [`Decision::Skipped`];
+/// otherwise the handler's output is returned as [`Decision::Handled`].
+/// Middleware added to the worker still sees every task, including skipped
+/// ones.
 ///
-/// Use [`When::new`] to wrap a Tower service instead of a task function.
+/// The predicate sees tasks in the order they reach this service, not the order
+/// they were published. The two match only with a FIFO backend and middleware
+/// that keeps order: an asynchronous filter, for example, can let a later task
+/// through first.
+///
+/// The handler must be `Clone`; see [`When::new`]. Use [`When::new`] to wrap a
+/// Tower service instead of a task function.
 #[must_use]
 pub fn when<P, F, Args, FnArgs>(predicate: P, handler: F) -> When<P, TaskFn<F, Args, FnArgs>> {
     When::new(predicate, task_fn(handler))
@@ -42,9 +48,12 @@ pub struct When<P, S> {
 impl<P, S> When<P, S> {
     /// Wraps `service` with `predicate`.
     ///
-    /// Readiness is delegated to `service` before every task, including tasks
-    /// the predicate then skips. A service that reserves capacity in
-    /// `poll_ready` keeps that reservation for its next call.
+    /// Readiness is delegated to `service` before every task, so a task the
+    /// predicate skips also waits until `service` is ready. On a skip, the
+    /// ready service is replaced with a clone of itself, which releases any
+    /// capacity it reserved in `poll_ready`, such as a concurrency-limit
+    /// permit. This is why the service must be `Clone`, and why its clones must
+    /// not share a reservation, as is the case for Tower's own services.
     #[must_use]
     pub fn new(predicate: P, service: S) -> Self {
         Self {
@@ -57,7 +66,7 @@ impl<P, S> When<P, S> {
 impl<P, S, Args> Service<Task<Args>> for When<P, S>
 where
     P: FnMut(&Args) -> bool,
-    S: Service<Task<Args>>,
+    S: Service<Task<Args>> + Clone,
 {
     type Response = Decision<S::Response>;
     type Error = S::Error;
@@ -78,6 +87,10 @@ where
                     .map_ok(Decision::Handled as fn(S::Response) -> Self::Response),
             )
         } else {
+            // Dropping the ready service releases what it reserved in
+            // `poll_ready`; the clone is polled ready before the next call.
+            let unready = self.inner.clone();
+            drop(mem::replace(&mut self.inner, unready));
             Either::Left(ready(Ok(Decision::Skipped)))
         }
     }

@@ -3,6 +3,7 @@
 
 use std::{
     collections::{HashMap, HashSet},
+    marker::PhantomData,
     pin::Pin,
     sync::{
         Arc, Mutex,
@@ -31,9 +32,10 @@ use miju_core::{
 };
 use miju_workflow::{
     BroadcastFlow,
-    broadcast::{BroadcastError, Decision, PublishError, PublishReceipt, when},
+    broadcast::{BroadcastError, Decision, FailureKind, PublishError, PublishReceipt, When, when},
     in_memory::InMemoryWorkflow,
 };
+use tower::{Layer, Service, ServiceExt, limit::GlobalConcurrencyLimitLayer};
 
 const DEADLINE: Duration = Duration::from_secs(5);
 
@@ -455,7 +457,7 @@ fn duplicate_subscribers_are_rejected_before_any_backend_is_created() {
         .subscriber("audit")
         .build_with(|_| {
             created += 1;
-            RecordingSink::accepting()
+            RecordingSink::new(Mode::Accept)
         });
     assert!(matches!(result, Err(BroadcastError::DuplicateSubscriber(name)) if name == "audit"));
     assert_eq!(created, 0);
@@ -463,7 +465,7 @@ fn duplicate_subscribers_are_rejected_before_any_backend_is_created() {
 
 #[tokio::test]
 async fn an_encoding_failure_sends_nothing() {
-    let sink = RecordingSink::accepting();
+    let sink = RecordingSink::new(Mode::Accept);
     let broadcast = BroadcastFlow::<HashMap<(u8, u8), u8>>::new("bad")
         .subscriber("a")
         .build_with(|_| sink.clone())
@@ -476,14 +478,14 @@ async fn an_encoding_failure_sends_nothing() {
 
 #[tokio::test]
 async fn a_failing_subscriber_does_not_block_the_others() {
-    let accepting = RecordingSink::accepting();
+    let accepting = RecordingSink::new(Mode::Accept);
     let broadcast = BroadcastFlow::<u32>::new("orders")
         .subscriber("first")
         .subscriber("broken")
         .subscriber("last")
         .build_with(|name| {
             if name == "broken" {
-                RecordingSink::rejecting()
+                RecordingSink::new(Mode::FailReady)
             } else {
                 accepting.clone()
             }
@@ -499,6 +501,7 @@ async fn a_failing_subscriber_does_not_block_the_others() {
     assert_eq!(delivered, ["first", "last"]);
     assert_eq!(receipt.failures.len(), 1);
     assert_eq!(receipt.failures[0].subscriber, "broken");
+    assert_eq!(receipt.failures[0].kind, FailureKind::NotSent);
     let sent = accepting.sent.lock().unwrap();
     let expected: Vec<_> = receipt
         .deliveries
@@ -508,42 +511,127 @@ async fn a_failing_subscriber_does_not_block_the_others() {
     assert_eq!(*sent, expected);
 }
 
-/// A sink backend that records accepted task IDs, or rejects every send.
+#[tokio::test]
+async fn an_error_after_the_backend_took_the_task_is_unconfirmed() {
+    let sink = RecordingSink::new(Mode::FailFlush);
+    let broadcast = BroadcastFlow::<u32>::new("orders")
+        .subscriber("files")
+        .build_with(|_| sink.clone())
+        .unwrap();
+    let receipt = broadcast.publisher().publish(7).await.unwrap();
+
+    assert!(receipt.deliveries.is_empty());
+    let [failure] = receipt.failures.as_slice() else {
+        panic!("expected one failure, got {:?}", receipt.failures);
+    };
+    assert_eq!(failure.kind, FailureKind::Unconfirmed);
+    // The backend holds the task under the reported ID, so the caller can look
+    // it up instead of sending a duplicate.
+    assert_eq!(
+        *sink.sent.lock().unwrap(),
+        std::slice::from_ref(&failure.task_id)
+    );
+}
+
+#[tokio::test]
+async fn a_backend_that_failed_is_not_polled_again() {
+    let healthy = RecordingSink::new(Mode::Accept);
+    let broadcast = BroadcastFlow::<u32>::new("orders")
+        .subscriber("closed")
+        .subscriber("healthy")
+        .build_with(|name| {
+            if name == "closed" {
+                RecordingSink::new(Mode::FailReady)
+            } else {
+                healthy.clone()
+            }
+        })
+        .unwrap();
+    let mut publisher = broadcast.publisher();
+
+    let first = publisher.publish(1).await.unwrap();
+    assert_eq!(first.failures[0].kind, FailureKind::NotSent);
+    // The failed handle panics if it is polled again.
+    let second = publisher.publish(2).await.unwrap();
+    assert_eq!(second.failures[0].subscriber, "closed");
+    assert_eq!(second.failures[0].kind, FailureKind::Disabled);
+    assert_eq!(healthy.sent.lock().unwrap().len(), 2);
+
+    // A new publisher starts from the broadcast's handles and tries again.
+    let third = broadcast.publisher().publish(3).await.unwrap();
+    assert_eq!(third.failures[0].kind, FailureKind::NotSent);
+    assert_eq!(healthy.sent.lock().unwrap().len(), 3);
+}
+
+#[tokio::test]
+async fn a_skipped_task_releases_capacity_the_handler_reserved() {
+    // Both handlers share one concurrency permit.
+    let permit = GlobalConcurrencyLimitLayer::new(1);
+    let handler =
+        tower::service_fn(|task: Task<u32>| async move { Ok::<_, BoxDynError>(task.args) });
+    let mut skipping = When::new(|_: &u32| false, permit.layer(handler));
+    let mut accepting = When::new(|_: &u32| true, permit.layer(handler));
+
+    let skipped = skipping.ready().await.unwrap().call(Task::new(1)).await;
+    assert_eq!(skipped.unwrap(), Decision::Skipped);
+    let ready = tokio::time::timeout(DEADLINE, accepting.ready())
+        .await
+        .expect("the skipped task still holds the permit")
+        .unwrap();
+    assert_eq!(
+        ready.call(Task::new(2)).await.unwrap(),
+        Decision::Handled(2)
+    );
+}
+
+/// The step at which a [`RecordingSink`] fails.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Accept,
+    FailReady,
+    FailFlush,
+}
+
+/// A sink backend that records the task IDs it takes, or fails at one step.
+/// Like `SinkMapErr`, a handle panics if it is polled after returning an error.
 #[derive(Clone)]
-struct RecordingSink {
-    reject: bool,
+struct RecordingSink<A> {
+    mode: Mode,
+    failed: bool,
     sent: Arc<Mutex<Vec<TaskId>>>,
     codec: JsonCodec,
+    _args: PhantomData<fn(A)>,
 }
 
-impl RecordingSink {
-    fn accepting() -> Self {
+impl<A> RecordingSink<A> {
+    fn new(mode: Mode) -> Self {
         Self {
-            reject: false,
+            mode,
+            failed: false,
             sent: Arc::default(),
             codec: JsonCodec::default(),
+            _args: PhantomData,
         }
     }
 
-    fn rejecting() -> Self {
-        Self {
-            reject: true,
-            ..Self::accepting()
+    fn step(&mut self, fails: Mode) -> Result<(), std::io::Error> {
+        assert!(!self.failed, "polled after an error");
+        if self.mode == fails {
+            self.failed = true;
+            return Err(std::io::Error::other("rejected"));
         }
+        Ok(())
     }
 }
 
-impl Sink<Task<Vec<u8>>> for RecordingSink {
+impl<A> Sink<Task<Vec<u8>>> for RecordingSink<A> {
     type Error = std::io::Error;
 
     fn poll_ready(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        Poll::Ready(Ok(()))
+        Poll::Ready(self.get_mut().step(Mode::FailReady))
     }
 
     fn start_send(self: Pin<&mut Self>, task: Task<Vec<u8>>) -> Result<(), Self::Error> {
-        if self.reject {
-            return Err(std::io::Error::other("rejected"));
-        }
         self.sent
             .lock()
             .unwrap()
@@ -552,7 +640,7 @@ impl Sink<Task<Vec<u8>>> for RecordingSink {
     }
 
     fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        Poll::Ready(Ok(()))
+        Poll::Ready(self.get_mut().step(Mode::FailFlush))
     }
 
     fn poll_close(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -560,7 +648,7 @@ impl Sink<Task<Vec<u8>>> for RecordingSink {
     }
 }
 
-impl WireFormatBackend for RecordingSink {
+impl<A> WireFormatBackend for RecordingSink<A> {
     type Codec = JsonCodec;
     type Compact = Vec<u8>;
 
@@ -569,8 +657,8 @@ impl WireFormatBackend for RecordingSink {
     }
 }
 
-impl BackendConfig for RecordingSink {
-    type Args = ();
+impl<A> BackendConfig for RecordingSink<A> {
+    type Args = A;
     type Id = RandomId;
     type Kind = ();
     type Config = ();

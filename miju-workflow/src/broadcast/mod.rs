@@ -22,7 +22,9 @@ mod when;
 use serde::{Deserialize, Serialize};
 
 pub use flow::{Broadcast, BroadcastError, BroadcastFlow};
-pub use publisher::{Delivery, DeliveryFailure, PublishError, PublishReceipt, Publisher};
+pub use publisher::{
+    Delivery, DeliveryFailure, FailureKind, PublishError, PublishReceipt, Publisher,
+};
 pub use when::{When, when};
 
 /// The outcome of one delivery at one worker.
