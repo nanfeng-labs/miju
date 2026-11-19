@@ -124,7 +124,6 @@ impl<Args, B> Broadcast<Args, B> {
     }
 
     /// Subscriber names in declaration order.
-    #[must_use]
     pub fn subscribers(&self) -> impl ExactSizeIterator<Item = &str> {
         self.members.iter().map(|(name, _)| name.as_str())
     }
