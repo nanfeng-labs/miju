@@ -607,14 +607,16 @@ flowchart LR
     class receipt,sa,sb outcome
 ```
 
-`BroadcastFlow` declares the subscribers. `in_memory` creates one
-`InMemoryWorkflow` queue and result store per subscriber; `build_with` creates
-backends with a function instead. Give each subscriber's `backend` to its
-worker and wrap the handler with `when`. The predicate receives the decoded
-arguments. When it returns `false`, the handler does not run and the task
-succeeds with `Decision::Skipped`; otherwise the handler's output becomes
-`Decision::Handled`. `When::new` wraps a Tower service instead of a task
-function.
+Give each subscriber its own queue. `in_memory()` creates one
+`InMemoryWorkflow` queue and result store per name. With `build_with`, the
+factory creates a separate queue for each name, and clones of that queue's
+handle connect its worker and publisher. The backend must decode the shared
+wire format into the broadcast's argument type when the worker takes a task.
+
+Give each worker its subscriber's `backend` and wrap the handler with `when`.
+The predicate receives the decoded arguments. A match runs the handler and
+returns `Decision::Handled(output)`. A decline completes successfully with
+`Decision::Skipped`. Use `When::new` to wrap a Tower service.
 
 ```rust
 use futures_util::StreamExt;
@@ -650,48 +652,55 @@ for (delivery, expected) in receipt.deliveries.iter().zip([Decision::Handled(300
 # }
 ```
 
-One `publish` call encodes the arguments once and sends a task with a fresh
-task ID to every subscriber, in declaration order. `PublishReceipt` carries a
-publication ID and each delivery's task ID. Success means each listed delivery
-was accepted by its backend, not that any handler ran. A failed send is recorded
-in `failures` with its task ID and a `FailureKind`. `NotSent` means nothing was
-enqueued. `Unconfirmed` means the backend took the task before reporting the
-error, so the task may still run; look it up by its task ID before sending it
-again. The other subscribers still receive the task, and nothing is rolled
-back. A publisher does not poll a backend again after it returns an error, and
-reports that subscriber as `Disabled` from then on; a new `publisher()` tries
-it again. Encoding failures return `PublishError::Codec` before anything is
-sent. A broadcast without subscribers returns an empty receipt.
+One `publish` call encodes the arguments once. It sends one task with a fresh
+ID to each subscriber, in declaration order. The returned `PublishReceipt`
+identifies the publication. Its `deliveries` field lists tasks accepted by a backend.
+Each worker's result is available separately under its delivery ID. Check
+`failures` even when `publish` returns `Ok`.
+
+- `NotSent` means the sink failed before the task was handed to it.
+- `Unconfirmed` means the task may still run. Use its delivery ID to check
+  the backend before deciding whether to resend that subscriber's task.
+- `Disabled` means this broadcast skipped the subscriber after an earlier
+  failure. All its publishers share that state, including newly created ones.
+  Recovery requires a working sink in a newly built broadcast.
+
+A failed subscriber leaves earlier deliveries intact and publishing continues
+with the remaining subscribers. An encoding error returns `PublishError::Codec`
+before any send. A broadcast without subscribers returns an empty receipt.
 
 Each subscriber's in-memory queue keeps one publisher's tasks in publication
 order. The predicate sees tasks in the order they reach `when`, which matches
 publication order only with a FIFO backend and middleware that keeps order:
 `filter_async`, for example, can let a later task through first. Tasks published
-before a worker starts wait in its queue. Each `publisher()` owns its own
-handles, so publishers on different threads can publish concurrently; there is
-no total order across concurrent publishers. Handler completion order follows
+before a worker starts wait in its queue. Publishers on different threads can
+publish concurrently. For each subscriber they serialize the send through its flush,
+so that each receipt reflects its own task. Concurrent publishers have no
+global order across subscribers. Handler completion order follows
 the worker's concurrency settings.
 
 The predicate runs inside the worker's service call, on the worker's task. Keep
 it cheap, non-blocking and pure: a blocking predicate occupies a runtime thread,
 and a retry layer runs it again after a handler error. Declining does not emit
 an error event or trigger a retry. Middleware added to the worker still sees
-skipped tasks, so rate limits and timeouts apply to them too. Inside `when`, a
-skipped task releases any capacity the handler service reserved in `poll_ready`,
-such as a shared concurrency permit; this is why the wrapped handler or service
-must be `Clone`. With `catch_panic`, a panic in the predicate or handler fails
-only that delivery; without it, the panic stops that worker. Workers spawned on
-separate tasks do not affect each other or the publisher.
+skipped tasks, so rate limits and timeouts apply to them too. Only an accepted
+task waits for the inner service to become ready. Idle and skipping workers
+leave shared handler capacity available to their peers. Each `When::new`
+service can hold one accepted task waiting for dispatch. Once the inner call
+starts, the next task can enter while the previous response is still running.
+With `catch_panic`, a panic in the predicate or handler fails that delivery. An uncaught panic
+stops the affected worker's task.
 
 Membership is fixed when the broadcast is built. The in-memory queues are
 process-local, unbounded and not persistent. A subscriber whose worker has
 stopped keeps accumulating tasks while the `Broadcast` or any `Publisher` holds
 its handle. `publish` awaits subscribers one at a time, so a backend that
 applies backpressure delays the subscribers after it. Dropping a `publish`
-future before it completes can leave the task with some subscribers and not
-others, and the receipt is lost. Every subscriber backend
-must use the same wire format, because the publication is encoded with the
-first subscriber's codec.
+future can leave a partial delivery without a receipt. If a task was handed
+to a sink and its flush is still pending, the next publisher finishes that
+flush before handing over its own task. If the earlier flush fails, the new
+delivery is recorded as `Disabled`. Every subscriber must use the same wire
+format because the first subscriber's codec encodes the publication.
 
 ## Backends and task submission
 
@@ -718,8 +727,11 @@ inside `TaskResult.result`.
 Results are process-local, unbounded, and retained after being read. There is no
 persistence or automatic eviction. Wait streams own independent registrations
 and remove them when dropped.
-Reusing the in-memory sink after a failed send to a closed channel can also panic;
-the underlying error mapper is consumed by its first failure.
+
+With `InMemoryWorkflow::new_with`, workers drive the receive stream and
+producers flush their own writes. If you batch tasks with `SinkExt::feed`,
+call `SinkExt::flush` on the producer to observe the write result.
+`SinkExt::send` already includes this flush.
 
 The backend delivers queued tasks without enforcing scheduling timestamps.
 For temporary-file integration, `miju-file-storage::JsonStorage` remains available

@@ -1,17 +1,19 @@
 use std::{
     fmt, mem,
+    sync::{Arc, Mutex},
     task::{Context, Poll},
 };
 
+use futures_channel::oneshot;
 use futures_util::{
-    TryFutureExt,
-    future::{Either, MapOk, Ready, ready},
+    FutureExt, TryFutureExt,
+    future::{Either, MapOk, Ready, Shared, ready},
 };
 use miju_core::task::{
     Task,
     task_fn::{TaskFn, task_fn},
 };
-use tower::Service;
+use tower::{Service, ServiceExt, util::Oneshot};
 
 use super::Decision;
 
@@ -34,7 +36,12 @@ use super::Decision;
 /// Tower service instead of a task function.
 #[must_use]
 pub fn when<P, F, Args, FnArgs>(predicate: P, handler: F) -> When<P, TaskFn<F, Args, FnArgs>> {
-    When::new(predicate, task_fn(handler))
+    // TaskFn reserves nothing in poll_ready, so its synchronous call can run
+    // immediately without allocating a dispatch channel.
+    When {
+        direct: true,
+        ..When::new(predicate, task_fn(handler))
+    }
 }
 
 /// A service that calls its inner service only when its predicate accepts the
@@ -43,22 +50,62 @@ pub fn when<P, F, Args, FnArgs>(predicate: P, handler: F) -> When<P, TaskFn<F, A
 pub struct When<P, S> {
     predicate: P,
     inner: S,
+    direct: bool,
+    dispatching: Option<PendingDispatch<S>>,
 }
 
 impl<P, S> When<P, S> {
     /// Wraps `service` with `predicate`.
     ///
-    /// Readiness is delegated to `service` before every task, so a task the
-    /// predicate skips also waits until `service` is ready. On a skip, the
-    /// ready service is replaced with a clone of itself, which releases any
-    /// capacity it reserved in `poll_ready`, such as a concurrency-limit
-    /// permit. This is why the service must be `Clone`, and why its clones must
-    /// not share a reservation, as is the case for Tower's own services.
+    /// A skipped task never polls the handler for readiness. An accepted task
+    /// waits for readiness in its response future. Each `When` handle admits
+    /// at most one accepted task waiting to call the handler. As soon as that
+    /// call starts, later tasks can enter while its response is still running.
+    ///
+    /// The handle keeps an unreserved clone while dispatch is pending. If the
+    /// response future is dropped before dispatch or readiness fails, the
+    /// waiting service is dropped and the next task uses that clone. If a
+    /// handle is cloned during dispatch, the new handle's readiness waits for
+    /// the handler's state after the call.
     #[must_use]
     pub fn new(predicate: P, service: S) -> Self {
         Self {
             predicate,
             inner: service,
+            direct: false,
+            dispatching: None,
+        }
+    }
+}
+
+struct PendingDispatch<S> {
+    returned: Shared<oneshot::Receiver<Arc<Mutex<S>>>>,
+    owner: bool,
+}
+
+impl<S> Clone for PendingDispatch<S> {
+    fn clone(&self) -> Self {
+        Self {
+            returned: self.returned.clone(),
+            owner: false,
+        }
+    }
+}
+
+impl<S: Clone> PendingDispatch<S> {
+    // Tower Retry clones immediately after call. A clone made during dispatch
+    // must inherit the state *after* the handler has received that request.
+    fn service(&self, returned: Arc<Mutex<S>>) -> S {
+        if !self.owner {
+            return returned.lock().unwrap().clone();
+        }
+        match Arc::try_unwrap(returned) {
+            Ok(service) => service.into_inner().unwrap(),
+            Err(shared) => {
+                let mut service = shared.lock().unwrap();
+                let snapshot = service.clone();
+                mem::replace(&mut *service, snapshot)
+            }
         }
     }
 }
@@ -72,27 +119,75 @@ where
     type Error = S::Error;
     type Future = Either<
         Ready<Result<Self::Response, Self::Error>>,
-        MapOk<S::Future, fn(S::Response) -> Self::Response>,
+        MapOk<
+            Either<S::Future, Oneshot<Dispatch<S>, Task<Args>>>,
+            fn(S::Response) -> Self::Response,
+        >,
     >;
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.inner.poll_ready(cx)
+        if self.direct {
+            return self.inner.poll_ready(cx);
+        }
+        if let Some(dispatching) = &mut self.dispatching {
+            if let Ok(returned) = std::task::ready!(dispatching.returned.poll_unpin(cx)) {
+                self.inner = dispatching.service(returned);
+            }
+            self.dispatching = None;
+        }
+        Poll::Ready(Ok(()))
     }
 
     fn call(&mut self, task: Task<Args>) -> Self::Future {
-        if (self.predicate)(&task.args) {
-            Either::Right(
-                self.inner
-                    .call(task)
-                    .map_ok(Decision::Handled as fn(S::Response) -> Self::Response),
-            )
-        } else {
-            // Dropping the ready service releases what it reserved in
-            // `poll_ready`; the clone is polled ready before the next call.
-            let unready = self.inner.clone();
-            drop(mem::replace(&mut self.inner, unready));
-            Either::Left(ready(Ok(Decision::Skipped)))
+        assert!(
+            self.dispatching.is_none(),
+            "When::call requires readiness after the previous dispatch"
+        );
+        if !(self.predicate)(&task.args) {
+            return Either::Left(ready(Ok(Decision::Skipped)));
         }
+
+        let response = if self.direct {
+            Either::Left(self.inner.call(task))
+        } else {
+            let spare = self.inner.clone();
+            let service = mem::replace(&mut self.inner, spare);
+            let (dispatched, dispatching) = oneshot::channel();
+            self.dispatching = Some(PendingDispatch {
+                returned: dispatching.shared(),
+                owner: true,
+            });
+            Either::Right(Dispatch(Some((service, dispatched))).oneshot(task))
+        };
+        Either::Right(response.map_ok(Decision::Handled as fn(S::Response) -> Self::Response))
+    }
+}
+
+// Oneshot owns the service until dispatch. A canceled or failed dispatch
+// drops its sender and service, releasing any partial readiness reservation.
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct Dispatch<S>(Option<(S, oneshot::Sender<Arc<Mutex<S>>>)>);
+
+impl<S: Service<R>, R> Service<R> for Dispatch<S> {
+    type Response = S::Response;
+    type Error = S::Error;
+    type Future = S::Future;
+
+    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        let (mut service, dispatched) = self.0.take().expect("dispatch already finished");
+        let ready = service.poll_ready(cx);
+        if !matches!(ready, Poll::Ready(Err(_))) {
+            self.0 = Some((service, dispatched));
+        }
+        ready
+    }
+
+    fn call(&mut self, request: R) -> Self::Future {
+        let (mut service, dispatched) = self.0.take().expect("dispatch already finished");
+        let future = service.call(request);
+        let _ = dispatched.send(Arc::new(Mutex::new(service)));
+        future
     }
 }
 

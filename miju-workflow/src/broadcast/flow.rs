@@ -1,8 +1,12 @@
 use std::{collections::HashSet, fmt, marker::PhantomData};
 
-use miju_core::backend::{BackendConfig, ext::shared::Shared};
+use miju_core::backend::{
+    BackendConfig,
+    ext::shared::Shared,
+    finalize::{DurableBackend, FinalizeBackend},
+};
 
-use super::Publisher;
+use super::{Publisher, publisher::SharedSenders};
 use crate::in_memory::InMemoryWorkflow;
 
 /// Declares a broadcast and the subscribers that receive every publication.
@@ -49,9 +53,46 @@ impl<Args> BroadcastFlow<Args> {
     /// Builds the broadcast, calling `make` once per subscriber in declaration
     /// order to create its backend.
     ///
-    /// Each backend must take `Args` as its argument type, which is checked at
-    /// compile time. Every backend must also use the same wire format, because
-    /// [`Publisher::publish`] encodes once with the first subscriber's codec.
+    /// Each subscriber needs its own queue. All handles for one subscriber must
+    /// refer to that same queue. If two subscriber names refer to the same
+    /// queue, their workers can consume each other's deliveries.
+    ///
+    /// ```rust
+    /// use std::collections::HashMap;
+    /// use miju_workflow::{BroadcastFlow, in_memory::InMemoryWorkflow};
+    ///
+    /// let queues = HashMap::from([
+    ///     ("audit", InMemoryWorkflow::<u32>::create()),
+    ///     ("alerts", InMemoryWorkflow::<u32>::create()),
+    /// ]);
+    /// let orders = BroadcastFlow::<u32>::new("orders")
+    ///     .subscriber("audit")
+    ///     .subscriber("alerts")
+    ///     .build_with(|name| queues[name].clone())?;
+    /// # Ok::<(), miju_workflow::broadcast::BroadcastError>(())
+    /// ```
+    ///
+    /// Each backend's kind must finalize to [`DurableBackend<B, Args>`](DurableBackend)
+    /// so the worker decodes the wire representation into `Args`. Adding a codec
+    /// to an ephemeral queue leaves the worker reading raw values, so this
+    /// configuration is rejected even when both types are `String`.
+    ///
+    /// ```compile_fail,E0271
+    /// use miju_codec::json::JsonCodec;
+    /// use miju_core::backend::{dequeue::VecDequeBackend, ext::with_codec::WithCodec};
+    /// use miju_workflow::BroadcastFlow;
+    ///
+    /// let _ = BroadcastFlow::<String>::new("orders").subscriber("audit").build_with(|_| {
+    ///     WithCodec::new(VecDequeBackend::<String>::new(), JsonCodec::<String>::default())
+    /// });
+    /// ```
+    ///
+    /// Every backend must use the same wire format, because [`Publisher::publish`]
+    /// encodes once with the first subscriber's codec. For backends whose clones
+    /// share pending writes, submit through publishers from the same broadcast
+    /// so each flush belongs to its own delivery. Worker polling and shutdown
+    /// must also preserve each producer's flush result. Use independent reader
+    /// and writer state when the underlying transport consumes errors on read.
     ///
     /// # Errors
     ///
@@ -63,6 +104,7 @@ impl<Args> BroadcastFlow<Args> {
     ) -> Result<Broadcast<Args, B>, BroadcastError>
     where
         B: BackendConfig<Args = Args>,
+        B::Kind: FinalizeBackend<B, Args, Backend = DurableBackend<B, Args>>,
     {
         let mut seen = HashSet::new();
         if let Some(duplicate) = self
@@ -83,6 +125,7 @@ impl<Args> BroadcastFlow<Args> {
         Ok(Broadcast {
             name: self.name,
             members,
+            senders: Default::default(),
             _marker: PhantomData,
         })
     }
@@ -117,6 +160,7 @@ impl<Args> fmt::Debug for BroadcastFlow<Args> {
 pub struct Broadcast<Args, B> {
     name: String,
     members: Vec<(String, B)>,
+    senders: SharedSenders<B>,
     _marker: PhantomData<fn(Args)>,
 }
 
@@ -128,6 +172,7 @@ impl<Args, B> Broadcast<Args, B> {
     }
 
     /// Subscriber names in declaration order.
+    #[must_use = "iterate to read the subscriber names"]
     pub fn subscribers(&self) -> impl ExactSizeIterator<Item = &str> {
         self.members.iter().map(|(name, _)| name.as_str())
     }
@@ -147,15 +192,15 @@ impl<Args, B: Clone> Broadcast<Args, B> {
             .map(|(_, backend)| backend.clone())
     }
 
-    /// A new publisher that owns fresh clones of every subscriber's backend
-    /// handle.
+    /// A publisher for these subscribers.
     ///
-    /// Create one publisher per producer task; publishers do not share a lock
-    /// with each other in this layer. A new publisher also tries backends that
-    /// an earlier publisher stopped using after an error.
+    /// Publishers from this broadcast and its clones share a sending handle per
+    /// subscriber. They serialize sends to that subscriber and share its disabled
+    /// state after a sink error. To resume a failed subscriber, build a broadcast
+    /// with a working backend for that queue.
     #[must_use]
     pub fn publisher(&self) -> Publisher<Args, B> {
-        Publisher::new(self.members.clone())
+        Publisher::new(&self.members, &self.senders)
     }
 }
 
@@ -164,6 +209,7 @@ impl<Args, B: Clone> Clone for Broadcast<Args, B> {
         Self {
             name: self.name.clone(),
             members: self.members.clone(),
+            senders: self.senders.clone(),
             _marker: PhantomData,
         }
     }

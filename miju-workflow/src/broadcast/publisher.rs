@@ -1,9 +1,18 @@
-use std::{fmt, future::poll_fn, marker::PhantomData};
+use std::{
+    fmt,
+    future::poll_fn,
+    marker::PhantomData,
+    sync::{Arc, OnceLock},
+};
 
 use futures_sink::Sink;
-use futures_util::SinkExt;
+use futures_util::{SinkExt, lock::Mutex};
 use miju_core::{
-    backend::{BackendConfig, WireFormatBackend, codec::Codec},
+    backend::{
+        BackendConfig, WireFormatBackend,
+        codec::Codec,
+        finalize::{DurableBackend, FinalizeBackend},
+    },
     error::BoxDynError,
     task::{
         Task,
@@ -14,35 +23,47 @@ use miju_core::{
 
 /// Sends each publication to every subscriber of a broadcast.
 ///
-/// Created by [`Broadcast::publisher`](super::Broadcast::publisher). It owns its
-/// own clones of the subscriber backends, so publishers on different threads do
-/// not contend for a lock in this layer.
+/// Created by [`Broadcast::publisher`](super::Broadcast::publisher). Publishers
+/// can run on different threads. They take turns submitting to each subscriber
+/// so each receipt describes its own send.
 pub struct Publisher<Args, B> {
-    members: Vec<Member<B>>,
+    members: Arc<[Member<B>]>,
+    encoder: Option<B>,
     _marker: PhantomData<fn(Args)>,
 }
 
-#[derive(Clone)]
-struct Member<B> {
+// Initialize the sending handles when a cloneable broadcast first needs them.
+// Broadcast clones made before the first publisher share the same handles too.
+pub(super) type SharedSenders<B> = Arc<OnceLock<Arc<[Member<B>]>>>;
+
+pub(super) struct Member<B> {
     subscriber: String,
-    backend: B,
-    /// Set once the backend returns an error. The backend is not polled again:
-    /// a sink may panic if it is used after an error.
-    failed: bool,
+    sender: Mutex<Option<Sender<B>>>,
 }
 
-impl<Args, B> Publisher<Args, B> {
-    pub(super) fn new(members: Vec<(String, B)>) -> Self {
-        let members = members
-            .into_iter()
-            .map(|(subscriber, backend)| Member {
-                subscriber,
-                backend,
-                failed: false,
-            })
-            .collect();
+struct Sender<B> {
+    backend: B,
+    // Remains set if the publisher is cancelled during flush.
+    flushing: bool,
+}
+
+impl<Args, B: Clone> Publisher<Args, B> {
+    pub(super) fn new(backends: &[(String, B)], senders: &SharedSenders<B>) -> Self {
+        let members = senders.get_or_init(|| {
+            backends
+                .iter()
+                .map(|(subscriber, backend)| Member {
+                    subscriber: subscriber.clone(),
+                    sender: Mutex::new(Some(Sender {
+                        backend: backend.clone(),
+                        flushing: false,
+                    })),
+                })
+                .collect()
+        });
         Self {
-            members,
+            members: Arc::clone(members),
+            encoder: backends.first().map(|(_, backend)| backend.clone()),
             _marker: PhantomData,
         }
     }
@@ -57,6 +78,7 @@ where
     B::Error: Into<BoxDynError>,
     B::Codec: Codec<Args, Compact = Compact>,
     <B::Codec as Codec<Args>>::Error: Into<BoxDynError>,
+    B::Kind: FinalizeBackend<B, Args, Backend = DurableBackend<B, Args>>,
     B::Id: GenerateId,
     Compact: Clone,
 {
@@ -69,17 +91,18 @@ where
     /// saying whether the backend may still hold the task. A failure does not
     /// stop delivery to the others, and there is no rollback.
     ///
-    /// After a backend returns an error, this publisher does not poll it again,
-    /// because a sink may panic or misbehave when used after an error. Later
-    /// publications record that subscriber as [`FailureKind::Disabled`]. Create
-    /// a new publisher with
-    /// [`Broadcast::publisher`](super::Broadcast::publisher) to try the backend
-    /// again; cloning this publisher keeps the disabled state.
+    /// A backend error disables that sending handle for all publishers of this
+    /// broadcast and its clones. Later publications record that subscriber as
+    /// [`FailureKind::Disabled`]. To resume delivery, build a broadcast with a
+    /// working backend for the affected queue.
     ///
     /// Sends are awaited one at a time, so a backend that applies backpressure
     /// delays the subscribers after it. Dropping the future before it completes
     /// can leave the task with some subscribers and not others, and the receipt
-    /// is lost. A broadcast without subscribers returns an empty receipt.
+    /// is lost. If a send had already started, the next publisher finishes its
+    /// flush before starting another task for that subscriber. A failure of that
+    /// flush marks the new task as [`FailureKind::Disabled`]. A broadcast
+    /// without subscribers returns an empty receipt.
     ///
     /// # Errors
     ///
@@ -92,74 +115,88 @@ where
             deliveries: Vec::with_capacity(self.members.len()),
             failures: Vec::new(),
         };
-        let Some(first) = self.members.first() else {
+        let Some(encoder) = &self.encoder else {
             return Ok(receipt);
         };
-        let compact = first
-            .backend
+        let compact = encoder
             .codec()
             .encode(&args)
             .map_err(|error| PublishError::Codec(error.into()))?;
         drop(args);
-        for member in &mut self.members {
+        for member in self.members.iter() {
             let subscriber = member.subscriber.clone();
             let task_id = B::Id::generate();
-            if member.failed {
-                receipt.failures.push(DeliveryFailure {
-                    subscriber,
-                    task_id,
-                    kind: FailureKind::Disabled,
-                    error: "the backend returned an error during an earlier publication".into(),
-                });
-                continue;
-            }
-            let task = TaskBuilder::new(compact.clone())
-                .task_id(task_id.clone())
-                .build();
-            match send(&mut member.backend, task).await {
-                Ok(()) => receipt.deliveries.push(Delivery {
-                    subscriber,
-                    task_id,
-                }),
-                Err((kind, error)) => {
-                    member.failed = true;
-                    receipt.failures.push(DeliveryFailure {
-                        subscriber,
-                        task_id,
-                        kind,
-                        error: error.into(),
-                    });
+            let mut slot = member.sender.lock().await;
+            let (kind, error) = if let Some(sender) = slot.as_mut() {
+                let task = TaskBuilder::new(compact.clone())
+                    .task_id(task_id.clone())
+                    .build();
+                match sender.send(task).await {
+                    Ok(()) => {
+                        receipt.deliveries.push(Delivery {
+                            subscriber,
+                            task_id,
+                        });
+                        continue;
+                    }
+                    Err((kind, error)) => {
+                        *slot = None;
+                        (kind, error.into())
+                    }
                 }
-            }
+            } else {
+                (
+                    FailureKind::Disabled,
+                    "the backend returned an error during an earlier publication".into(),
+                )
+            };
+            receipt.failures.push(DeliveryFailure {
+                subscriber,
+                task_id,
+                kind,
+                error,
+            });
         }
         Ok(receipt)
     }
 }
 
-/// Sends one task. An error before the backend takes the task is
-/// [`FailureKind::NotSent`]; an error after it is [`FailureKind::Unconfirmed`].
-/// `start_send` takes the task, and the `Sink` contract does not say whether a
-/// failed `start_send` kept it, so that error counts as unconfirmed.
-async fn send<B, T>(backend: &mut B, task: T) -> Result<(), (FailureKind, B::Error)>
-where
-    B: Sink<T> + Unpin,
-{
-    poll_fn(|cx| backend.poll_ready_unpin(cx))
-        .await
-        .map_err(|error| (FailureKind::NotSent, error))?;
-    backend
-        .start_send_unpin(task)
-        .map_err(|error| (FailureKind::Unconfirmed, error))?;
-    backend
-        .flush()
-        .await
-        .map_err(|error| (FailureKind::Unconfirmed, error))
+impl<B> Sender<B> {
+    async fn send<T>(&mut self, task: T) -> Result<(), (FailureKind, B::Error)>
+    where
+        B: Sink<T> + Unpin,
+    {
+        // A previous caller may have dropped its future after start_send.
+        // Settle that task before assigning any flush result to this one.
+        if self.flushing {
+            self.backend
+                .flush()
+                .await
+                .map_err(|e| (FailureKind::Disabled, e))?;
+            self.flushing = false;
+        }
+        poll_fn(|cx| self.backend.poll_ready_unpin(cx))
+            .await
+            .map_err(|e| (FailureKind::NotSent, e))?;
+        // A failed start_send can still have accepted the task.
+        self.backend
+            .start_send_unpin(task)
+            .map_err(|e| (FailureKind::Unconfirmed, e))?;
+        self.flushing = true;
+        self.backend
+            .flush()
+            .await
+            .map_err(|e| (FailureKind::Unconfirmed, e))?;
+        self.flushing = false;
+        Ok(())
+    }
 }
 
 impl<Args, B: Clone> Clone for Publisher<Args, B> {
     fn clone(&self) -> Self {
         Self {
-            members: self.members.clone(),
+            members: Arc::clone(&self.members),
+            encoder: self.encoder.clone(),
             _marker: PhantomData,
         }
     }
@@ -221,8 +258,8 @@ pub enum FailureKind {
     /// still be delivered. Look it up by [`DeliveryFailure::task_id`] before
     /// sending it again.
     Unconfirmed,
-    /// The backend returned an error during an earlier publication, so this
-    /// publisher did not try to send. Nothing was enqueued.
+    /// The subscriber's sending handle failed on a previous task. This task
+    /// was never passed to the backend.
     Disabled,
 }
 

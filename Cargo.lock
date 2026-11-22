@@ -1082,6 +1082,7 @@ name = "miju-workflow"
 version = "0.3.0"
 dependencies = [
  "dashmap",
+ "futures-channel",
  "futures-sink",
  "futures-util",
  "miju",

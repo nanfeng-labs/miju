@@ -7,7 +7,7 @@ use std::{
     pin::Pin,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     task::{Context, Poll},
     time::Duration,
@@ -548,7 +548,8 @@ async fn a_backend_that_failed_is_not_polled_again() {
         })
         .unwrap();
     let mut publisher = broadcast.publisher();
-
+    let existing = publisher.clone();
+    let cloned_flow = broadcast.clone();
     let first = publisher.publish(1).await.unwrap();
     assert_eq!(first.failures[0].kind, FailureKind::NotSent);
     // The failed handle panics if it is polled again.
@@ -557,31 +558,262 @@ async fn a_backend_that_failed_is_not_polled_again() {
     assert_eq!(second.failures[0].kind, FailureKind::Disabled);
     assert_eq!(healthy.sent.lock().unwrap().len(), 2);
 
-    // A new publisher starts from the broadcast's handles and tries again.
-    let third = broadcast.publisher().publish(3).await.unwrap();
-    assert_eq!(third.failures[0].kind, FailureKind::NotSent);
-    assert_eq!(healthy.sent.lock().unwrap().len(), 3);
+    // A fresh publisher and a clone made before the error share the terminal state.
+    for mut other in [existing, cloned_flow.publisher(), broadcast.publisher()] {
+        let receipt = other.publish(3).await.unwrap();
+        assert_eq!(receipt.failures[0].kind, FailureKind::Disabled);
+        assert_eq!(receipt.deliveries[0].subscriber, "healthy");
+    }
+    assert_eq!(healthy.sent.lock().unwrap().len(), 5);
 }
 
 #[tokio::test]
-async fn a_skipped_task_releases_capacity_the_handler_reserved() {
-    // Both handlers share one concurrency permit.
-    let permit = GlobalConcurrencyLimitLayer::new(1);
-    let handler =
-        tower::service_fn(|task: Task<u32>| async move { Ok::<_, BoxDynError>(task.args) });
-    let mut skipping = When::new(|_: &u32| false, permit.layer(handler));
-    let mut accepting = When::new(|_: &u32| true, permit.layer(handler));
+async fn an_idle_worker_does_not_starve_another_subscriber_after_skipping() {
+    shared_permit_after_decision(false).await;
+}
 
-    let skipped = skipping.ready().await.unwrap().call(Task::new(1)).await;
-    assert_eq!(skipped.unwrap(), Decision::Skipped);
-    let ready = tokio::time::timeout(DEADLINE, accepting.ready())
-        .await
-        .expect("the skipped task still holds the permit")
+#[tokio::test]
+async fn a_caught_predicate_panic_does_not_starve_a_waiting_subscriber() {
+    shared_permit_after_decision(true).await;
+}
+
+async fn shared_permit_after_decision(panics: bool) {
+    let orders = BroadcastFlow::<u32>::new("orders")
+        .subscriber("first")
+        .subscriber("second")
+        .in_memory()
         .unwrap();
+    let limit = GlobalConcurrencyLimitLayer::new(1);
+    let handler = tower::service_fn(|_: Task<u32>| async { Ok::<_, BoxDynError>(()) });
+    let mut first_queue = orders.backend("first").unwrap();
+    let mut second_queue = orders.backend("second").unwrap();
+    let first = WorkerBuilder::new("first")
+        .backend(first_queue.clone())
+        .catch_panic()
+        .build(When::new(
+            move |_: &u32| {
+                assert!(!panics, "predicate panic");
+                false
+            },
+            limit.layer(handler),
+        ));
+    let second = WorkerBuilder::new("second")
+        .backend(second_queue.clone())
+        .build(When::new(|_: &u32| true, limit.layer(handler)));
+
+    let mut first = Box::pin(first.run());
+    let mut second = Box::pin(second.run());
+    assert!(futures_util::poll!(first.as_mut()).is_pending());
+    if panics {
+        // The peer is already waiting when the first worker's predicate panics.
+        assert!(futures_util::poll!(second.as_mut()).is_pending());
+    }
+    let first = tokio::spawn(first);
+    let receipts = [orders.publisher().publish(1).await.unwrap()];
+    let (stored, failed) = decisions(&mut first_queue, &receipts, "first").await;
+    if panics {
+        assert!(stored.is_empty());
+        assert_eq!(failed, 1);
+    } else {
+        assert_eq!(
+            stored.into_values().collect::<Vec<_>>(),
+            [Decision::Skipped]
+        );
+        assert_eq!(failed, 0);
+    }
+
+    let second = tokio::spawn(second);
+    let (stored, failed) = decisions(&mut second_queue, &receipts, "second").await;
     assert_eq!(
-        ready.call(Task::new(2)).await.unwrap(),
-        Decision::Handled(2)
+        stored.into_values().collect::<Vec<_>>(),
+        [Decision::Handled(())]
     );
+    assert_eq!(failed, 0);
+    first.abort();
+    second.abort();
+}
+
+#[tokio::test]
+async fn an_accepted_task_function_is_called_before_its_response_is_polled() {
+    let called = AtomicUsize::new(0);
+    let mut service = when(
+        |_: &u32| true,
+        |_: u32| {
+            called.fetch_add(1, Ordering::SeqCst);
+            std::future::ready(())
+        },
+    );
+    drop(service.ready().await.unwrap().call(Task::new(1)));
+    assert_eq!(called.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn a_waiting_dispatch_can_be_canceled_without_holding_partial_capacity() {
+    let outer = GlobalConcurrencyLimitLayer::new(1);
+    let inner = GlobalConcurrencyLimitLayer::new(1);
+    let handler = tower::service_fn(|_: Task<u32>| std::future::ready(Ok::<_, BoxDynError>(())));
+    let mut blocker = inner.layer(handler);
+    blocker.ready().await.unwrap();
+    let mut service = When::new(|id: &u32| *id > 0, outer.layer(inner.layer(handler)));
+    let mut accepted = Box::pin(service.ready().await.unwrap().call(Task::new(1)));
+    assert!(futures_util::poll!(accepted.as_mut()).is_pending());
+    assert!(futures_util::poll!(service.ready()).is_pending());
+    let mut cloned = service.clone();
+    assert!(futures_util::poll!(cloned.ready()).is_pending());
+    let mut peer = outer.layer(handler);
+    assert!(futures_util::poll!(peer.ready()).is_pending());
+
+    drop(accepted);
+    assert!(futures_util::poll!(peer.ready()).is_ready());
+    drop(peer);
+    drop(blocker);
+    assert_eq!(
+        cloned
+            .ready()
+            .await
+            .unwrap()
+            .call(Task::new(0))
+            .await
+            .unwrap(),
+        Decision::Skipped
+    );
+    assert_eq!(
+        service
+            .ready()
+            .await
+            .unwrap()
+            .call(Task::new(1))
+            .await
+            .unwrap(),
+        Decision::Handled(())
+    );
+}
+
+#[tokio::test]
+async fn another_dispatch_can_start_while_the_previous_response_is_pending() {
+    let mut calls = 0;
+    let handler = tower::service_fn(move |_: Task<()>| {
+        calls += 1;
+        let current = calls;
+        async move {
+            if current == 1 {
+                std::future::pending::<()>().await;
+            }
+            Ok::<_, BoxDynError>(current)
+        }
+    });
+    let mut service = When::new(|_: &()| true, handler);
+    let mut first = Box::pin(service.ready().await.unwrap().call(Task::new(())));
+    assert!(futures_util::poll!(service.ready()).is_pending());
+    assert!(futures_util::poll!(first.as_mut()).is_pending());
+    let second = service
+        .ready()
+        .await
+        .unwrap()
+        .call(Task::new(()))
+        .await
+        .unwrap();
+    assert_eq!(second, Decision::Handled(2));
+}
+
+#[tokio::test]
+async fn retry_inherits_the_handler_state_after_a_pending_dispatch() {
+    let orders = BroadcastFlow::<u32>::new("orders")
+        .subscriber("flaky")
+        .in_memory()
+        .unwrap();
+    let mut backend = orders.backend("flaky").unwrap();
+    let limit = GlobalConcurrencyLimitLayer::new(1);
+    let mut blocker = limit.layer(tower::service_fn(|_: Task<u32>| {
+        std::future::ready(Ok::<(), BoxDynError>(()))
+    }));
+    blocker.ready().await.unwrap();
+
+    let attempt = std::cell::Cell::new(0);
+    let service = tower::service_fn(move |_: Task<u32>| {
+        attempt.set(attempt.get() + 1);
+        std::future::ready(if attempt.get() == 1 {
+            Err::<(), BoxDynError>("transient".into())
+        } else {
+            Ok(())
+        })
+    });
+    let predicates = Arc::new(AtomicUsize::new(0));
+    let seen = predicates.clone();
+    let worker = WorkerBuilder::new("flaky")
+        .backend(backend.clone())
+        .retry(RetryPolicy::retries(1))
+        .build(When::new(
+            move |_: &u32| {
+                seen.fetch_add(1, Ordering::SeqCst);
+                true
+            },
+            limit.layer(service),
+        ));
+    let receipts = [orders.publisher().publish(7).await.unwrap()];
+    let mut worker = Box::pin(worker.run());
+    assert!(futures_util::poll!(worker.as_mut()).is_pending());
+    assert_eq!(predicates.load(Ordering::SeqCst), 1);
+    drop(blocker);
+    let worker = tokio::spawn(worker);
+    let (stored, failed) = decisions(&mut backend, &receipts, "flaky").await;
+    assert_eq!(failed, 0);
+    assert_eq!(
+        stored.into_values().collect::<Vec<_>>(),
+        [Decision::Handled(())]
+    );
+    assert_eq!(predicates.load(Ordering::SeqCst), 2);
+    worker.abort();
+}
+
+#[tokio::test]
+async fn a_readiness_error_retires_the_service_and_reopens_dispatch() {
+    #[derive(Clone)]
+    struct FailsOnce {
+        polls: Arc<AtomicUsize>,
+        failed: bool,
+    }
+    impl Service<Task<()>> for FailsOnce {
+        type Response = ();
+        type Error = &'static str;
+        type Future = std::future::Ready<Result<(), Self::Error>>;
+
+        fn poll_ready(&mut self, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            assert!(!self.failed, "polled a service after a readiness error");
+            self.failed = self.polls.fetch_add(1, Ordering::SeqCst) == 0;
+            Poll::Ready(if self.failed {
+                Err("unavailable")
+            } else {
+                Ok(())
+            })
+        }
+
+        fn call(&mut self, _: Task<()>) -> Self::Future {
+            std::future::ready(Ok(()))
+        }
+    }
+
+    let mut service = When::new(
+        |_: &()| true,
+        FailsOnce {
+            polls: Arc::default(),
+            failed: false,
+        },
+    );
+    let mut failed = Box::pin(service.ready().await.unwrap().call(Task::new(())));
+    assert_eq!(
+        futures_util::poll!(failed.as_mut()),
+        Poll::Ready(Err("unavailable"))
+    );
+    // Keep the completed future alive: the readiness error itself reopens admission.
+    let next = service
+        .ready()
+        .await
+        .unwrap()
+        .call(Task::new(()))
+        .await
+        .unwrap();
+    assert_eq!(next, Decision::Handled(()));
 }
 
 /// The step at which a [`RecordingSink`] fails.
@@ -597,7 +829,7 @@ enum Mode {
 #[derive(Clone)]
 struct RecordingSink<A> {
     mode: Mode,
-    failed: bool,
+    failed: Arc<AtomicBool>,
     sent: Arc<Mutex<Vec<TaskId>>>,
     codec: JsonCodec,
     _args: PhantomData<fn(A)>,
@@ -607,17 +839,17 @@ impl<A> RecordingSink<A> {
     fn new(mode: Mode) -> Self {
         Self {
             mode,
-            failed: false,
+            failed: Arc::default(),
             sent: Arc::default(),
             codec: JsonCodec::default(),
             _args: PhantomData,
         }
     }
 
-    fn step(&mut self, fails: Mode) -> Result<(), std::io::Error> {
-        assert!(!self.failed, "polled after an error");
+    fn step(&self, fails: Mode) -> Result<(), std::io::Error> {
+        assert!(!self.failed.load(Ordering::SeqCst), "polled after an error");
         if self.mode == fails {
-            self.failed = true;
+            self.failed.store(true, Ordering::SeqCst);
             return Err(std::io::Error::other("rejected"));
         }
         Ok(())
@@ -660,7 +892,7 @@ impl<A> WireFormatBackend for RecordingSink<A> {
 impl<A> BackendConfig for RecordingSink<A> {
     type Args = A;
     type Id = RandomId;
-    type Kind = ();
+    type Kind = miju_core::backend::finalize::Durable;
     type Config = ();
     type Layer = tower::layer::util::Identity;
 
