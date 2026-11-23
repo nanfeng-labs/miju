@@ -72,3 +72,9 @@ who = "Codex (AI-assisted review)"
 criteria = "safe-to-deploy"
 delta = "1.29.0 -> 1.29.2"
 notes = "Reviewed the checksum-verified crates.io package delta. Timestamp arithmetic now uses u128 nanoseconds, checked SystemTime conversion and saturating v7 timestamp advancement; counter precision cannot move the counter backwards. The wasm target conditions extend the existing WebCrypto and RNG paths to wasm64 without changing their buffer bounds or FFI. No unsafe blocks or new I/O are added, and the v4/v5 generation used by miju is unchanged. Other changes are tests, documentation, release metadata, deprecated borsh support and the unstable zerocopy dependency condition. Upstream library tests passed with v1, v3, v4, v5, v6, v7, v8 and serde enabled (139 tests); miju-core state and snapshot tests passed with all features (18 tests). The existing 1.28.0 exemption and 1.28.0 to 1.29.0 audit remain the baseline; this is an incremental audit."
+
+[[audits.uuid]]
+who = "Codex (AI-assisted review)"
+criteria = "safe-to-deploy"
+delta = "1.29.2 -> 1.29.3"
+notes = "Reviewed the checksum-verified crates.io package delta. Default Serde output is unchanged. The optional byte adapter reads sequences into a fixed 16-byte buffer and checks the exact length; the string-format wrappers reject byte input. Clock sequence backends change for v1 and v6, which this workspace does not enable. The v4 and v5 paths are unchanged, with no new unsafe code or I/O."
