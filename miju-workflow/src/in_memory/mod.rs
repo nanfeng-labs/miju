@@ -95,7 +95,12 @@ impl<Args> InMemoryWorkflow<Args> {
 }
 
 impl<Args> InMemoryWorkflow<Args> {
-    /// Create a storage given a sender and receiver
+    /// Creates a queue from a producer sink and a stream of tasks for workers.
+    ///
+    /// Workers poll the receiver for tasks. The producer is responsible for
+    /// flushing the sender. [`SinkExt::send`] includes a flush. After
+    /// batching with [`SinkExt::feed`], call [`SinkExt::flush`] on the sending
+    /// handle, including when shutting down workers.
     #[must_use]
     pub fn new_with(sender: MemorySink<Vec<u8>>, receiver: BoxedReceiver<Vec<u8>>) -> Shared<Self> {
         Shared::new(Self {
@@ -146,10 +151,11 @@ impl<Args> Backend for InMemoryWorkflow<Args> {
 
     fn poll_ready(
         &mut self,
-        cx: &mut Context<'_>,
-        worker: &WorkerContext,
+        _: &mut Context<'_>,
+        _: &WorkerContext,
     ) -> Poll<Result<(), Self::Error>> {
-        self.inner.poll_ready(cx, worker)
+        // The receiver reports its own readiness in poll_next.
+        Poll::Ready(Ok(()))
     }
 
     fn poll_next(
@@ -162,10 +168,12 @@ impl<Args> Backend for InMemoryWorkflow<Args> {
 
     fn poll_close(
         &mut self,
-        cx: &mut Context<'_>,
-        worker: &WorkerContext,
+        _: &mut Context<'_>,
+        _: &WorkerContext,
     ) -> Poll<Result<(), Self::Error>> {
-        self.inner.poll_close(cx, worker)
+        // The reader has no pending writes. Flushing here could consume a
+        // publisher's write error before that publisher receives its result.
+        Poll::Ready(Ok(()))
     }
 }
 

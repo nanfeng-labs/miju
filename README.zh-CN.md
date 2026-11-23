@@ -58,7 +58,7 @@
 
 | Crate | 职责 |
 | --- | --- |
-| [`miju-workflow`](miju-workflow) | 类型化顺序流程与依赖图执行。 |
+| [`miju-workflow`](miju-workflow) | 类型化顺序流程、依赖图与广播执行。 |
 
 ### 数据格式与存储
 
@@ -116,7 +116,7 @@ async fn main() -> Result<(), BoxDynError> {
 
 ## 工作流
 
-`miju-workflow` 提供顺序流程与依赖图。顺序步骤把类型化结果传给后续步骤；图工作流调度依赖节点，并在分支汇合时收集结果。示例和当前行为详见 [`miju-workflow` 指南](miju-workflow/README.md)。
+`miju-workflow` 提供顺序流程、依赖图与广播。顺序步骤把类型化结果传给后续步骤；图工作流调度依赖节点，并在分支汇合时收集结果；广播把一次发布交给多个 Worker，由各 Worker 自行决定是否处理。示例和当前行为详见 [`miju-workflow` 指南](miju-workflow/README.md)。
 
 ## 示例
 

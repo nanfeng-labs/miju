@@ -13,7 +13,9 @@ mod task_id_metadata;
 /// Sequential workflow composition and execution.
 pub mod sequential;
 
-pub use {graph::GraphFlow, sequential::SteppedFlow, sink::WorkflowSink};
+pub use {broadcast::BroadcastFlow, graph::GraphFlow, sequential::SteppedFlow, sink::WorkflowSink};
+
+pub mod broadcast;
 
 /// In-memory workflow tasks and result waiting.
 pub mod in_memory;
