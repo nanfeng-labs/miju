@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- deps(deps): bump sentry from 0.49.5 to 0.49.6 ([#151](https://github.com/nanfeng-labs/miju/pull/151))
 - deps(deps): bump uuid from 1.29.2 to 1.29.3 ([#150](https://github.com/nanfeng-labs/miju/pull/150))
 - deps(deps): bump sentry-tower from 0.49.5 to 0.49.6 ([#149](https://github.com/nanfeng-labs/miju/pull/149))
 - fix(deps): update url to 2.5.9 for RUSTSEC-2026-0592 ([#157](https://github.com/nanfeng-labs/miju/pull/157))
