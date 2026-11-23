@@ -1,6 +1,12 @@
 
 # cargo-vet audits file
 
+[[audits.email_address]]
+who = "Codex (AI-assisted review)"
+criteria = "safe-to-deploy"
+delta = "0.2.9 -> 0.2.10"
+notes = "Reviewed the checksum-verified crates.io package delta. The parser now respects quoted and escaped display text and handles non-ASCII input at UTF-8 boundaries. The longer local-part option is opt-in. The workspace uses FromStr and Error with default features disabled; the new optional integrations are outside its resolved graph. No new unsafe code or I/O."
+
 [[audits.form_urlencoded]]
 who = "Codex (AI-assisted review)"
 criteria = "safe-to-deploy"
@@ -12,6 +18,12 @@ who = "Codex (AI-assisted review)"
 criteria = "safe-to-deploy"
 delta = "0.49.3 -> 0.49.5"
 notes = "Reviewed the checksum-verified crates.io package delta. Runtime Rust sources are unchanged; changes are release metadata, README assets, examples and tracing integration tests, plus Sentry-family dependency requirements moving to 0.49.5 and Rust 1.89. The selected transport implementation is unchanged. Existing sentry-core and sentry-types audits cover the resolved companion crates. The 0.49.3 exemption remains the baseline; this is an incremental audit."
+
+[[audits.sentry]]
+who = "Codex (AI-assisted review)"
+criteria = "safe-to-deploy"
+delta = "0.49.5 -> 0.49.6"
+notes = "Reviewed the checksum-verified crates.io package delta. The transport retains the longest applicable rate-limit deadline while preserving envelope filtering and header handling. Removed an unused optional serde_json dependency while retaining its feature name. The Sentry-family requirements advance, with no new external dependency or unsafe code."
 
 [[audits.sentry-core]]
 who = "Codex (AI-assisted review)"
@@ -42,6 +54,12 @@ who = "Codex (AI-assisted review)"
 criteria = "safe-to-deploy"
 delta = "0.49.3 -> 0.49.5"
 notes = "Reviewed the checksum-verified crates.io package delta, tracing converters, span lifecycle and hub guard handling. The legacy combined layer delegates to new SpanLayer, BreadcrumbLayer, ErrorLayer and optional LogLayer implementations; individual layers use subscriber filters. Span lifecycle logic and event conversion are retained, with legacy APIs deprecated. No new unsafe code, transport or third-party dependency is introduced. Reviewed filter defaults and migrated both example subscribers to INFO-filtered spans and breadcrumb-only events. The 0.49.3 exemption remains the baseline; this is an incremental audit."
+
+[[audits.sentry-tracing]]
+who = "Codex (AI-assisted review)"
+criteria = "safe-to-deploy"
+delta = "0.49.5 -> 0.49.6"
+notes = "Reviewed the checksum-verified crates.io package delta. Rust source changes are documentation only. The public layers and filtering behavior are unchanged. The sentry-core and optional sentry-backtrace requirements advance to 0.49.6."
 
 [[audits.sentry-types]]
 who = "Codex (AI-assisted review)"
