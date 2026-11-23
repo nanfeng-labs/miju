@@ -13,6 +13,12 @@ criteria = "safe-to-deploy"
 delta = "1.2.2 -> 1.2.3"
 notes = "Reviewed the checksum-verified crates.io package delta. Serializer::for_suffix clamps a start position beyond the target length, avoiding a panic before initialization. The percent-encoding minimum advances to the already resolved 2.3.2. No new dependencies, unsafe code, or I/O."
 
+[[audits.rand]]
+who = "Codex (AI-assisted review)"
+criteria = "safe-to-deploy"
+delta = "0.10.3 -> 0.10.4"
+notes = "Reviewed the checksum-verified crates.io package delta. Serde-gated UniformDuration deserialization adds range and overflow validation and reuses the underlying integer sampler for large ranges. The workspace uses primitive integer random and random_range, with unchanged APIs, runtime dependencies and Rust requirement."
+
 [[audits.sentry]]
 who = "Codex (AI-assisted review)"
 criteria = "safe-to-deploy"
