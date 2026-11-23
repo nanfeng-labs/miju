@@ -1,11 +1,23 @@
 
 # cargo-vet audits file
 
+[[audits.form_urlencoded]]
+who = "Codex (AI-assisted review)"
+criteria = "safe-to-deploy"
+delta = "1.2.2 -> 1.2.3"
+notes = "Reviewed the checksum-verified crates.io package delta. Serializer::for_suffix clamps a start position beyond the target length, avoiding a panic before initialization. The percent-encoding minimum advances to the already resolved 2.3.2. No new dependencies, unsafe code, or I/O."
+
 [[audits.sentry]]
 who = "Codex (AI-assisted review)"
 criteria = "safe-to-deploy"
 delta = "0.49.3 -> 0.49.5"
 notes = "Reviewed the checksum-verified crates.io package delta. Runtime Rust sources are unchanged; changes are release metadata, README assets, examples and tracing integration tests, plus Sentry-family dependency requirements moving to 0.49.5 and Rust 1.89. The selected transport implementation is unchanged. Existing sentry-core and sentry-types audits cover the resolved companion crates. The 0.49.3 exemption remains the baseline; this is an incremental audit."
+
+[[audits.sentry]]
+who = "Codex (AI-assisted review)"
+criteria = "safe-to-deploy"
+delta = "0.49.5 -> 0.49.6"
+notes = "Reviewed the checksum-verified crates.io package delta. The transport retains the longest applicable rate-limit deadline while preserving envelope filtering and header handling. Removed an unused optional serde_json dependency while retaining its feature name. The Sentry-family requirements advance, with no new external dependency or unsafe code."
 
 [[audits.sentry-core]]
 who = "Codex (AI-assisted review)"
@@ -13,11 +25,23 @@ criteria = "safe-to-deploy"
 delta = "0.49.3 -> 0.49.5"
 notes = "Reviewed the crates.io package delta. The only Rust source change corrects TransactionData::iter documentation; runtime code is unchanged. Other changes update release metadata, README assets, the Rust requirement to 1.89, and sentry-types to 0.49.5, reviewed separately. The existing 0.49.3 exemption remains the baseline; this is an incremental audit."
 
+[[audits.sentry-core]]
+who = "Codex (AI-assisted review)"
+criteria = "safe-to-deploy"
+delta = "0.49.5 -> 0.49.6"
+notes = "Reviewed the checksum-verified crates.io package delta. The Arc transport implementation now forwards flush and its timeout to the wrapped transport. Removed unused dependency declarations, keeping their feature names for compatibility. The Rust requirement is unchanged; sentry-types advances to 0.49.6, audited separately."
+
 [[audits.sentry-tower]]
 who = "Codex (AI-assisted review)"
 criteria = "safe-to-deploy"
 delta = "0.49.3 -> 0.49.5"
 notes = "Reviewed the checksum-verified crates.io package delta. The only runtime source change moves HTTP 409 handling ahead of the generic client-error branch so it maps to AlreadyExists; a regression test covers 409 and 400. Per-request hub and future handling are unchanged. Other changes are release metadata, README assets, the Rust 1.89 requirement and sentry-core 0.49.5, covered by its existing audit. The 0.49.3 exemption remains the baseline; this is an incremental audit."
+
+[[audits.sentry-tower]]
+who = "Codex (AI-assisted review)"
+criteria = "safe-to-deploy"
+delta = "0.49.5 -> 0.49.6"
+notes = "Reviewed the checksum-verified crates.io package delta. Runtime Rust sources and features are unchanged. The sentry-core minimum advances to 0.49.6, audited separately."
 
 [[audits.sentry-tracing]]
 who = "Codex (AI-assisted review)"
@@ -31,6 +55,18 @@ criteria = "safe-to-deploy"
 delta = "0.49.3 -> 0.49.5"
 notes = "Reviewed the crates.io package delta. Rust source files are unchanged. Changes are limited to release metadata, README assets, and the Rust requirement from 1.88 to 1.89. The existing 0.49.3 exemption remains the baseline; this is an incremental audit."
 
+[[audits.sentry-types]]
+who = "Codex (AI-assisted review)"
+criteria = "safe-to-deploy"
+delta = "0.49.5 -> 0.49.6"
+notes = "Reviewed the checksum-verified crates.io package delta. Runtime Rust sources, dependency requirements, features and the Rust requirement are unchanged."
+
+[[audits.url]]
+who = "Codex (AI-assisted review)"
+criteria = "safe-to-deploy"
+delta = "2.5.8 -> 2.5.9"
+notes = "Reviewed the checksum-verified crates.io package delta. The origin fix for RUSTSEC-2026-0592 restricts origin inheritance to the applicable inner schemes. Parser changes align caret encoding, hosted file URLs and port parsing with the URL Standard and constrain the double-dot path scan. The Rust requirement is unchanged and the existing form_urlencoded dependency moves to 1.2.3, audited separately."
+
 [[audits.uuid]]
 who = "Codex (AI-assisted review)"
 criteria = "safe-to-deploy"
@@ -42,3 +78,9 @@ who = "Codex (AI-assisted review)"
 criteria = "safe-to-deploy"
 delta = "1.29.0 -> 1.29.2"
 notes = "Reviewed the checksum-verified crates.io package delta. Timestamp arithmetic now uses u128 nanoseconds, checked SystemTime conversion and saturating v7 timestamp advancement; counter precision cannot move the counter backwards. The wasm target conditions extend the existing WebCrypto and RNG paths to wasm64 without changing their buffer bounds or FFI. No unsafe blocks or new I/O are added, and the v4/v5 generation used by miju is unchanged. Other changes are tests, documentation, release metadata, deprecated borsh support and the unstable zerocopy dependency condition. Upstream library tests passed with v1, v3, v4, v5, v6, v7, v8 and serde enabled (139 tests); miju-core state and snapshot tests passed with all features (18 tests). The existing 1.28.0 exemption and 1.28.0 to 1.29.0 audit remain the baseline; this is an incremental audit."
+
+[[audits.uuid]]
+who = "Codex (AI-assisted review)"
+criteria = "safe-to-deploy"
+delta = "1.29.2 -> 1.29.3"
+notes = "Reviewed the checksum-verified crates.io package delta. Default Serde output is unchanged. The optional byte adapter reads sequences into a fixed 16-byte buffer and checks the exact length; the string-format wrappers reject byte input. Clock sequence backends change for v1 and v6, which this workspace does not enable. The v4 and v5 paths are unchanged, with no new unsafe code or I/O."
