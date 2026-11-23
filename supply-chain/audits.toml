@@ -1,6 +1,12 @@
 
 # cargo-vet audits file
 
+[[audits.email_address]]
+who = "Codex (AI-assisted review)"
+criteria = "safe-to-deploy"
+delta = "0.2.9 -> 0.2.10"
+notes = "Reviewed the checksum-verified crates.io package delta. The parser now respects quoted and escaped display text and handles non-ASCII input at UTF-8 boundaries. The longer local-part option is opt-in. The workspace uses FromStr and Error with default features disabled; the new optional integrations are outside its resolved graph. No new unsafe code or I/O."
+
 [[audits.form_urlencoded]]
 who = "Codex (AI-assisted review)"
 criteria = "safe-to-deploy"
