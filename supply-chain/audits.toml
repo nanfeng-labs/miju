@@ -1,6 +1,12 @@
 
 # cargo-vet audits file
 
+[[audits.form_urlencoded]]
+who = "Codex (AI-assisted review)"
+criteria = "safe-to-deploy"
+delta = "1.2.2 -> 1.2.3"
+notes = "Reviewed the checksum-verified crates.io package delta. Serializer::for_suffix clamps a start position beyond the target length, avoiding a panic before initialization. The percent-encoding minimum advances to the already resolved 2.3.2. No new dependencies, unsafe code, or I/O."
+
 [[audits.sentry]]
 who = "Codex (AI-assisted review)"
 criteria = "safe-to-deploy"
@@ -30,6 +36,12 @@ who = "Codex (AI-assisted review)"
 criteria = "safe-to-deploy"
 delta = "0.49.3 -> 0.49.5"
 notes = "Reviewed the crates.io package delta. Rust source files are unchanged. Changes are limited to release metadata, README assets, and the Rust requirement from 1.88 to 1.89. The existing 0.49.3 exemption remains the baseline; this is an incremental audit."
+
+[[audits.url]]
+who = "Codex (AI-assisted review)"
+criteria = "safe-to-deploy"
+delta = "2.5.8 -> 2.5.9"
+notes = "Reviewed the checksum-verified crates.io package delta. The origin fix for RUSTSEC-2026-0592 restricts origin inheritance to the applicable inner schemes. Parser changes align caret encoding, hosted file URLs and port parsing with the URL Standard and constrain the double-dot path scan. The Rust requirement is unchanged and the existing form_urlencoded dependency moves to 1.2.3, audited separately."
 
 [[audits.uuid]]
 who = "Codex (AI-assisted review)"
