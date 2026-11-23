@@ -685,11 +685,14 @@ and a retry layer runs it again after a handler error. Declining does not emit
 an error event or trigger a retry. Middleware added to the worker still sees
 skipped tasks, so rate limits and timeouts apply to them too. Only an accepted
 task waits for the inner service to become ready. Idle and skipping workers
-leave shared handler capacity available to their peers. Each `When::new`
-service can hold one accepted task waiting for dispatch. Once the inner call
-starts, the next task can enter while the previous response is still running.
-With `catch_panic`, a panic in the predicate or handler fails that delivery. An uncaught panic
-stops the affected worker's task.
+leave shared handler capacity available to their peers. Each `When::new` service
+can hold one accepted task waiting for dispatch. Once the inner call starts, the
+next task can enter while the previous response is still running. That call
+starts from the accepted task's response future, so a caller outside a worker
+must poll the response before waiting for readiness again. miju workers do this,
+and `when` calls task functions directly. With `catch_panic`, a panic in the
+predicate or handler fails that delivery. An uncaught panic stops the affected
+worker's task.
 
 Membership is fixed when the broadcast is built. The in-memory queues are
 process-local, unbounded and not persistent. A subscriber whose worker has

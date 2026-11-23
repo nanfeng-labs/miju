@@ -62,6 +62,13 @@ impl<P, S> When<P, S> {
     /// at most one accepted task waiting to call the handler. As soon as that
     /// call starts, later tasks can enter while its response is still running.
     ///
+    /// That call starts from the accepted task's response future, so the next
+    /// `poll_ready` waits until that future has been polled. A caller that
+    /// collects several responses before polling any of them waits forever on
+    /// the second `poll_ready`. miju workers poll responses while they wait for
+    /// readiness, and [`when`] calls task functions directly, so neither is
+    /// affected.
+    ///
     /// The handle keeps an unreserved clone while dispatch is pending. If the
     /// response future is dropped before dispatch or readiness fails, the
     /// waiting service is dropped and the next task uses that clone. If a
