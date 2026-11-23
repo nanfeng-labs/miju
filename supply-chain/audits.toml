@@ -13,6 +13,18 @@ criteria = "safe-to-deploy"
 delta = "1.2.2 -> 1.2.3"
 notes = "Reviewed the checksum-verified crates.io package delta. Serializer::for_suffix clamps a start position beyond the target length, avoiding a panic before initialization. The percent-encoding minimum advances to the already resolved 2.3.2. No new dependencies, unsafe code, or I/O."
 
+[[audits.pin-project]]
+who = "Codex (AI-assisted review)"
+criteria = "safe-to-deploy"
+delta = "1.1.13 -> 1.2.0"
+notes = "Reviewed the checksum-verified crates.io package delta. The facade exports a hidden Sized path for the proc macro and pins the matching internal version. The Rust requirement is unchanged."
+
+[[audits.pin-project-internal]]
+who = "Codex (AI-assisted review)"
+criteria = "safe-to-deploy"
+delta = "1.1.13 -> 1.2.0"
+notes = "Reviewed the checksum-verified crates.io package delta. The generated Drop coherence guard applies to unsized types, with a compile-fail test. PinnedDrop parsing and AST construction are adapted to the already resolved syn 3.0.9. The toolchain requirement remains 1.71, and the updated proc-macro2 and quote minimums are already satisfied."
+
 [[audits.rand]]
 who = "Codex (AI-assisted review)"
 criteria = "safe-to-deploy"

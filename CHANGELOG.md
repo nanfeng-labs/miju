@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- deps(deps): bump pin-project from 1.1.13 to 1.2.0 ([#155](https://github.com/nanfeng-labs/miju/pull/155))
 - deps(deps): bump rand from 0.10.3 to 0.10.4 ([#154](https://github.com/nanfeng-labs/miju/pull/154))
 - deps(deps): bump email\_address from 0.2.9 to 0.2.10 ([#153](https://github.com/nanfeng-labs/miju/pull/153))
 - deps(deps): bump sentry-tracing from 0.49.5 to 0.49.6 ([#152](https://github.com/nanfeng-labs/miju/pull/152))
